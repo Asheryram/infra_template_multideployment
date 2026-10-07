@@ -1,0 +1,219 @@
+# Shared, always-on services. Managed with `infra platform up` — don't run compose by hand,
+# platform.sh renders Traefik config and exports the variables used below.
+#
+#   always:   socket-proxy, traefik, postgres, uptime-kuma, dozzle
+#   profiles: metrics        → prometheus, node-exporter, cadvisor, grafana   (~400 MB RAM)
+#             local-registry → registry:2 on 127.0.0.1:5000 (local testing without GHCR)
+# Enable profiles with PLATFORM_PROFILES=metrics,local-registry in the inventory.
+#
+# Pin image versions (or digests) in the inventory once you're happy with them.
+name: infra-platform
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  # Traefik and Dozzle never touch the raw Docker socket: this proxy exposes read-only endpoints.
+  socket-proxy:
+    image: ${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:latest}
+    container_name: infra-socket-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1
+      EVENTS: 1
+      INFO: 1
+      VERSION: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [socket]
+    mem_limit: 64m
+    logging: *logging
+
+  traefik:
+    image: ${TRAEFIK_IMAGE:-traefik:v3}
+    container_name: infra-traefik
+    restart: unless-stopped
+    depends_on: [socket-proxy]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${TRAEFIK_STATE_DIR:?run via 'infra platform up'}:/etc/traefik:ro
+      - traefik-acme:/acme
+    env_file:
+      - path: /etc/infra/traefik.env      # DNS provider token for Let's Encrypt
+        required: false
+    networks: [proxy, socket, metrics]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    mem_limit: 256m
+    logging: *logging
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: infra-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in /etc/infra/platform.secrets.env}
+    command:
+      - postgres
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
+      - -c
+      - log_min_duration_statement=1000
+    shm_size: 256mb
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [data]                 # internal network: no ports published, no internet
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1g}
+    logging: *logging
+
+  uptime-kuma:
+    image: ${UPTIME_KUMA_IMAGE:-louislam/uptime-kuma:1}
+    container_name: infra-uptime-kuma
+    restart: unless-stopped
+    volumes:
+      - uptime-kuma-data:/app/data
+    networks: [proxy]
+    mem_limit: 256m
+    logging: *logging
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.uptime.rule=Host(`status.${DOMAIN}`)
+      - traefik.http.routers.uptime.entrypoints=websecure
+      - traefik.http.routers.uptime.tls=true
+      - traefik.http.routers.uptime.middlewares=secure-headers@file
+      - traefik.http.services.uptime.loadbalancer.server.port=3001
+
+  # Web UI for container logs of every environment — give team leads the ops-auth login.
+  dozzle:
+    image: ${DOZZLE_IMAGE:-amir20/dozzle:latest}
+    container_name: infra-dozzle
+    restart: unless-stopped
+    depends_on: [socket-proxy]
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+      DOZZLE_NO_ANALYTICS: "true"
+    networks: [proxy, socket]
+    mem_limit: 128m
+    logging: *logging
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dozzle.rule=Host(`logs.${DOMAIN}`)
+      - traefik.http.routers.dozzle.entrypoints=websecure
+      - traefik.http.routers.dozzle.tls=true
+      - traefik.http.routers.dozzle.middlewares=ops-auth@file,secure-headers@file
+      - traefik.http.services.dozzle.loadbalancer.server.port=8080
+
+  # --------------------------------------------------------------- profile: metrics
+  prometheus:
+    profiles: [metrics]
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    container_name: infra-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks: [metrics]
+    mem_limit: 512m
+    logging: *logging
+
+  node-exporter:
+    profiles: [metrics]
+    image: ${NODE_EXPORTER_IMAGE:-prom/node-exporter:latest}
+    container_name: infra-node-exporter
+    restart: unless-stopped
+    command: ["--path.rootfs=/host"]
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks: [metrics]
+    mem_limit: 64m
+    logging: *logging
+
+  cadvisor:
+    profiles: [metrics]
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:latest}
+    container_name: infra-cadvisor
+    restart: unless-stopped
+    command: ["--docker_only=true", "--housekeeping_interval=30s", "--store_container_labels=false",
+              "--whitelisted_container_labels=infra.app,infra.env,com.docker.compose.project"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices: ["/dev/kmsg"]
+    privileged: true
+    networks: [metrics]
+    mem_limit: 256m
+    logging: *logging
+
+  grafana:
+    profiles: [metrics]
+    image: ${GRAFANA_IMAGE:-grafana/grafana-oss:latest}
+    container_name: infra-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: https://grafana.${DOMAIN}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+    networks: [proxy, metrics]
+    mem_limit: 256m
+    logging: *logging
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN}`)
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.tls=true
+      - traefik.http.routers.grafana.middlewares=secure-headers@file
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+
+  # --------------------------------------------------------------- profile: local-registry
+  registry:
+    profiles: [local-registry]
+    image: registry:2
+    container_name: infra-registry
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"        # loopback only — Docker would bypass ufw otherwise
+    volumes:
+      - registry-data:/var/lib/registry
+    mem_limit: 128m
+    logging: *logging
+
+networks:
+  proxy:   { name: infra_proxy }
+  data:    { name: infra_data, internal: true }
+  socket:  { name: infra_socket, internal: true }
+  metrics: { name: infra_metrics, internal: true }
+
+volumes:
+  traefik-acme:
+  postgres-data:
+  uptime-kuma-data:
+  prometheus-data:
+  grafana-data:
+  registry-data:

@@ -1,0 +1,31 @@
+# Component "app" — one container serving the whole application (TYPE=monolith).
+# Used by `infra deploy`; every ${VAR} comes from <stack dir>/stack.env.
+services:
+  app:
+    image: ${APP_IMAGE:?APP_IMAGE not set}
+    restart: unless-stopped
+    init: true
+    env_file: [runtime/app.env]
+    networks: [default, proxy, data]
+    mem_limit: ${APP_MEM_LIMIT:-512m}
+    cpus: ${APP_CPUS:-1.0}
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    labels:
+      - infra.app=${APP}
+      - infra.env=${ENV_NAME}
+      - traefik.enable=true
+      - traefik.docker.network=infra_proxy
+      - traefik.http.routers.${STACK}-app.rule=Host(`${APP_HOST}`)
+      - traefik.http.routers.${STACK}-app.entrypoints=websecure
+      - traefik.http.routers.${STACK}-app.tls=true
+      - traefik.http.routers.${STACK}-app.middlewares=${APP_MIDDLEWARES}
+      - traefik.http.routers.${STACK}-app.service=${STACK}-app
+      - traefik.http.services.${STACK}-app.loadbalancer.server.port=${APP_PORT}
+
+networks:
+  proxy: { name: infra_proxy, external: true }
+  data: { name: infra_data, external: true }

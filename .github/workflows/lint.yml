@@ -1,0 +1,53 @@
+# CI for this infra repo itself: shellcheck every script and validate compose files.
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          shellcheck --version
+          find . -name '*.sh' -not -path './app-kit/*' -print0 | xargs -0 shellcheck -x -S warning
+          shellcheck -x -S warning bin/infra
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate platform compose
+        env:
+          TRAEFIK_STATE_DIR: /tmp/traefik
+          POSTGRES_PASSWORD: dummy
+          DOMAIN: example.test
+          COMPOSE_PROFILES: metrics,local-registry
+        run: docker compose -f platform/docker-compose.yml config --quiet
+      - name: Validate component templates
+        run: |
+          mkdir -p /tmp/stack/runtime && touch /tmp/stack/runtime/{app,web,api}.env
+          cat > /tmp/stack/stack.env <<'EOF'
+          STACK=t-pr-1
+          APP=t
+          ENV_NAME=pr-1
+          APP_IMAGE=x
+          WEB_IMAGE=x
+          API_IMAGE=x
+          APP_HOST=a.test
+          WEB_HOST=w.test
+          API_HOST=b.test
+          APP_PORT=3000
+          WEB_PORT=80
+          API_PORT=8080
+          APP_MIDDLEWARES=secure-headers@file
+          WEB_MIDDLEWARES=secure-headers@file
+          API_MIDDLEWARES=secure-headers@file
+          EOF
+          sed -i 's/^ *//' /tmp/stack/stack.env
+          docker compose --project-directory /tmp/stack --env-file /tmp/stack/stack.env \
+            -f templates/components/app.yml -f templates/components/web.yml -f templates/components/api.yml \
+            config --quiet

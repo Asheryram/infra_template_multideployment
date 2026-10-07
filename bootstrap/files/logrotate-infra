@@ -1,0 +1,13 @@
+# Managed by infra bootstrap. Logs written by the infra CLI (deploys, backups, cleanup...).
+/var/log/infra/*.log {
+    su root @DEPLOY_USER@
+    daily
+    rotate 14
+    maxsize 50M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+}

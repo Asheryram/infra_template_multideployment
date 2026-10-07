@@ -1,0 +1,12 @@
+# Managed by infra bootstrap.
+[DEFAULT]
+backend  = systemd
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+# Repeat offenders get longer bans.
+bantime.increment = true
+bantime.maxtime   = 1w
+
+[sshd]
+enabled = true

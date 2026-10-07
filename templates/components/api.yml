@@ -1,0 +1,30 @@
+# Component "api" — the backend (TYPE=backend, or the api half of TYPE=split).
+services:
+  api:
+    image: ${API_IMAGE:?API_IMAGE not set}
+    restart: unless-stopped
+    init: true
+    env_file: [runtime/api.env]
+    networks: [default, proxy, data]
+    mem_limit: ${API_MEM_LIMIT:-512m}
+    cpus: ${API_CPUS:-1.0}
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    labels:
+      - infra.app=${APP}
+      - infra.env=${ENV_NAME}
+      - traefik.enable=true
+      - traefik.docker.network=infra_proxy
+      - traefik.http.routers.${STACK}-api.rule=Host(`${API_HOST}`)
+      - traefik.http.routers.${STACK}-api.entrypoints=websecure
+      - traefik.http.routers.${STACK}-api.tls=true
+      - traefik.http.routers.${STACK}-api.middlewares=${API_MIDDLEWARES}
+      - traefik.http.routers.${STACK}-api.service=${STACK}-api
+      - traefik.http.services.${STACK}-api.loadbalancer.server.port=${API_PORT}
+
+networks:
+  proxy: { name: infra_proxy, external: true }
+  data: { name: infra_data, external: true }

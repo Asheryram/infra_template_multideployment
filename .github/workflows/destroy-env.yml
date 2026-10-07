@@ -1,0 +1,44 @@
+# Reusable: tear down one environment (used when a PR closes).
+name: destroy-env
+
+on:
+  workflow_call:
+    inputs:
+      env-name:
+        type: string
+        required: true
+      runner-labels:
+        type: string
+        default: '["self-hosted", "infra"]'
+
+jobs:
+  destroy:
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    concurrency:
+      group: infra-${{ github.repository }}-${{ inputs.env-name }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .deploy
+
+      - env:
+          ENV_NAME: ${{ inputs.env-name }}
+        run: |
+          app=$(bash -c 'set -a; . .deploy/manifest.env; echo "$APP_NAME"')
+          infra destroy --app "$app" --env "$ENV_NAME"
+
+      - if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- infra-preview -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const mine = comments.find(c => c.body && c.body.includes(marker));
+            const body = `${marker}\n### Preview removed\n_The environment and its database were deleted when this PR closed._`;
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });

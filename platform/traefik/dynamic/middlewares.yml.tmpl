@@ -1,0 +1,48 @@
+# Shared middlewares, referenced by apps as <name>@file.
+# Rendered by `infra platform render` into $STATE_DIR/traefik/dynamic/.
+http:
+  middlewares:
+    secure-headers:
+      headers:
+        stsSeconds: ${HSTS_SECONDS}
+        contentTypeNosniff: true
+        referrerPolicy: strict-origin-when-cross-origin
+        customFrameOptionsValue: SAMEORIGIN
+        permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+        customResponseHeaders:
+          Server: ""
+          X-Powered-By: ""
+
+    compress:
+      compress: {}
+
+    # Keeps previews out of search engines.
+    preview-noindex:
+      headers:
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow"
+
+    # Opt-in per app with EXTRA_MIDDLEWARES=rate-limit@file
+    rate-limit:
+      rateLimit:
+        average: 50
+        burst: 100
+
+    # Ops tools (Traefik dashboard, Dozzle).
+    ops-auth:
+      basicAuth:
+        users: ["${DASHBOARD_AUTH_USERS}"]
+
+    # Preview environments (web/app components).
+    preview-auth:
+      basicAuth:
+        realm: "Preview environment"
+        users: ["${PREVIEW_AUTH_USERS}"]
+
+  routers:
+    traefik-dashboard:
+      rule: "Host(`traefik.${DOMAIN}`)"
+      entryPoints: [websecure]
+      service: api@internal
+      middlewares: [ops-auth, secure-headers]
+      tls: {}

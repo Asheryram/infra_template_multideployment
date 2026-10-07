@@ -1,0 +1,73 @@
+# Traefik static config — TLS_MODE=letsencrypt (real VPS with a real domain).
+# One wildcard certificate (*.DOMAIN) via DNS challenge covers every environment,
+# so new previews never wait for — or burn rate limits on — a fresh certificate.
+# Provider credentials go in /etc/infra/traefik.env (e.g. CF_DNS_API_TOKEN=...).
+# Provider names: https://doc.traefik.io/traefik/https/acme/#providers
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  fields:
+    headers:
+      defaultMode: drop
+
+api:
+  dashboard: true
+
+ping: {}
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addServicesLabels: true
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: le
+        domains:
+          - main: "${DOMAIN}"
+            sans: ["*.${DOMAIN}"]
+    transport:
+      respondingTimeouts:
+        readTimeout: 120s
+        writeTimeout: 120s
+        idleTimeout: 180s
+  metrics:
+    address: ":8082"
+
+providers:
+  docker:
+    endpoint: "tcp://socket-proxy:2375"
+    exposedByDefault: false
+    network: infra_proxy
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  le:
+    acme:
+      email: "${ACME_EMAIL}"
+      storage: /acme/acme.json
+      caServer: "${ACME_CA_SERVER}"
+      dnsChallenge:
+        provider: "${DNS_PROVIDER}"
+        resolvers: ["1.1.1.1:53", "8.8.8.8:53"]

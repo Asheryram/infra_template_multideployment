@@ -1,0 +1,7 @@
+#cloud-config
+# Minimal on purpose: everything else must come from bootstrap/, exactly as on a real VPS.
+package_update: true
+packages:
+  - git
+  - curl
+timezone: UTC

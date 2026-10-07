@@ -1,0 +1,68 @@
+# Reusable: build one component image and push it to GHCR.
+# Called by app repos (see app-kit/.github/workflows/deploy.yml). Runs on GitHub-hosted runners.
+name: build-image
+
+on:
+  workflow_call:
+    inputs:
+      component:
+        description: app | web | api
+        type: string
+        required: true
+      context:
+        type: string
+        default: "."
+      dockerfile:
+        description: Path from the repo root
+        type: string
+        default: Dockerfile
+      tag:
+        type: string
+        required: true
+      registry:
+        type: string
+        default: ghcr.io
+    outputs:
+      image:
+        value: ${{ jobs.build.outputs.image }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: ref
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          COMPONENT: ${{ inputs.component }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          echo "image=$REGISTRY/$repo/$COMPONENT:$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.ref.outputs.image }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ inputs.component }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.component }}
+          provenance: false

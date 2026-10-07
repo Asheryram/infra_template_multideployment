@@ -1,0 +1,13 @@
+# Real inventories and secrets never go into git — only the *.example files.
+inventory/*.env
+!inventory/*.env.example
+secrets/
+*.pem
+*.key
+*.crt
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

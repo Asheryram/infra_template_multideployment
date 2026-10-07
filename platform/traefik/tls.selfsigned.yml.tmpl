@@ -1,0 +1,8 @@
+# Default certificate for TLS_MODE=selfsigned. platform.sh generates it, or you can
+# replace both files with an mkcert wildcard (`mkcert "*.${DOMAIN}"`) so browsers trust it.
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/certs/wildcard.crt
+        keyFile: /etc/traefik/certs/wildcard.key

@@ -1,0 +1,144 @@
+# Drop-in CI/CD for ANY project type (monolith, frontend, backend, split).
+# Everything app-specific lives in .deploy/manifest.env — you normally never edit this file.
+#
+#   pull request opened/updated → preview  pr-<number>  (+ comment with the URL)
+#   pull request closed         → preview destroyed (containers + database)
+#   push to develop             → develop
+#   push to staging             → staging
+#   push to main                → prod   (add required reviewers on the "prod" GitHub Environment)
+#
+# One-time: replace YOUR_ORG/infra below with the infra repo, and make sure that repo
+# allows access from org repos (Settings → Actions → General → Access).
+name: deploy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [develop, staging, main]
+  workflow_dispatch:
+
+env:
+  PROD_BRANCH: main
+  STAGING_BRANCH: staging
+  DEVELOP_BRANCH: develop
+
+concurrency:
+  group: deploy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    # Fork PRs never reach the server.
+    if: >-
+      github.event.action != 'closed' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      env-name: ${{ steps.plan.outputs.env-name }}
+      gh-env: ${{ steps.plan.outputs.gh-env }}
+      branch: ${{ steps.plan.outputs.branch }}
+      tag: ${{ steps.plan.outputs.tag }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has-builds: ${{ steps.plan.outputs.has-builds }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .deploy
+
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          set -a; . .deploy/manifest.env; set +a
+
+          if [[ $EVENT == pull_request ]]; then
+            env_name="pr-$PR_NUMBER"; gh_env=preview; branch=$HEAD_REF
+          else
+            branch=$REF_NAME
+            case $REF_NAME in
+              "$PROD_BRANCH")    env_name=prod ;;
+              "$STAGING_BRANCH") env_name=staging ;;
+              "$DEVELOP_BRANCH") env_name=develop ;;
+              *) echo "branch '$REF_NAME' is not mapped to an environment — nothing to do"
+                 echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            esac
+            gh_env=$env_name
+          fi
+
+          case $TYPE in
+            monolith) comps="app" ;;
+            frontend) comps="web" ;;
+            backend)  comps="api" ;;
+            split)    comps="web api" ;;
+            *) echo "::error::TYPE must be monolith|frontend|backend|split"; exit 1 ;;
+          esac
+
+          # One build per component unless the manifest pins a prebuilt <C>_IMAGE.
+          matrix=$(for c in $comps; do
+            C=${c^^}; img="${C}_IMAGE"; ctx="${C}_CONTEXT"; df="${C}_DOCKERFILE"
+            [[ -n ${!img:-} ]] && continue
+            context=${!ctx:-.}
+            jq -cn --arg component "$c" --arg context "$context" --arg dockerfile "${!df:-$context/Dockerfile}" \
+              '{component: $component, context: $context, dockerfile: $dockerfile}'
+          done | jq -cs '{include: .}')
+
+          {
+            echo "skip=false"
+            echo "env-name=$env_name"
+            echo "gh-env=$gh_env"
+            echo "branch=$branch"
+            echo "tag=sha-${SHA:0:12}"
+            echo "matrix=$matrix"
+            echo "has-builds=$([[ $(jq '.include | length' <<<"$matrix") -gt 0 ]] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true' && needs.plan.outputs.has-builds == 'true'
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    permissions:
+      contents: read
+      packages: write
+    uses: YOUR_ORG/infra/.github/workflows/build-image.yml@main
+    with:
+      component: ${{ matrix.component }}
+      context: ${{ matrix.context }}
+      dockerfile: ${{ matrix.dockerfile }}
+      tag: ${{ needs.plan.outputs.tag }}
+
+  deploy:
+    needs: [plan, build]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: YOUR_ORG/infra/.github/workflows/deploy-env.yml@main
+    with:
+      env-name: ${{ needs.plan.outputs.env-name }}
+      github-environment: ${{ needs.plan.outputs.gh-env }}
+      tag: ${{ needs.plan.outputs.tag }}
+      branch: ${{ needs.plan.outputs.branch }}
+
+  destroy:
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: YOUR_ORG/infra/.github/workflows/destroy-env.yml@main
+    with:
+      env-name: pr-${{ github.event.pull_request.number }}

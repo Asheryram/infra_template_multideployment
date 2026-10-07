@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# infra — single entry point for everything on the server. Installed as
+# /usr/local/bin/infra by bootstrap. Run `infra help`.
+set -Eeuo pipefail
+INFRA_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+export INFRA_ROOT
+S="$INFRA_ROOT/scripts"
+
+help() {
+  cat <<'EOF'
+infra — multi-environment deploys on a single server
+
+Deployments
+  infra deploy --manifest <dir> --env <env> --tag <tag> [--branch b] [--commit sha] [--no-pull]
+  infra redeploy <app> <env> [--tag t]     re-apply config/secrets or a new tag
+  infra rollback <app> <env>               go back to the previous tag
+  infra destroy  --app <app> --env <env> [--keep-db]
+  infra list [app]
+
+Inspect
+  infra logs    <app> <env> [service]
+  infra ps      <app> <env>
+  infra restart <app> <env> [service]
+  infra exec    <app> <env> <service> [cmd]
+  infra config  <app> <env>
+  infra env     <app> <env> [component]
+
+Data
+  infra db list | psql | dump | restore | template | drop-template   (infra db --help)
+  infra backup
+
+Platform & housekeeping
+  infra platform up | down | ps | logs [svc] | pull | render
+  infra cleanup [--dry-run]
+  infra host-check
+  sudo infra secrets edit <app> <name> | list [app]
+EOF
+}
+
+cmd=${1:-help}
+shift || true
+case $cmd in
+  deploy)   exec bash "$S/deploy.sh" "$@" ;;
+  redeploy) exec bash "$S/deploy.sh" --app "${1:?app}" --env "${2:?env}" --redeploy "${@:3}" ;;
+  rollback) exec bash "$S/deploy.sh" --app "${1:?app}" --env "${2:?env}" --rollback "${@:3}" ;;
+  destroy)  exec bash "$S/destroy.sh" "$@" ;;
+  list|ls)  exec bash "$S/list.sh" "$@" ;;
+  logs|ps|restart|exec|config|env) exec bash "$S/stack.sh" "$cmd" "$@" ;;
+  db)       exec bash "$S/db.sh" "$@" ;;
+  backup)   exec bash "$S/backup.sh" "$@" ;;
+  cleanup)  exec bash "$S/cleanup.sh" "$@" ;;
+  host-check) exec bash "$S/host-check.sh" "$@" ;;
+  secrets)  exec bash "$S/secrets.sh" "$@" ;;
+  platform) exec bash "$INFRA_ROOT/platform/platform.sh" "$@" ;;
+  help|-h|--help) help ;;
+  *) echo "unknown command: $cmd" >&2; help; exit 1 ;;
+esac

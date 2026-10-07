@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Install the infra CLI, config, directories and cron jobs.
+set -Eeuo pipefail
+
+G=$DEPLOY_USER
+
+# Config: /etc/infra is root-owned, readable by the deploy group only.
+install -d -m 750 -o root -g "$G" /etc/infra /etc/infra/secrets
+install -m 640 -o root -g "$G" "$INVENTORY_FILE" /etc/infra/infra.env
+printf "\nINFRA_ROOT='%s'\n" "$INFRA_ROOT" >> /etc/infra/infra.env
+
+if [[ ! -f /etc/infra/platform.secrets.env ]]; then
+  sed "s/@GENERATED@/$(openssl rand -hex 24)/" "$INFRA_ROOT/inventory/platform.secrets.env.example" \
+    > /etc/infra/platform.secrets.env
+  echo "created /etc/infra/platform.secrets.env with a generated POSTGRES_PASSWORD"
+fi
+chown root:"$G" /etc/infra/platform.secrets.env
+chmod 640 /etc/infra/platform.secrets.env
+
+if [[ ${TLS_MODE:-selfsigned} == letsencrypt && ! -f /etc/infra/traefik.env ]]; then
+  install -m 640 -o root -g "$G" "$INFRA_ROOT/inventory/traefik.env.example" /etc/infra/traefik.env
+  echo "created /etc/infra/traefik.env — ADD YOUR DNS PROVIDER TOKEN before 'infra platform up'"
+fi
+
+# State and data directories, owned by the deploy user.
+for d in "${DEPLOY_ROOT:-/srv/deployments}" "${STATE_DIR:-/var/lib/infra}"; do
+  install -d -m 750 -o "$G" -g "$G" "$d"
+done
+install -d -m 700 -o "$G" -g "$G" "${BACKUP_DIR:-/srv/backups}"
+
+# CLI wrapper (works even if the repo is on a mount without exec bits).
+cat > /usr/local/bin/infra <<EOF
+#!/bin/sh
+exec bash "$INFRA_ROOT/bin/infra" "\$@"
+EOF
+chmod 755 /usr/local/bin/infra
+
+sed "s/@DEPLOY_USER@/$G/g" "$INFRA_ROOT/bootstrap/files/cron" > /etc/cron.d/infra
+chmod 644 /etc/cron.d/infra
+
+echo "infra OK — CLI at /usr/local/bin/infra, config in /etc/infra"

@@ -1,0 +1,5 @@
+# Scripts run on Linux: force LF so Windows checkouts don't break bash.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary

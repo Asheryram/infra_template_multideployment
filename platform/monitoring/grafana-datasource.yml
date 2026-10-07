@@ -1,0 +1,9 @@
+# Auto-provisions Prometheus in Grafana. Useful dashboards to import by ID:
+#   1860  Node Exporter Full      14282  cAdvisor      17346  Traefik
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
