@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     init: true
     env_file: [runtime/api.env]
+    extra_hosts: ["host.docker.internal:host-gateway"]   # reach DBs/services published on the server itself
     networks: [default, proxy, data]
     mem_limit: ${API_MEM_LIMIT:-512m}
     cpus: ${API_CPUS:-1.0}

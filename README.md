@@ -111,6 +111,8 @@ infra redeploy shop staging         # after changing secrets
 infra rollback shop prod
 sudo infra secrets edit shop prod   # runtime secrets per app/env
 infra db template shop seed.dump    # previews now start with seeded, sanitised data
+infra link shop-web pr-12 --api shop-api/staging          # DevOps: point a frontend at any backend
+infra attach-db shop-api pr-7 --share shop-api/staging    # DevOps: point an API at any database
 infra cleanup --dry-run
 ```
 More in the [runbook](docs/runbook.md).

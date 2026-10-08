@@ -152,25 +152,77 @@ esac
 
 # ----------------------------------------------------------------------------- database
 
-DATABASE_URL="" DB_NAME="" DB_PASSWORD=""
-if [[ ${NEEDS_DB:-false} == true ]]; then
-  DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
-  pwfile="$STACK_DIR/.db_password"
-  if [[ ! -s $pwfile ]]; then ( umask 077; openssl rand -hex 24 > "$pwfile" ); fi
-  DB_PASSWORD=$(<"$pwfile")
-  template=""
-  if [[ $PREVIEW == true && ${DB_PREVIEW_SOURCE:-template} == template ]]; then
-    template=$(db_template_name "$APP")
-  fi
-  db_ensure "$DB_NAME" "$DB_NAME" "$DB_PASSWORD" "$template"
-  DATABASE_URL="postgres://$DB_NAME:$DB_PASSWORD@$PG_CONTAINER:5432/$DB_NAME"
+# DevOps overrides (infra link / infra attach-db) beat everything the repo or CI says.
+load_overrides "$APP" "$ENV_NAME"
+
+# DB_MODE: own (default) | share (another environment's DB) | external (any URL)
+DB_MODE=${OV_DB_MODE:-own}
+DATABASE_URL="" DB_NAME="" DB_PASSWORD="" DB_HOST="$PG_CONTAINER" DB_PORT=5432 DB_USER="" DB_SOURCE=""
+case $DB_MODE in
+  own)
+    if [[ ${NEEDS_DB:-false} == true ]]; then
+      DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
+      pwfile="$STACK_DIR/.db_password"
+      if [[ ! -s $pwfile ]]; then ( umask 077; openssl rand -hex 24 > "$pwfile" ); fi
+      DB_PASSWORD=$(<"$pwfile")
+      template=""
+      if [[ $PREVIEW == true && ${DB_PREVIEW_SOURCE:-template} == template ]]; then
+        template=$(db_template_name "$APP")
+      fi
+      db_ensure "$DB_NAME" "$DB_NAME" "$DB_PASSWORD" "$template"
+      DB_USER=$DB_NAME
+      DB_SOURCE="own"
+    fi
+    ;;
+  share)
+    src_app=${OV_DB_SHARE_FROM%%/*}; src_env=${OV_DB_SHARE_FROM#*/}
+    src_dir=$(stack_dir "$src_app" "$src_env")
+    [[ -s $src_dir/.db_password ]] || die "cannot share DB of $OV_DB_SHARE_FROM: it isn't deployed or has no database of its own"
+    DB_NAME=$(db_ident "${src_app}_${src_env}")
+    DB_USER=$DB_NAME
+    DB_PASSWORD=$(<"$src_dir/.db_password")
+    DB_SOURCE="shared from $OV_DB_SHARE_FROM"
+    ;;
+  external)
+    # postgres://user:pass@host:port/dbname
+    if [[ $OV_DB_URL =~ ^postgres(ql)?://([^:@/]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?/([^?]+) ]]; then
+      DB_USER=${BASH_REMATCH[2]}; DB_PASSWORD=${BASH_REMATCH[4]}; DB_HOST=${BASH_REMATCH[5]}
+      DB_PORT=${BASH_REMATCH[7]:-5432}; DB_NAME=${BASH_REMATCH[8]}
+    else
+      die "override DB_URL is not a postgres://user:pass@host:port/db URL"
+    fi
+    DATABASE_URL=$OV_DB_URL
+    DB_SOURCE="external ${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    ;;
+  *) die "unknown DB_MODE override '$DB_MODE'" ;;
+esac
+if [[ -n $DB_NAME && -z $DATABASE_URL ]]; then
+  DATABASE_URL="postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME"
 fi
+if [[ -n $DB_SOURCE ]]; then log "database → $DB_SOURCE"; fi
 
 # ----------------------------------------------------------------------------- backend resolution
 # Frontend previews follow a backend preview built from the same branch name;
 # otherwise they fall back to BACKEND_FALLBACK_ENV (default: develop).
 
 UPSTREAM_API_URL="" UPSTREAM_SOURCE=""
+resolve_override() { # → 0 if a DevOps override decided the API
+  local meta
+  if [[ -n ${OV_API_URL:-} ]]; then
+    UPSTREAM_API_URL=$OV_API_URL; UPSTREAM_SOURCE="override url"; return 0
+  fi
+  if [[ -n ${OV_API_TARGET:-} ]]; then
+    meta="$(stack_dir "${OV_API_TARGET%%/*}" "${OV_API_TARGET#*/}")/meta.env"
+    if [[ -f $meta ]]; then
+      UPSTREAM_API_URL=$(meta_get "$meta" API_URL)
+    else
+      warn "override target $OV_API_TARGET is not deployed — API_URL will be empty"
+    fi
+    UPSTREAM_SOURCE="override $OV_API_TARGET"; return 0
+  fi
+  return 1
+}
+
 resolve_backend() {
   local backend=${BACKEND_APP:-} target meta v
   v="API_URL_${CLASS_VAR}"
@@ -199,8 +251,8 @@ resolve_backend() {
 }
 
 case $TYPE in
-  split)    UPSTREAM_API_URL=$SELF_API_URL; UPSTREAM_SOURCE=self ;;
-  frontend) resolve_backend ;;
+  split)    resolve_override || { UPSTREAM_API_URL=$SELF_API_URL; UPSTREAM_SOURCE=self; } ;;
+  frontend) resolve_override || resolve_backend ;;
 esac
 if [[ -n $UPSTREAM_SOURCE ]]; then log "API_URL → ${UPSTREAM_API_URL:-<none>} (from $UPSTREAM_SOURCE)"; fi
 
@@ -225,10 +277,10 @@ for comp in "${COMPONENTS[@]}"; do
       echo "GIT_COMMIT=$COMMIT"
       if [[ -n $DATABASE_URL && $comp != web ]]; then
         echo "DATABASE_URL=$DATABASE_URL"
-        echo "PGHOST=$PG_CONTAINER"
-        echo "PGPORT=5432"
+        echo "PGHOST=$DB_HOST"
+        echo "PGPORT=$DB_PORT"
         echo "PGDATABASE=$DB_NAME"
-        echo "PGUSER=$DB_NAME"
+        echo "PGUSER=$DB_USER"
         echo "PGPASSWORD=$DB_PASSWORD"
       fi
       if [[ $comp != api && -n $UPSTREAM_API_URL ]]; then echo "API_URL=$UPSTREAM_API_URL"; fi
@@ -290,6 +342,10 @@ if (( PULL )); then
   "${COMPOSE[@]}" pull --quiet
 fi
 
+if [[ -n ${MIGRATE_CMD:-} && $DB_MODE != own && ${OV_DB_MIGRATE:-false} != true ]]; then
+  warn "skipping migrations: database is $DB_SOURCE (not owned by this environment). Use 'infra attach-db ... --migrate' to allow."
+  MIGRATE_CMD=""
+fi
 if [[ -n ${MIGRATE_CMD:-} ]]; then
   svc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
   log "running migrations in '$svc': $MIGRATE_CMD"
@@ -324,6 +380,8 @@ write_kv "$tmp" UPSTREAM_API_URL "$UPSTREAM_API_URL"
 write_kv "$tmp" UPSTREAM_SOURCE "$UPSTREAM_SOURCE"
 write_kv "$tmp" BACKEND_APP "${BACKEND_APP:-}"
 write_kv "$tmp" DB_NAME "$DB_NAME"
+write_kv "$tmp" DB_MODE "$DB_MODE"
+write_kv "$tmp" DB_SOURCE "$DB_SOURCE"
 write_kv "$tmp" REPO "${GITHUB_REPOSITORY:-$(meta_get "$STACK_DIR/meta.env" REPO 2>/dev/null || true)}"
 write_kv "$tmp" DEPLOYED_AT "$(date +%s)"
 write_kv "$tmp" DEPLOYED_BY "${GITHUB_ACTOR:-${SUDO_USER:-${USER:-unknown}}}"

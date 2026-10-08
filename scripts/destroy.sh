@@ -35,12 +35,21 @@ STACK=$(stack_name "$APP" "$ENV_NAME")
 STACK_DIR=$(stack_dir "$APP" "$ENV_NAME")
 acquire_lock "$STACK"
 
-TYPE="" BRANCH="" DB_NAME=""
+# Another environment is borrowing this one's database (infra attach-db --share)?
+borrowers=$(override_dependents DB_SHARE_FROM "$APP/$ENV_NAME" | paste -sd' ' -)
+if [[ -n $borrowers ]] && (( ! KEEP_DB )); then
+  die "database of $APP/$ENV_NAME is shared with: $borrowers — repoint them first ('infra attach-db <app> <env> --own') or use --keep-db"
+fi
+api_users=$(override_dependents API_TARGET "$APP/$ENV_NAME" | paste -sd' ' -)
+if [[ -n $api_users ]]; then warn "these are pinned to $APP/$ENV_NAME's API and will lose it: $api_users"; fi
+
+# Only ever drop the database this environment OWNS (never a shared/external one).
+DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
+TYPE="" BRANCH=""
 if [[ -f $STACK_DIR/stack.env ]]; then
   if [[ -f $STACK_DIR/meta.env ]]; then
     TYPE=$(meta_get "$STACK_DIR/meta.env" TYPE)
     BRANCH=$(meta_get "$STACK_DIR/meta.env" BRANCH)
-    DB_NAME=$(meta_get "$STACK_DIR/meta.env" DB_NAME)
   fi
   load_stack "$APP" "$ENV_NAME"
   log "stopping $STACK"
@@ -54,14 +63,14 @@ else
   docker ps -aq --filter "$label" --filter "label=$MANAGED_LABEL" | xargs -r docker rm -f
   docker network ls -q --filter "$label" | xargs -r docker network rm
   docker volume ls -q --filter "$label" | xargs -r docker volume rm
-  DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
 fi
 
-if (( ! KEEP_DB )) && [[ -n $DB_NAME ]]; then
-  db_drop "$DB_NAME" "$DB_NAME"
+if (( ! KEEP_DB )); then
+  db_drop "$DB_NAME" "$DB_NAME"        # IF EXISTS — no-op when it never had its own DB
 fi
 
 rm -rf "$STACK_DIR"
+rm -f "$(overrides_file "$APP" "$ENV_NAME")"
 rmdir "$DEPLOY_ROOT/$APP" 2>/dev/null || true
 
 if is_preview "$ENV_NAME" && [[ -n $BRANCH && $TYPE != frontend ]]; then

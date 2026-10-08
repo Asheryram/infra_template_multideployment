@@ -178,6 +178,8 @@ relink_frontends() {
     [[ $(meta_get "$meta" TYPE) == frontend ]] || continue
     [[ $(meta_get "$meta" BACKEND_APP) == "$backend" ]] || continue
     [[ $(meta_get "$meta" BRANCH) == "$branch" ]] || continue
+    # Pinned by DevOps (infra link) — automatic relinking must not move it.
+    [[ $(meta_get "$meta" UPSTREAM_SOURCE) != override* ]] || continue
     if [[ -n $current && $(meta_get "$meta" UPSTREAM_API_URL) == "$current" ]]; then continue; fi
     app=$(meta_get "$meta" APP)
     env=$(meta_get "$meta" ENV_NAME)
@@ -195,6 +197,41 @@ record_owned_images() {
   for img in "$@"; do
     if ! docker image inspect "$img" >/dev/null 2>&1; then
       echo "$(date +%s) $img" >> "$STATE_DIR/owned-images"
+    fi
+  done
+}
+
+# ----------------------------------------------------------------------------- overrides
+# DevOps overrides live in $STATE_DIR/overrides/<app>/<scope>.env, scope = an env name or
+# "preview" (all pr-* of the app). Env-specific wins over "preview".
+
+overrides_file() { echo "$STATE_DIR/overrides/$1/$2.env"; }
+
+# Sets OV_API_TARGET OV_API_URL OV_DB_MODE OV_DB_SHARE_FROM OV_DB_URL OV_DB_MIGRATE
+load_overrides() {
+  local app=$1 env=$2 f k
+  OV_API_TARGET="" OV_API_URL="" OV_DB_MODE="" OV_DB_SHARE_FROM="" OV_DB_URL="" OV_DB_MIGRATE=""
+  local files=()
+  if is_preview "$env"; then files+=("$(overrides_file "$app" preview)"); fi
+  files+=("$(overrides_file "$app" "$env")")
+  for f in "${files[@]}"; do
+    [[ -f $f ]] || continue
+    for k in API_TARGET API_URL DB_MODE DB_SHARE_FROM DB_URL DB_MIGRATE; do
+      local v; v=$(meta_get "$f" "$k")
+      if [[ -n $v ]]; then printf -v "OV_$k" '%s' "$v"; fi
+    done
+  done
+  if [[ -n $OV_API_TARGET$OV_API_URL$OV_DB_MODE ]]; then
+    log "DevOps overrides active for $app/$env: ${OV_API_TARGET:+api→$OV_API_TARGET }${OV_API_URL:+api→$OV_API_URL }${OV_DB_MODE:+db=$OV_DB_MODE}"
+  fi
+}
+
+# Environments whose override points at <app>/<env> (as API_TARGET or DB_SHARE_FROM).
+override_dependents() {
+  local key=$1 target=$2 f
+  for f in "$STATE_DIR"/overrides/*/*.env; do
+    if [[ $(meta_get "$f" "$key") == "$target" ]]; then
+      echo "$(basename "$(dirname "$f")")/$(basename "${f%.env}")"
     fi
   done
 }

@@ -56,7 +56,9 @@ db_ensure() {
 # db_drop <db> <role>
 db_drop() {
   pg_running || { warn "postgres not running; skipping drop of $1"; return 0; }
-  log "dropping database $1"
-  psql_admin -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE)"
+  if db_exists "$1"; then
+    log "dropping database $1"
+    psql_admin -c "DROP DATABASE \"$1\" WITH (FORCE)"
+  fi
   if role_exists "$2"; then psql_admin -c "DROP ROLE \"$2\""; fi
 }

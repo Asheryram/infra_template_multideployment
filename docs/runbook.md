@@ -16,6 +16,37 @@ infra redeploy shop prod
 ```
 Repo-side non-secret config (`.deploy/env/*.env`) takes effect on the next CI deploy.
 
+## Rewire environments by hand (DevOps overrides)
+
+CI and branch matching decide the default wiring. You can override it per environment, or for all of an app's previews with scope `preview`. Overrides survive CI redeploys, apply immediately, and are deleted with the environment.
+
+```bash
+# Frontend → which API
+infra link shop-web pr-12   --api shop-api/staging          # test a PR against staging's API
+infra link shop-web preview --api shop-api/develop          # ALL shop-web previews → develop API
+infra link shop-web pr-12   --api-url https://api.partner.com
+infra link shop-web pr-12   --auto                          # back to automatic
+
+# API → which database
+infra attach-db shop-api pr-7 --share shop-api/staging      # reproduce a bug on staging's data
+infra attach-db shop-api pr-7 --url 'postgres://u:p@host.docker.internal:5433/legacy'   # a DB on the server
+infra attach-db shop-api pr-7 --url 'postgres://u:p@10.0.0.5:5432/reporting'            # a DB elsewhere
+infra attach-db shop-api pr-7 --own                         # back to its own DB (it was kept)
+
+infra overrides                                             # what's overridden right now (passwords masked)
+```
+
+Safety rails:
+
+| Rule | Why |
+|---|---|
+| Any prod target needs `--allow-prod` | A preview writing to prod data is the classic disaster |
+| `MIGRATE_CMD` is **skipped** on a database the environment doesn't own (add `--migrate` to allow) | A PR's migration must not alter staging's or someone else's schema |
+| `destroy` only ever drops the environment's **own** database | Shared and external databases are never dropped |
+| `destroy` refuses while another environment borrows its database | Repoint the borrowers first (`--own`) |
+| Pinned frontends are never moved by automatic relinking | Your choice wins until you set `--auto` |
+| External DB passwords are stored in `/var/lib/infra/overrides` (0600) and masked in output | Prefer a dedicated least-privilege DB user |
+
 ## A deploy failed
 ```bash
 tail -n 100 /var/log/infra/deploy.log
