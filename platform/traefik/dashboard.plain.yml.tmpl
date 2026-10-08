@@ -1,0 +1,8 @@
+# Traefik dashboard router (TLS_MODE=external — TLS is terminated by the host's existing proxy).
+http:
+  routers:
+    traefik-dashboard:
+      rule: "Host(`traefik.${DOMAIN}`)"
+      entryPoints: [websecure]
+      service: api@internal
+      middlewares: [ops-auth, secure-headers]

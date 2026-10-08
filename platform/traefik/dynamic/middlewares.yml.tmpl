@@ -38,11 +38,3 @@ http:
       basicAuth:
         realm: "Preview environment"
         users: ["${PREVIEW_AUTH_USERS}"]
-
-  routers:
-    traefik-dashboard:
-      rule: "Host(`traefik.${DOMAIN}`)"
-      entryPoints: [websecure]
-      service: api@internal
-      middlewares: [ops-auth, secure-headers]
-      tls: {}

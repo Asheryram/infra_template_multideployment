@@ -7,6 +7,10 @@
 # Enable profiles with PLATFORM_PROFILES=metrics,local-registry in the inventory.
 #
 # Pin image versions (or digests) in the inventory once you're happy with them.
+#
+# Shared hosts: platform.sh refuses to start if a container/network name below or the
+# Traefik ports already belong to someone else, and stamps every service with
+# infra.managed=true (see $STATE_DIR/platform-managed.yml).
 name: infra-platform
 
 x-logging: &logging
@@ -38,8 +42,8 @@ services:
     restart: unless-stopped
     depends_on: [socket-proxy]
     ports:
-      - "80:80"
-      - "443:443"
+      - "${TRAEFIK_BIND:-0.0.0.0}:${TRAEFIK_HTTP_PORT:-80}:80"
+      - "${TRAEFIK_BIND:-0.0.0.0}:${TRAEFIK_HTTPS_PORT:-443}:443"
     volumes:
       - ${TRAEFIK_STATE_DIR:?run via 'infra platform up'}:/etc/traefik:ro
       - traefik-acme:/acme
@@ -95,7 +99,7 @@ services:
       - traefik.enable=true
       - traefik.http.routers.uptime.rule=Host(`status.${DOMAIN}`)
       - traefik.http.routers.uptime.entrypoints=websecure
-      - traefik.http.routers.uptime.tls=true
+      - traefik.http.routers.uptime.tls=${ROUTER_TLS:-true}
       - traefik.http.routers.uptime.middlewares=secure-headers@file
       - traefik.http.services.uptime.loadbalancer.server.port=3001
 
@@ -108,6 +112,7 @@ services:
     environment:
       DOCKER_HOST: tcp://socket-proxy:2375
       DOZZLE_NO_ANALYTICS: "true"
+      DOZZLE_FILTER: label=infra.managed=true     # only our containers, never other users' logs
     networks: [proxy, socket]
     mem_limit: 128m
     logging: *logging
@@ -115,7 +120,7 @@ services:
       - traefik.enable=true
       - traefik.http.routers.dozzle.rule=Host(`logs.${DOMAIN}`)
       - traefik.http.routers.dozzle.entrypoints=websecure
-      - traefik.http.routers.dozzle.tls=true
+      - traefik.http.routers.dozzle.tls=${ROUTER_TLS:-true}
       - traefik.http.routers.dozzle.middlewares=ops-auth@file,secure-headers@file
       - traefik.http.services.dozzle.loadbalancer.server.port=8080
 
@@ -187,7 +192,7 @@ services:
       - traefik.enable=true
       - traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN}`)
       - traefik.http.routers.grafana.entrypoints=websecure
-      - traefik.http.routers.grafana.tls=true
+      - traefik.http.routers.grafana.tls=${ROUTER_TLS:-true}
       - traefik.http.routers.grafana.middlewares=secure-headers@file
       - traefik.http.services.grafana.loadbalancer.server.port=3000
 

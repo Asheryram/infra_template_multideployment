@@ -6,6 +6,8 @@ G=$DEPLOY_USER
 
 # Config: /etc/infra is root-owned, readable by the deploy group only.
 install -d -m 750 -o root -g "$G" /etc/infra /etc/infra/secrets
+echo "Created by infra bootstrap ($INFRA_ROOT). Preflight uses this to recognise our own files." \
+  > /etc/infra/.managed-by-infra-template
 install -m 640 -o root -g "$G" "$INVENTORY_FILE" /etc/infra/infra.env
 printf "\nINFRA_ROOT='%s'\n" "$INFRA_ROOT" >> /etc/infra/infra.env
 

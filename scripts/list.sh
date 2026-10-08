@@ -17,7 +17,7 @@ for meta in "$DEPLOY_ROOT"/$filter/*/meta.env; do
   (
     set +u
     . "$meta"
-    running=$(docker ps -q --filter "label=com.docker.compose.project=$APP-$ENV_NAME" | wc -l)
+    running=$(docker ps -q --filter "label=com.docker.compose.project=$(stack_name "$APP" "$ENV_NAME")" | wc -l)
     deployed=$(date -d "@$DEPLOYED_AT" '+%Y-%m-%d %H:%M')
     # shellcheck disable=SC2059
     printf "$fmt" "$APP" "$ENV_NAME" "$TYPE" "$running" "${BRANCH:0:24}" "${TAG:0:18}" "$deployed" "$URL"

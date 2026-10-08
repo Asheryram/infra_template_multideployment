@@ -1,0 +1,9 @@
+# Traefik dashboard router (TLS_MODE=letsencrypt|selfsigned).
+http:
+  routers:
+    traefik-dashboard:
+      rule: "Host(`traefik.${DOMAIN}`)"
+      entryPoints: [websecure]
+      service: api@internal
+      middlewares: [ops-auth, secure-headers]
+      tls: {}

@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
-# Base packages, timezone, automatic security updates, swap, kernel tuning.
+# Packages we need. Dedicated hosts additionally get upgrades, timezone, unattended
+# security updates, swap and kernel tuning — shared hosts never do (those belong to
+# whoever already runs the server).
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get update -q
-apt-get -yq upgrade
-apt-get -yq install \
-  ca-certificates curl gnupg jq gettext-base openssl apache2-utils \
-  unattended-upgrades apt-listchanges \
-  ufw fail2ban python3-systemd \
-  logrotate cron rsync restic \
-  htop ncdu git
+need=(ca-certificates curl gnupg jq gettext-base openssl apache2-utils iproute2 logrotate cron rsync restic git)
+if [[ ${HOST_MODE:-shared} == dedicated ]]; then
+  need+=(unattended-upgrades apt-listchanges ufw fail2ban python3-systemd htop ncdu)
+fi
 
+missing=()
+for p in "${need[@]}"; do dpkg -s "$p" &>/dev/null || missing+=("$p"); done
+if (( ${#missing[@]} )); then
+  apt-get update -q
+  # --no-upgrade: never bump packages that are already installed (other apps may depend on them)
+  # --no-install-recommends: recommended extras can hook into existing services
+  #   (e.g. restic → javascript-common → enables a config in an existing Apache)
+  apt-get -yq install --no-upgrade --no-install-recommends "${missing[@]}"
+fi
+
+if [[ ${HOST_MODE:-shared} != dedicated ]]; then
+  echo "base OK (shared host: installed only missing packages: ${missing[*]:-none})"
+  exit 0
+fi
+
+apt-get -yq upgrade
 timedatectl set-timezone "${TIMEZONE:-UTC}"
 
 # Security updates only (Ubuntu's default origins); Docker's repo is not auto-upgraded.
@@ -47,4 +61,4 @@ net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 EOF
 sysctl --system >/dev/null
-echo "base OK"
+echo "base OK (dedicated host)"

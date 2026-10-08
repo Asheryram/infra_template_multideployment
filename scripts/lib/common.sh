@@ -55,6 +55,16 @@ load_infra_env() {
   : "${PREVIEW_AUTH_ENABLED:=true}"
   : "${PG_CONTAINER:=infra-postgres}"
   : "${DISK_ALERT_PCT:=80}"
+  : "${HOST_MODE:=shared}"
+  : "${STACK_PREFIX:=infra}"
+  : "${TRAEFIK_BIND:=0.0.0.0}"
+  : "${TRAEFIK_HTTP_PORT:=80}"
+  : "${TRAEFIK_HTTPS_PORT:=443}"
+  # TLS_MODE=external: the host's existing proxy terminates TLS and forwards plain HTTP to Traefik.
+  if [[ $TLS_MODE == external ]]; then ROUTER_TLS=false; else ROUTER_TLS=true; fi
+  # Public URLs need the port when Traefik can't have 443 (e.g. https://shop.example.com:8443).
+  URL_PORT_SUFFIX=""
+  if [[ $TLS_MODE != external && $TRAEFIK_HTTPS_PORT != 443 ]]; then URL_PORT_SUFFIX=":$TRAEFIK_HTTPS_PORT"; fi
   set +a
 }
 
@@ -84,8 +94,20 @@ validate_name() {
 
 is_preview() { [[ $1 == pr-* ]]; }
 env_class()  { case $1 in pr-*) echo preview ;; *) echo "$1" ;; esac; }
-stack_name() { echo "$1-$2"; }
+# Compose project name. The prefix keeps us clear of other people's projects on a shared host.
+stack_name() { echo "$STACK_PREFIX-$1-$2"; }
 stack_dir()  { echo "$DEPLOY_ROOT/$1/$2"; }
+
+# Every container we create carries this label; nothing without it is ever touched.
+MANAGED_LABEL="infra.managed=true"
+
+# IDs of containers in compose project $1 that we did NOT create.
+foreign_in_project() {
+  local id
+  for id in $(docker ps -aq --filter "label=com.docker.compose.project=$1"); do
+    if [[ $(docker inspect -f '{{index .Config.Labels "infra.managed"}}' "$id") != true ]]; then echo "$id"; fi
+  done
+}
 
 # Postgres-safe identifier: shop-api + pr-42 → shop_api_pr_42
 db_ident() {
@@ -162,6 +184,18 @@ relink_frontends() {
     log "relinking frontend $app/$env (branch '$branch' → backend $backend)"
     run_clean "$INFRA_ROOT/scripts/deploy.sh" --app "$app" --env "$env" --redeploy --no-pull \
       || warn "relink of $app/$env failed"
+  done
+}
+
+# Remember images that weren't on the host before we pulled them — cleanup only ever
+# removes images from this list, never anything another user pulled.
+record_owned_images() {
+  local img
+  mkdir -p "$STATE_DIR"
+  for img in "$@"; do
+    if ! docker image inspect "$img" >/dev/null 2>&1; then
+      echo "$(date +%s) $img" >> "$STATE_DIR/owned-images"
+    fi
   done
 }
 

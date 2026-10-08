@@ -30,10 +30,11 @@ for c in infra-traefik infra-postgres; do
   else check "$c" bad "platform container $c is NOT running — run 'infra platform up'"; fi
 done
 
-unhealthy=$(docker ps --filter health=unhealthy --format '{{.Names}}' | paste -sd, -)
+# Only our containers — other people's apps on this host are not ours to alert on.
+unhealthy=$(docker ps --filter "label=$MANAGED_LABEL" --filter health=unhealthy --format '{{.Names}}' | paste -sd, -)
 if [[ -z $unhealthy ]]; then check unhealthy ok; else check unhealthy bad "unhealthy containers: $unhealthy"; fi
 
-restarting=$(docker ps --filter status=restarting --format '{{.Names}}' | paste -sd, -)
+restarting=$(docker ps --filter "label=$MANAGED_LABEL" --filter status=restarting --format '{{.Names}}' | paste -sd, -)
 if [[ -z $restarting ]]; then check restarting ok; else check restarting bad "crash-looping containers: $restarting"; fi
 
 if [[ -f /var/run/reboot-required ]]; then check reboot bad "reboot required after security updates"; else check reboot ok; fi

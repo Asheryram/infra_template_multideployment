@@ -1,0 +1,52 @@
+# Traefik static config — TLS_MODE=external (shared host whose existing nginx/apache/caddy
+# already owns 80/443). That proxy terminates TLS for *.${DOMAIN} and forwards plain HTTP to
+# TRAEFIK_BIND:TRAEFIK_HTTPS_PORT (container port 443 below). Bind to 127.0.0.1 so only
+# the local proxy can reach it; forwarded headers are then safe to trust.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  fields:
+    headers:
+      defaultMode: drop
+
+api:
+  dashboard: true
+
+ping: {}
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addServicesLabels: true
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"           # plain HTTP from the outer proxy, despite the name
+    forwardedHeaders:
+      insecure: true
+    transport:
+      respondingTimeouts:
+        readTimeout: 120s
+        writeTimeout: 120s
+        idleTimeout: 180s
+  metrics:
+    address: ":8082"
+
+providers:
+  docker:
+    endpoint: "tcp://socket-proxy:2375"
+    exposedByDefault: false
+    network: infra_proxy
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true

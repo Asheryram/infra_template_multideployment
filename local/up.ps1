@@ -15,7 +15,7 @@
 param(
     [string]$Name = 'fake-vps',
     [int]$Cpus = 2,
-    [string]$Memory = '4G',
+    [string]$Memory = '3G',
     [string]$Disk = '30G',
     [string]$Image = '24.04'
 )
@@ -69,9 +69,11 @@ Write-Host "DOMAIN:  $domain   (written to inventory\local.env)"
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  multipass shell $Name"
+Write-Host "  sudo bash /opt/infra/local/simulate-existing.sh       # pretend other apps already live here"
 Write-Host "  sudo bash /opt/infra/bootstrap/install.sh /opt/infra/inventory/local.env"
 Write-Host "  sudo -u deploy infra platform up"
 Write-Host "  sudo -u deploy bash /opt/infra/local/smoke-test.sh"
+Write-Host "  sudo bash /opt/infra/local/verify-isolation.sh        # prove they were not touched"
 Write-Host ""
 Write-Host "Then open https://traefik.$domain  (self-signed: accept the browser warning)"
 Write-Host "If the VM IP changes after a host reboot, re-run this script, then in the VM:"

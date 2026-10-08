@@ -13,6 +13,8 @@ KEEP=0; [[ ${1:-} == --keep ]] && KEEP=1
 EX=/opt/infra/local/examples
 set -a; . /etc/infra/infra.env; set +a
 AUTH=${PREVIEW_AUTH_PLAIN:-preview:preview}
+# port suffix when Traefik is not on 443 (e.g. a shared host where 443 is taken)
+S=""; if [[ ${TLS_MODE:-selfsigned} != external && ${TRAEFIK_HTTPS_PORT:-443} != 443 ]]; then S=":$TRAEFIK_HTTPS_PORT"; fi
 pass=0; fail=0
 
 ok()   { echo "  PASS  $*"; pass=$((pass + 1)); }
@@ -39,37 +41,37 @@ cleanup() {
 trap cleanup EXIT
 
 step "platform"
-expect_code 401 "https://traefik.$DOMAIN/"
-expect_code 200 "https://traefik.$DOMAIN/dashboard/" -u "${DASHBOARD_AUTH_PLAIN:-admin:admin}"
+expect_code 401 "https://traefik.$DOMAIN$S/"
+expect_code 200 "https://traefik.$DOMAIN$S/dashboard/" -u "${DASHBOARD_AUTH_PLAIN:-admin:admin}"
 
 step "monolith: staging (no auth) + preview (auth)"
 infra deploy --manifest "$EX/monolith" --env staging --tag smoke >/dev/null
 infra deploy --manifest "$EX/monolith" --env pr-4 --tag smoke --branch smoke/mono >/dev/null
-expect_code 200 "https://smoke-mono-staging.$DOMAIN/"
-expect_code 401 "https://smoke-mono-pr-4.$DOMAIN/"
-expect_code 200 "https://smoke-mono-pr-4.$DOMAIN/" -u "$AUTH"
+expect_code 200 "https://smoke-mono-staging.$DOMAIN$S/"
+expect_code 401 "https://smoke-mono-pr-4.$DOMAIN$S/"
+expect_code 200 "https://smoke-mono-pr-4.$DOMAIN$S/" -u "$AUTH"
 if infra db list | grep -q smoke_mono_pr_4; then ok "database smoke_mono_pr_4 exists"; else bad "database smoke_mono_pr_4 missing"; fi
 
 step "split: web + api in one stack"
 infra deploy --manifest "$EX/split" --env pr-3 --tag smoke --branch smoke/split >/dev/null
-expect_code 200 "https://smoke-split-pr-3.$DOMAIN/" -u "$AUTH"
-expect_code 200 "https://api-smoke-split-pr-3.$DOMAIN/"
-[[ $(meta smoke-split pr-3 UPSTREAM_API_URL) == "https://api-smoke-split-pr-3.$DOMAIN" ]] \
+expect_code 200 "https://smoke-split-pr-3.$DOMAIN$S/" -u "$AUTH"
+expect_code 200 "https://api-smoke-split-pr-3.$DOMAIN$S/"
+[[ $(meta smoke-split pr-3 UPSTREAM_API_URL) == "https://api-smoke-split-pr-3.$DOMAIN$S" ]] \
   && ok "web API_URL points at its own api" || bad "split API_URL wrong"
 
 step "frontend ↔ backend branch matching"
 infra deploy --manifest "$EX/backend" --env develop --tag smoke --branch develop >/dev/null
 infra deploy --manifest "$EX/frontend" --env pr-2 --tag smoke --branch feature/login >/dev/null
-[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-develop.$DOMAIN" ]] \
+[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-develop.$DOMAIN$S" ]] \
   && ok "no backend preview yet → falls back to develop" || bad "fallback: $(meta smoke-web pr-2 UPSTREAM_API_URL)"
 
 infra deploy --manifest "$EX/backend" --env pr-1 --tag smoke --branch feature/login >/dev/null
-[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-pr-1.$DOMAIN" ]] \
+[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-pr-1.$DOMAIN$S" ]] \
   && ok "backend preview on same branch → frontend relinked" || bad "relink: $(meta smoke-web pr-2 UPSTREAM_API_URL)"
-if infra env smoke-web pr-2 web | grep -q "API_URL=https://smoke-api-pr-1.$DOMAIN"; then ok "container env has new API_URL"; else bad "container env not updated"; fi
+if infra env smoke-web pr-2 web | grep -q "API_URL=https://smoke-api-pr-1.$DOMAIN$S"; then ok "container env has new API_URL"; else bad "container env not updated"; fi
 
 infra destroy --app smoke-api --env pr-1 >/dev/null
-[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-develop.$DOMAIN" ]] \
+[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-develop.$DOMAIN$S" ]] \
   && ok "backend preview destroyed → frontend back on develop" || bad "unlink: $(meta smoke-web pr-2 UPSTREAM_API_URL)"
 
 step "redeploy / rollback"
@@ -78,11 +80,20 @@ infra rollback smoke-mono staging >/dev/null
 [[ $(meta smoke-mono staging TAG) == smoke ]] && ok "rollback restored previous tag" || bad "rollback tag: $(meta smoke-mono staging TAG)"
 
 step "log rotation configured on containers"
-opts=$(docker inspect -f '{{json .HostConfig.LogConfig}}' smoke-mono-staging-app-1)
+opts=$(docker inspect -f '{{json .HostConfig.LogConfig}}' "${STACK_PREFIX:-infra}-smoke-mono-staging-app-1")
 [[ $opts == *max-size* ]] && ok "container log limits: $opts" || bad "no log limits on container"
+
+step "everything we created is labelled as ours"
+unlabelled=$(docker ps -a --filter "label=com.docker.compose.project" --format '{{.Names}}\t{{.Label "infra.managed"}}\t{{.Label "com.docker.compose.project"}}' \
+  | awk -F'\t' '$3 ~ /^(infra-|'"${STACK_PREFIX:-infra}"'-)/ && $2 != "true" {print $1}')
+[[ -z $unlabelled ]] && ok "all platform + app containers carry infra.managed=true" || bad "unlabelled: $unlabelled"
+
+step "housekeeping only touches our resources"
+infra cleanup >/dev/null && ok "infra cleanup ran" || bad "infra cleanup failed"
 
 echo
 infra list
 echo
 echo "passed: $pass   failed: $fail"
+echo "Now prove the existing workload was untouched:  sudo bash /opt/infra/local/verify-isolation.sh"
 (( fail == 0 ))

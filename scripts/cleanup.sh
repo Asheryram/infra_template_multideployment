@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nightly housekeeping (cron):
 #   1. destroy previews whose PR is closed (needs GH_TOKEN) or older than PREVIEW_TTL_DAYS
-#   2. prune unused Docker images, build cache, networks and anonymous volumes
+#   2. remove images WE pulled that are no longer used (never touches other users' images)
 #
 #   infra cleanup [--dry-run]
 SCRIPT_NAME=cleanup
@@ -45,14 +45,30 @@ for meta in "$DEPLOY_ROOT"/*/pr-*/meta.env; do
   fi
 done
 
-if (( DRY )); then
-  log "[dry-run] skipping docker prune"
-  exit 0
+# No global `docker * prune` — this host may run other people's containers.
+# We only remove images WE pulled (recorded in owned-images) that no container uses
+# and that we haven't pulled for PRUNE_IMAGES_DAYS. Our networks/volumes are already
+# removed by `compose down -v` in destroy.
+f="$STATE_DIR/owned-images"
+if [[ -f $f ]]; then
+  cutoff=$(( now - ${PRUNE_IMAGES_DAYS:-7} * 86400 ))
+  in_use=$(docker ps -a --format '{{.Image}}' | sort -u)
+  removed=0
+  : > "$f.tmp"
+  # newest record per image only
+  while read -r ts img; do
+    if grep -qxF "$img" <<<"$in_use" || (( ts > cutoff )); then echo "$ts $img" >> "$f.tmp"; continue; fi
+    if ! docker image inspect "$img" >/dev/null 2>&1; then continue; fi        # already gone
+    if (( DRY )); then
+      log "[dry-run] would remove image $img"; echo "$ts $img" >> "$f.tmp"
+    elif docker rmi "$img" >/dev/null 2>&1; then
+      log "removed image $img"; removed=$((removed + 1))
+    else
+      echo "$ts $img" >> "$f.tmp"
+    fi
+  done < <(sort -k1,1nr "$f" | awk '!seen[$2]++')
+  mv "$f.tmp" "$f"
+  log "removed $removed image(s) we owned"
 fi
 
-log "pruning docker"
-docker image prune -af --filter "until=${PRUNE_IMAGES_OLDER_THAN:-168h}" | tail -n1
-docker builder prune -af --filter "until=168h" | tail -n1 || true
-docker network prune -f >/dev/null
-docker volume prune -f | tail -n1           # anonymous volumes only (Docker >= 23)
 log "OK  disk now: $(df -h --output=pcent / | tail -1 | tr -d ' ') used"

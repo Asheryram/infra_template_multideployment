@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Prepare a fresh Ubuntu 22.04 / 24.04 server. Idempotent — safe to re-run after
+# Prepare an Ubuntu 22.04 / 24.04 server. Idempotent — safe to re-run after
 # changing the inventory or pulling a newer version of this repo.
+#
+# HOST_MODE (inventory) decides how much we may touch:
+#   shared     (default) server already runs other apps: we only add our own user, dirs,
+#              containers, cron file and (if ufw is active) allow rules. Nothing host-wide.
+#   dedicated  server is ours alone: also SSH hardening, firewall defaults, Docker daemon,
+#              journald, sysctl, swap, unattended upgrades.
+# Step 00 (preflight) runs first and stops before any change if it finds a collision.
 #
 #   sudo bash bootstrap/install.sh inventory/prod.env            all steps
 #   sudo bash bootstrap/install.sh inventory/prod.env 30 40      only steps 30 and 40
@@ -25,7 +32,7 @@ set -a
 . "$INVENTORY_FILE"
 set +a
 export GH_RUNNER_URL=${GH_RUNNER_URL:-$_runner_url} GH_RUNNER_TOKEN=${GH_RUNNER_TOKEN:-$_runner_token}
-export DEPLOY_USER=${DEPLOY_USER:-deploy} ADMIN_USER=${ADMIN_USER:-ubuntu}
+export DEPLOY_USER=${DEPLOY_USER:-deploy} ADMIN_USER=${ADMIN_USER:-ubuntu} HOST_MODE=${HOST_MODE:-shared}
 
 for step in "$INFRA_ROOT"/bootstrap/steps/[0-9]*.sh; do
   num=$(basename "$step" | cut -c1-2)

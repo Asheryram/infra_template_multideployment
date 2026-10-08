@@ -15,13 +15,14 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
     labels:
+      - infra.managed=true
       - infra.app=${APP}
       - infra.env=${ENV_NAME}
       - traefik.enable=true
       - traefik.docker.network=infra_proxy
       - traefik.http.routers.${STACK}-web.rule=Host(`${WEB_HOST}`)
       - traefik.http.routers.${STACK}-web.entrypoints=websecure
-      - traefik.http.routers.${STACK}-web.tls=true
+      - traefik.http.routers.${STACK}-web.tls=${ROUTER_TLS:-true}
       - traefik.http.routers.${STACK}-web.middlewares=${WEB_MIDDLEWARES}
       - traefik.http.routers.${STACK}-web.service=${STACK}-web
       - traefik.http.services.${STACK}-web.loadbalancer.server.port=${WEB_PORT}

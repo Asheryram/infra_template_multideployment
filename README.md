@@ -2,6 +2,8 @@
 
 Every repo gets **prod, staging, develop and a preview per pull request**, each with its own URL and its own database, on one VPS. App teams add two files to their repo; this repo runs everything else.
 
+**It's safe on a server that already runs other apps.** By default (`HOST_MODE=shared`) it never changes host-wide settings and never touches containers, images, volumes or databases it didn't create. See [docs/shared-host.md](docs/shared-host.md).
+
 ```
                        *.apps.example.com  →  server IP
                                  │
@@ -30,7 +32,7 @@ Every repo gets **prod, staging, develop and a preview per pull request**, each 
 | [.github/workflows/](.github/workflows/) | Reusable workflows app repos call (build, deploy, destroy) |
 | [app-kit/](app-kit/) | **Drag-and-drop folder for app repos**: manifest, CI workflow, Dockerfiles |
 | [local/](local/) | Multipass "fake VPS" + an end-to-end smoke test |
-| [docs/](docs/) | [Architecture](docs/architecture.md) · [Runbook](docs/runbook.md) |
+| [docs/](docs/) | [Architecture](docs/architecture.md) · [Runbook](docs/runbook.md) · [Shared host](docs/shared-host.md) |
 
 ## Project types
 
@@ -58,7 +60,7 @@ Anything else (Redis, workers, cron containers, Mongo) goes in the app's optiona
 
 ## Quick start A: test on your laptop (no VPS)
 
-Requires Multipass (already installed on this machine).
+Requires Multipass. **If Multipass/Hyper-V networking fails** (the VM shows `IPv4: N/A`, which is common on managed laptops), use the WSL2 variant instead: `.\local\wsl-up.ps1`. It creates a separate `fake-vps` distro. Then run `wsl -d fake-vps` and the same commands below (you're root, so `sudo` is optional). `wsl-reset.ps1` / `wsl-down.ps1` reset or remove it.
 
 ```powershell
 .\local\up.ps1                       # creates VM "fake-vps", mounts repo at /opt/infra, writes inventory/local.env
@@ -66,9 +68,11 @@ multipass shell fake-vps
 ```
 Inside the VM:
 ```bash
+sudo bash /opt/infra/local/simulate-existing.sh          # make the VM look like the live server: other apps, DB, firewall
 sudo bash /opt/infra/bootstrap/install.sh /opt/infra/inventory/local.env
 sudo -u deploy infra platform up
 sudo -u deploy bash /opt/infra/local/smoke-test.sh      # deploys every project type, checks routing/auth/DB/relinking
+sudo bash /opt/infra/local/verify-isolation.sh          # proves the "existing" apps were never touched
 ```
 Open `https://traefik.<vm-ip-dashed>.sslip.io` (self-signed cert, accept the warning; login `admin/admin`).
 
@@ -85,7 +89,7 @@ Open `https://traefik.<vm-ip-dashed>.sslip.io` (self-signed cert, accept the war
    sudo bash /opt/infra/bootstrap/install.sh /opt/infra/inventory/vps-1.env
    sudo nano /etc/infra/traefik.env              # DNS API token for the wildcard cert
    sudo nano /etc/infra/platform.secrets.env     # registry token, restic, GH_TOKEN
-   sudo -u deploy infra platform up
+   sudo -u infradeploy infra platform up      # your DEPLOY_USER
    ```
 4. Self-hosted runner, so CI can deploy without SSH. Get a token under Org → Settings → Actions → Runners → New:
    ```bash
@@ -114,10 +118,11 @@ More in the [runbook](docs/runbook.md).
 ## Built-in server hygiene
 
 - **Logs**: Docker json-file 3×10 MB per container, journald capped at 500 MB, `/var/log/infra` rotated daily for 14 days
-- **Disk**: nightly prune of images older than 7 days, build cache, networks and anonymous volumes. Alert at 80%
+- **Disk**: nightly removal of images *we* pulled that are no longer used (never a global prune). Alert at 80%
 - **Previews**: capped at `MAX_PREVIEWS`, removed on PR close (via CI, and nightly via the GitHub API), expire after `PREVIEW_TTL_DAYS`
 - **Isolation**: memory/CPU/pid limits on every container. Postgres is on an internal network. Traefik reads Docker through a read-only socket proxy
-- **Security**: SSH keys only, no root login, ufw (22/80/443 only), fail2ban, unattended security upgrades, `no-new-privileges`, and basic-auth on previews and ops tools
+- **Security**: `no-new-privileges` on every container, a read-only Docker socket proxy, and basic-auth on previews and ops tools. On `HOST_MODE=dedicated` servers it also sets SSH keys only, no root login, ufw (22/80/443 only), fail2ban and unattended security upgrades
+- **Isolation**: everything is labelled `infra.managed=true` and prefixed `infra-`. Preflight checks refuse on any port, name or user collision
 - **Backups**: nightly `pg_dump` of every non-preview DB plus `/etc/infra`, pushed off-server with restic
 - **Alerts**: disk, memory, crash-looping or unhealthy containers, platform down, and failed deploys/migrations/backups go to your Slack/Discord/Teams webhook
 - **Audit**: every deploy is logged to `/var/log/infra/deploy.log` with who, what tag and which branch

@@ -16,6 +16,13 @@ id "$DEPLOY_USER" &>/dev/null || useradd --create-home --shell /bin/bash "$DEPLO
 usermod -aG docker "$DEPLOY_USER"   # note: docker group == root-equivalent; keep this account tight
 
 if [[ -n ${DEPLOY_SSH_PUBKEY:-} ]]; then add_key "$DEPLOY_USER" "$DEPLOY_SSH_PUBKEY"; fi
+
+# sshd is host-wide: on a shared server other people log in too (passwords, other users).
+if [[ ${HOST_MODE:-shared} != dedicated ]]; then
+  echo "users OK (shared host: sshd configuration left untouched)"
+  exit 0
+fi
+
 if [[ -n ${ADMIN_SSH_PUBKEY:-} ]]; then add_key "$ADMIN_USER" "$ADMIN_SSH_PUBKEY"; fi
 
 admin_home=$(getent passwd "$ADMIN_USER" | cut -d: -f6 || true)

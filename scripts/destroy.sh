@@ -46,9 +46,12 @@ if [[ -f $STACK_DIR/stack.env ]]; then
   log "stopping $STACK"
   "${COMPOSE[@]}" down --volumes --remove-orphans --timeout 30 || warn "compose down reported errors"
 else
-  warn "no state for $STACK — removing anything labelled with its compose project"
+  # Only ever remove containers that carry BOTH our project name and our managed label.
+  warn "no state for $STACK — removing only containers labelled $MANAGED_LABEL in that project"
+  foreign=$(foreign_in_project "$STACK")
+  [[ -z $foreign ]] || die "project '$STACK' contains containers we did not create ($foreign) — not touching it"
   label="label=com.docker.compose.project=$STACK"
-  docker ps -aq --filter "$label" | xargs -r docker rm -f
+  docker ps -aq --filter "$label" --filter "label=$MANAGED_LABEL" | xargs -r docker rm -f
   docker network ls -q --filter "$label" | xargs -r docker network rm
   docker volume ls -q --filter "$label" | xargs -r docker volume rm
   DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
