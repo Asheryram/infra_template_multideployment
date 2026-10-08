@@ -128,7 +128,7 @@ function renderEnvs() {
         ${rows.map(d => {
           const ov = d.OVERRIDES || {}, api = d.UPSTREAM_API_URL;
           return `<tr>
-            <td><span class="dot ${d.STATE}"></span>${envBadge(d.ENV_NAME)}${d.STATE === 'blocked' ? '<span class="chip">blocked</span>' : ''}${d.MISSING?.length && d.STATE !== 'blocked' ? `<span class="chip">${d.MISSING.length} missing</span>` : ''}</td>
+            <td><span class="dot ${d.STATE}"></span>${envBadge(d.ENV_NAME)}${d.STATE === 'blocked' ? '<span class="chip">blocked</span>' : ''}${d.MISSING?.length && d.STATE !== 'blocked' ? `<span class="chip">${d.MISSING.length} missing</span>` : ''}${d.UPCOMING_MISSING?.length ? `<span class="chip" title="required by a newer branch: ${esc(d.UPCOMING_MISSING.join(', '))}">will miss ${d.UPCOMING_MISSING.length}</span>` : ''}</td>
             <td>${hostLink(d.URL)}${d.API_URL && d.API_URL !== d.URL ? '<br>' + hostLink(d.API_URL) : ''}</td>
             <td class="mono">${esc(d.BRANCH || '—')}<br><span class="muted">${esc(d.TAG || '')}</span></td>
             <td>${api ? hostLink(api) : '<span class="muted">—</span>'}${ov.API_TARGET || ov.API_URL ? '<span class="chip">pinned</span>' : ''}<br><span class="muted">${esc(d.UPSTREAM_SOURCE || '')}</span></td>
@@ -270,9 +270,11 @@ async function renderVarsFor(app) {
   const envs = sortEnvs(STATE.deployments.filter(d => d.APP === app));
   const scopes = new Set(['common', 'preview', 'develop', 'staging', 'prod', ...envs.map(d => d.ENV_NAME), ...Object.keys(j.files)]);
   const missing = envs.filter(d => d.MISSING?.length);
+  const upcoming = envs.filter(d => d.UPCOMING_MISSING?.length);
   const label = s => s === 'common' ? 'all environments' : s === 'preview' ? 'all previews' : s.includes('.') ? `${s.split('.')[0]} · ${s.split('.')[1]} only` : s;
   $('#varBody').innerHTML = `
     ${missing.length ? `<div style="padding:0 16px"><div class="banner"><b>Missing required variables</b><br>${missing.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
+    ${upcoming.length ? `<div style="padding:8px 16px 0"><div class="banner"><b>Will be missing once newer code reaches them</b> (a PR requires these keys)<br>${upcoming.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.UPCOMING_MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
     <div style="padding:12px 16px"><div class="row">
       <select id="nScope">${[...scopes].map(s => `<option value="${esc(s)}">${esc(label(s))}</option>`).join('')}</select>
       <select id="nComp"><option value="">all components</option><option value=".api">api only</option><option value=".web">web only</option><option value=".app">app only</option></select>

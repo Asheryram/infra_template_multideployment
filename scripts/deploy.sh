@@ -42,8 +42,8 @@ if (( REDEPLOY )); then
   [[ -n $APP ]] || die "redeploy/rollback need --app"
   validate_name app "$APP"
   META="$(stack_dir "$APP" "$ENV_NAME")/meta.env"
-  # A first deploy that was blocked (missing variables) has no meta yet — retry from its status.
-  if [[ ! -f $META && -f $(stack_dir "$APP" "$ENV_NAME")/status.env ]]; then META="$(stack_dir "$APP" "$ENV_NAME")/status.env"; fi
+  # A blocked deploy (missing variables) is the newest intent: retry ITS tag, not the one still live.
+  if [[ -f $(stack_dir "$APP" "$ENV_NAME")/status.env && $ROLLBACK -eq 0 ]]; then META="$(stack_dir "$APP" "$ENV_NAME")/status.env"; fi
   [[ -f $META ]] || die "no existing deployment $APP/$ENV_NAME"
   if (( ROLLBACK )); then
     TAG=$(meta_get "$META" PREV_TAG)
@@ -377,7 +377,11 @@ registry_login
 if (( PULL )); then
   mapfile -t stack_images < <("${COMPOSE[@]}" config --images)
   record_owned_images "${stack_images[@]}"
-  "${COMPOSE[@]}" pull --quiet
+  # Tags are immutable (sha-…), so an image already on the host is the right one even if the
+  # registry is unreachable. A truly missing image still fails at `up`.
+  if ! "${COMPOSE[@]}" pull --quiet 2>/dev/null; then
+    warn "pull failed — continuing with images already on this host"
+  fi
 fi
 
 if [[ -n ${MIGRATE_CMD:-} && $DB_MODE != own && ${OV_DB_MIGRATE:-false} != true ]]; then
@@ -399,6 +403,22 @@ if ! "${COMPOSE[@]}" up -d --remove-orphans --wait --wait-timeout "${DEPLOY_WAIT
   alert "deploy FAILED for $STACK ($TAG)"
   die "containers did not become healthy within ${DEPLOY_WAIT_TIMEOUT:-180}s"
 fi
+
+# Healthy containers aren't reachable until Traefik has picked them up (event + reload, ~1-3 s).
+# Ask Traefik itself — from inside its container, so this works from the CLI, CI runner and console
+# alike — until the host stops returning Traefik's "no route" 404. 401 (preview auth) counts as routed.
+wait_routed() {
+  local host=$1 scheme=https i out
+  if [[ $ROUTER_TLS != true ]]; then scheme=http; fi
+  for i in $(seq 1 30); do
+    if out=$(docker exec infra-traefik wget -q -O /dev/null --no-check-certificate \
+               --header "Host: $host" "$scheme://127.0.0.1:443/" 2>&1); then return 0; fi
+    [[ $out == *" 404"* ]] || return 0
+    sleep 1
+  done
+  warn "Traefik still answers 404 for $host after 30s — the app may 404 on '/', or routing is broken"
+}
+for comp in "${COMPONENTS[@]}"; do wait_routed "${HOST[$comp]}"; done
 
 # ----------------------------------------------------------------------------- record
 

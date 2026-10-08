@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>demo-web</title>
+<script src="/env.js"></script>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #1d2330; }
+  h1 { font-size: 22px; } .box { border: 1px solid #e4e7ec; border-radius: 10px; padding: 14px 18px; margin: 14px 0; }
+  .k { color: #667085; display: inline-block; width: 150px; } code { background: #f2f4f7; padding: 1px 6px; border-radius: 4px; }
+  .ok { color: #12b76a; } .bad { color: #f04438; }
+</style>
+</head>
+<body>
+<h1>demo-web <span id="ver"></span></h1>
+<div class="box">
+  <div><span class="k">This frontend</span><code id="fe-env"></code> branch <code id="fe-branch"></code></div>
+  <div><span class="k">Calls API</span><code id="api-url"></code></div>
+</div>
+<div class="box" id="api">Calling the API…</div>
+<p style="color:#667085">If the API box shows a network error, open the API URL once in this browser and accept its certificate (self-signed in local tests).</p>
+<script>
+  const E = window.__ENV__ || {};
+  const set = (id, v) => document.getElementById(id).textContent = v || '—';
+  set('ver', 'web v1'); set('fe-env', E.APP_ENV); set('fe-branch', E.GIT_BRANCH); set('api-url', E.API_URL);
+  const box = document.getElementById('api');
+  if (!E.API_URL) { box.innerHTML = '<span class="bad">No API_URL configured</span>'; }
+  else fetch(E.API_URL + '/').then(r => r.json()).then(j => {
+    box.innerHTML = `
+      <div><span class="k">API answered</span><b class="ok">${j.service} ${j.version}</b> — ${j.message}</div>
+      <div><span class="k">API environment</span><code>${j.env}</code> branch <code>${j.branch}</code> commit <code>${j.commit}</code></div>
+      <div><span class="k">API database</span>${j.db.ok ? `<code>${j.db.database}</code> on <code>${j.db.host}</code> · visits <b>${j.db.visits}</b>` : `<span class="bad">${j.db.error}</span>`}</div>
+      <div><span class="k">NEW_FEATURE_KEY</span>${j.feature.new_feature_key_set ? '<span class="ok">set</span>' : '<span class="bad">not set</span>'}</div>`;
+  }).catch(e => box.innerHTML = `<span class="bad">Network error: ${e.message}</span>`);
+</script>
+</body>
+</html>

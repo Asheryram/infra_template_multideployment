@@ -76,6 +76,13 @@ sudo bash /opt/infra/local/verify-isolation.sh          # proves the "existing" 
 ```
 Open `https://traefik.<vm-ip-dashed>.sslip.io` (self-signed cert, accept the warning; login `admin/admin`).
 
+**The full lifecycle story test** has two real apps (`demo-api` + `demo-web`) and a GitHub simulator using real git branches. It walks develop → prod → frontend PR → backend PR on the same branch → a feature that needs a new secret (blocked, then fixed in the console) → bad release and rollback → DevOps rewiring → merge → release → close, with **47 assertions**:
+```bash
+sudo bash /opt/infra/local/e2e/run.sh            # ~5 min, cleans up after itself
+sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with URLs to open in the browser
+```
+`local/e2e/gh-sim.sh` can also be driven by hand (`init`, `branch`, `commit`, `push`, `pr-open`, `pr-sync`, `pr-close --merge`, `merge`).
+
 `.\local\reset.ps1` rolls the VM back to fresh Ubuntu, so you can prove the bootstrap works from scratch.
 
 ## Quick start B: real VPS

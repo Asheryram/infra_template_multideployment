@@ -123,8 +123,37 @@ def required_missing(s, app, env):
     return missing
 
 
+def available_keys(s, app, env, comp):
+    """Keys an environment WOULD get on its next deploy (repo env files + server variables)."""
+    cls = env_class(env)
+    repo = f"{s['deploy_root']}/{app}/{env}/deploy/env"
+    srv = f"{s['secrets_root']}/{app}"
+    files = [f"{repo}/common.env", f"{repo}/{cls}.env", f"{repo}/{cls}.{comp}.env",
+             f"{srv}/common.env", f"{srv}/{cls}.env", f"{srv}/{cls}.{comp}.env"]
+    if env != cls:
+        files += [f"{srv}/{env}.env", f"{srv}/{env}.{comp}.env"]
+    keys = set()
+    for f in files:
+        keys |= {k for k, v in read_env(f).items() if v}
+    return keys
+
+
+def required_by_app(s):
+    """{app: {(component, key)}} — union of REQUIRED_ENV across every deployed branch of the app.
+    A key a PR introduces shows up here before it reaches develop/staging/prod."""
+    req = {}
+    for man in glob.glob(f"{s['deploy_root']}/*/*/deploy/manifest.env"):
+        app = man.split("/")[-4]
+        m = read_env(man)
+        for comp in components(m.get("TYPE", "")):
+            for key in m.get(f"{comp.upper()}_REQUIRED_ENV", "").split():
+                req.setdefault(app, set()).add((comp, key))
+    return req
+
+
 def deployments(s):
     counts = running_counts()
+    required = required_by_app(s)
     rows = []
     for d in sorted(glob.glob(f"{s['deploy_root']}/*/*/")):
         app, env = d.rstrip("/").split("/")[-2:]
@@ -140,6 +169,10 @@ def deployments(s):
         m["OVERRIDES"] = {**overrides(s, app, "preview"), **overrides(s, app, env)} if env.startswith("pr-") \
             else overrides(s, app, env)
         m["HAS_OWN_DB"] = os.path.exists(f"{d}.db_password")
+        comps = components(m.get("TYPE", ""))
+        m["UPCOMING_MISSING"] = sorted(
+            f"{c}:{k}" for c, k in required.get(app, set())
+            if c in comps and f"{c}:{k}" not in m["MISSING"] and k not in available_keys(s, app, env, c))
         rows.append(m)
     return rows
 
