@@ -16,6 +16,27 @@ infra redeploy shop prod
 ```
 Repo-side non-secret config (`.deploy/env/*.env`) takes effect on the next CI deploy.
 
+## The console (web UI)
+
+`https://console.<domain>` (ops login, the `DASHBOARD_AUTH_*` credentials). It has three tabs:
+
+| Tab | What you do there |
+|---|---|
+| **Environments** | Every app and environment with open-links, status, branch/tag, which API it calls, which DB it uses, missing variables. **Manage** opens: API wiring, DB wiring, redeploy / restart / rollback / destroy, effective variables (masked), last 200 log lines |
+| **Variables** | Server-side variables per app and scope: *all environments* (`common`), a class (`preview`, `develop`, `staging`, `prod`), or one environment (`pr-12`), optionally limited to one component (`.api` / `.web` / `.app`). Saving shows which environments to redeploy |
+| **Activity** | Who did what (console audit log) interleaved with deploy logs |
+
+Everything the console does goes through the same `infra` CLI that CI uses, and it shares the deploy locks, so console, CLI and CI never fight. It runs as the deploy user, but it controls Docker, so treat the ops login like a root password: use a long password, and ideally allow it only from your VPN or IP.
+
+## A feature needs new variables
+
+1. The developer's PR adds the key to `<COMPONENT>_REQUIRED_ENV` in `.deploy/manifest.env`, and puts any non-secret default in `.deploy/env/`.
+2. The preview deploy is **blocked** (nothing changes, the old version keeps running). The console shows the environment as *blocked* with the missing keys, and an alert is sent.
+3. Console → **Variables** → app → scope `pr-12` (just this PR) or `preview` (all PRs) → add the key → **Retry deploy**.
+4. Before merge, add the key for `develop`, `staging` and `prod`. The banner on the Variables tab lists every environment still missing it.
+
+CLI equivalent: `sudo infra secrets edit <app> <scope>` then `infra redeploy <app> <env>`.
+
 ## Rewire environments by hand (DevOps overrides)
 
 CI and branch matching decide the default wiring. You can override it per environment, or for all of an app's previews with scope `preview`. Overrides survive CI redeploys, apply immediately, and are deleted with the environment.

@@ -32,6 +32,7 @@ http:
     ops-auth:
       basicAuth:
         users: ["${DASHBOARD_AUTH_USERS}"]
+        headerField: X-Infra-User          # the console records who did what
 
     # Preview environments (web/app components).
     preview-auth:

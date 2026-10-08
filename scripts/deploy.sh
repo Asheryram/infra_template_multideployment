@@ -42,6 +42,8 @@ if (( REDEPLOY )); then
   [[ -n $APP ]] || die "redeploy/rollback need --app"
   validate_name app "$APP"
   META="$(stack_dir "$APP" "$ENV_NAME")/meta.env"
+  # A first deploy that was blocked (missing variables) has no meta yet — retry from its status.
+  if [[ ! -f $META && -f $(stack_dir "$APP" "$ENV_NAME")/status.env ]]; then META="$(stack_dir "$APP" "$ENV_NAME")/status.env"; fi
   [[ -f $META ]] || die "no existing deployment $APP/$ENV_NAME"
   if (( ROLLBACK )); then
     TAG=$(meta_get "$META" PREV_TAG)
@@ -288,10 +290,46 @@ for comp in "${COMPONENTS[@]}"; do
       cat_existing \
         "$DEPLOY_DIR/env/common.env" "$DEPLOY_DIR/env/$CLASS.env" "$DEPLOY_DIR/env/$CLASS.$comp.env" \
         "$SECRETS_ROOT/$APP/common.env" "$SECRETS_ROOT/$APP/$CLASS.env" "$SECRETS_ROOT/$APP/$CLASS.$comp.env"
+      # Most specific: variables for exactly this environment (e.g. pr-12.env), set from the console.
+      if [[ $ENV_NAME != "$CLASS" ]]; then
+        cat_existing "$SECRETS_ROOT/$APP/$ENV_NAME.env" "$SECRETS_ROOT/$APP/$ENV_NAME.$comp.env"
+      fi
     } > "$out.tmp"
   )
   mv "$out.tmp" "$out"
 done
+
+# ----------------------------------------------------------------------------- required variables
+# Manifest: <COMPONENT>_REQUIRED_ENV="STRIPE_KEY NEW_FEATURE_URL". Missing or empty → the deploy is
+# blocked before anything changes, and the console shows exactly what to add where.
+
+missing_all=()
+for comp in "${COMPONENTS[@]}"; do
+  v="${comp^^}_REQUIRED_ENV"
+  for key in ${!v:-}; do
+    if ! grep -qE "^${key}=.+" "$STACK_DIR/runtime/$comp.env"; then missing_all+=("$comp:$key"); fi
+  done
+done
+if (( ${#missing_all[@]} )); then
+  tmp="$STACK_DIR/status.env.tmp"; : > "$tmp"
+  write_kv "$tmp" STATUS blocked
+  write_kv "$tmp" MISSING "${missing_all[*]}"
+  write_kv "$tmp" APP "$APP"
+  write_kv "$tmp" ENV_NAME "$ENV_NAME"
+  write_kv "$tmp" TYPE "$TYPE"
+  write_kv "$tmp" TAG "$TAG"
+  write_kv "$tmp" BRANCH "$BRANCH"
+  write_kv "$tmp" COMMIT "$COMMIT"
+  write_kv "$tmp" BLOCKED_AT "$(date +%s)"
+  mv "$tmp" "$STACK_DIR/status.env"
+  alert "deploy BLOCKED for $STACK: missing ${missing_all[*]}"
+  scopes="'$ENV_NAME'"
+  if [[ $ENV_NAME != "$CLASS" ]]; then scopes+=" (this PR only) or '$CLASS' (all previews)"; fi
+  die "missing required variables: ${missing_all[*]}
+       Add them in the console (https://console.$DOMAIN$URL_PORT_SUFFIX → Variables → $APP, scope $scopes)
+       or: sudo infra secrets edit $APP $CLASS   — then retry: infra redeploy $APP $ENV_NAME"
+fi
+rm -f "$STACK_DIR/status.env"
 
 # ----------------------------------------------------------------------------- compose inputs
 

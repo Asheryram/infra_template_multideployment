@@ -5,7 +5,10 @@ set -Eeuo pipefail
 G=$DEPLOY_USER
 
 # Config: /etc/infra is root-owned, readable by the deploy group only.
-install -d -m 750 -o root -g "$G" /etc/infra /etc/infra/secrets
+install -d -m 750 -o root -g "$G" /etc/infra
+# secrets: group-writable so the console (runs as the deploy user) can manage variables
+install -d -m 2770 -o root -g "$G" /etc/infra/secrets
+find /etc/infra/secrets -mindepth 1 -type d -exec chmod 2770 {} + -o -type f -exec chmod 660 {} +
 echo "Created by infra bootstrap ($INFRA_ROOT). Preflight uses this to recognise our own files." \
   > /etc/infra/.managed-by-infra-template
 install -m 640 -o root -g "$G" "$INVENTORY_FILE" /etc/infra/infra.env

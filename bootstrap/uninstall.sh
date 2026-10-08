@@ -72,6 +72,8 @@ if [[ -f /opt/actions-runner/.runner ]]; then
   echo "  NOTE: also remove the runner in GitHub (Settings → Actions → Runners)"
 fi
 
+docker rmi infra-console:local >/dev/null 2>&1 || true
+
 echo "== files, user"
 rm -f /etc/cron.d/infra /etc/logrotate.d/infra /usr/local/bin/infra
 rm -rf "$DEPLOY_ROOT" "$STATE_DIR" /var/log/infra /run/lock/infra /etc/infra

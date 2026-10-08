@@ -50,7 +50,7 @@ case $cmd in
   rollback) exec bash "$S/deploy.sh" --app "${1:?app}" --env "${2:?env}" --rollback "${@:3}" ;;
   destroy)  exec bash "$S/destroy.sh" "$@" ;;
   list|ls)  exec bash "$S/list.sh" "$@" ;;
-  logs|ps|restart|exec|config|env) exec bash "$S/stack.sh" "$cmd" "$@" ;;
+  logs|tail|ps|restart|exec|config|env) exec bash "$S/stack.sh" "$cmd" "$@" ;;
   link)      exec bash "$S/override.sh" link "$@" ;;
   attach-db) exec bash "$S/override.sh" attach-db "$@" ;;
   overrides) exec bash "$S/override.sh" list "$@" ;;

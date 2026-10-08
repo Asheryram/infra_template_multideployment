@@ -124,6 +124,40 @@ services:
       - traefik.http.routers.dozzle.middlewares=ops-auth@file,secure-headers@file
       - traefik.http.services.dozzle.loadbalancer.server.port=8080
 
+  # DevOps console: environments, variables, wiring, actions, audit trail. Same scripts as the CLI.
+  # It drives Docker (needs the real socket) — so it's ops-auth protected and audited.
+  console:
+    build: ./console
+    image: infra-console:local
+    container_name: infra-console
+    restart: unless-stopped
+    environment:
+      INFRA_ROOT: ${INFRA_ROOT}
+      INFRA_ENV_FILE: /etc/infra/infra.env
+      INFRA_SECRETS_FILE: /etc/infra/platform.secrets.env
+      RUN_UID: ${DEPLOY_UID:?run via 'infra platform up'}
+      RUN_GID: ${DEPLOY_GID:?run via 'infra platform up'}
+    volumes:
+      # identical paths inside and out, so the scripts behave exactly as on the host
+      - ${INFRA_ROOT}:${INFRA_ROOT}:ro
+      - /etc/infra:/etc/infra:ro
+      - ${SECRETS_ROOT}:${SECRETS_ROOT}
+      - ${DEPLOY_ROOT}:${DEPLOY_ROOT}
+      - ${STATE_DIR}:${STATE_DIR}
+      - ${LOG_DIR}:${LOG_DIR}
+      - ${LOCK_DIR}:${LOCK_DIR}                 # shares deploy locks with CLI + CI runner
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [proxy]
+    mem_limit: 256m
+    logging: *logging
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.console.rule=Host(`console.${DOMAIN}`)
+      - traefik.http.routers.console.entrypoints=websecure
+      - traefik.http.routers.console.tls=${ROUTER_TLS:-true}
+      - traefik.http.routers.console.middlewares=ops-auth@file,secure-headers@file
+      - traefik.http.services.console.loadbalancer.server.port=8000
+
   # --------------------------------------------------------------- profile: metrics
   prometheus:
     profiles: [metrics]

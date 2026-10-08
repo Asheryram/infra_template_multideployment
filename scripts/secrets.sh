@@ -5,7 +5,7 @@
 #                                            or <class>.<component>, e.g. prod.api
 #   sudo infra secrets list [app]
 #
-# Files live in $SECRETS_ROOT/<app>/<name>.env (root:deploy 0640) and are merged
+# Files live in $SECRETS_ROOT/<app>/<name>.env (root:deploy 0660) and are merged
 # into the container env on the next deploy. Apply now with: infra redeploy <app> <env>
 SCRIPT_NAME=secrets
 # shellcheck source=lib/common.sh
@@ -23,13 +23,13 @@ case $action in
     validate_name app "$app"
     [[ $name =~ ^[a-z0-9-]+(\.(app|web|api))?$ ]] || die "invalid name '$name'"
     dir="$SECRETS_ROOT/$app"; file="$dir/$name.env"
-    install -d -m 750 -o root -g "$DEPLOY_USER" "$SECRETS_ROOT" "$dir"
+    install -d -m 2770 -o root -g "$DEPLOY_USER" "$SECRETS_ROOT" "$dir"
     if [[ ! -f $file ]]; then
-      install -m 640 -o root -g "$DEPLOY_USER" /dev/null "$file"
+      install -m 660 -o root -g "$DEPLOY_USER" /dev/null "$file"
       printf '# Secrets for %s (%s). KEY=value, one per line, no quotes needed.\n' "$app" "$name" > "$file"
     fi
     "${EDITOR:-nano}" "$file"
-    chown root:"$DEPLOY_USER" "$file"; chmod 640 "$file"
+    chown root:"$DEPLOY_USER" "$file"; chmod 660 "$file"
     log "saved $file — apply with: infra redeploy $app <env>"
     ;;
   list)

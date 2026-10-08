@@ -22,6 +22,7 @@ load_stack "$app" "$env"
 
 case $action in
   logs)    "${COMPOSE[@]}" logs -f --tail 200 "$@" ;;
+  tail)    "${COMPOSE[@]}" logs --no-color --timestamps --tail "${1:-200}" ;;
   ps)      "${COMPOSE[@]}" ps -a ;;
   restart) "${COMPOSE[@]}" restart "$@" ;;
   config)  "${COMPOSE[@]}" config ;;

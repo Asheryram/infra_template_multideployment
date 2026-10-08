@@ -104,6 +104,9 @@ See [app-kit/README.md](app-kit/README.md). In short: copy `app-kit/.deploy/` an
 
 ## Day-to-day
 
+**In the browser:** `https://console.<domain>` lists every environment with links. From there you can set variables and secrets per environment, rewire API and DB, redeploy, roll back, destroy, and read logs and the audit trail ([runbook](docs/runbook.md#the-console-web-ui)). There's also `traefik.`, `logs.` and `status.<domain>`.
+
+**On the server:**
 ```bash
 infra list                          # everything deployed, with URLs
 infra logs shop pr-42               # or open https://logs.<domain>

@@ -52,9 +52,15 @@ Start from the example matching your project in [examples/](examples/):
 
 Use the **same branch name** in both repos (e.g. `feature/checkout`). The frontend preview then automatically talks to the backend preview from that branch. If there's no backend PR, it talks to `develop`. You don't need to coordinate merge order.
 
-## Secrets
+## Secrets and new variables
 
-Never commit them. Ask DevOps to add them. They're stored on the server per environment and merged in at deploy time. Non-secret config goes in `.deploy/env/<env>.env`.
+Never commit secrets. DevOps sets them in the infra console, per environment, and they're merged in at deploy time. Non-secret config goes in `.deploy/env/<env>.env`.
+
+**When your feature needs a new variable**, do this in the same PR:
+1. Non-secret value: add it to `.deploy/env/common.env`, or the per-env files.
+2. Secret: declare it as required in `.deploy/manifest.env`, e.g. `API_REQUIRED_ENV="STRIPE_SECRET_KEY NEW_FEATURE_KEY"`, and tell DevOps the key name.
+3. Until DevOps adds it, your preview deploy **stops with a clear message** ("missing required variables: api:NEW_FEATURE_KEY") instead of booting a broken app. Once it's added, DevOps hits *Retry deploy*.
+4. Before merging, DevOps also adds it for develop, staging and prod. The console flags any environment that's still missing it.
 
 ## Branch → environment
 

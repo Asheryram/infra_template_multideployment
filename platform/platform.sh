@@ -29,6 +29,10 @@ T="$STATE_DIR/traefik"
 MANAGED="$STATE_DIR/platform-managed.yml"
 export TRAEFIK_STATE_DIR="$T"
 export COMPOSE_PROFILES="${PLATFORM_PROFILES:-}"
+# The console container runs as the deploy user so its files match the CLI's ownership.
+DEPLOY_UID=$(id -u "$DEPLOY_USER"); DEPLOY_GID=$(id -g "$DEPLOY_USER")
+export DEPLOY_UID DEPLOY_GID INFRA_ROOT SECRETS_ROOT DEPLOY_ROOT STATE_DIR LOG_DIR LOCK_DIR
+mkdir -p "$LOCK_DIR" "$STATE_DIR/overrides"
 
 dc() {
   local files=(-f "$P/docker-compose.yml")
@@ -39,7 +43,7 @@ dc() {
 # ----------------------------------------------------------------------------- preflight
 # Refuse to start if anything we'd create already exists and belongs to someone else.
 
-PLATFORM_CONTAINERS=(infra-socket-proxy infra-traefik infra-postgres infra-uptime-kuma infra-dozzle
+PLATFORM_CONTAINERS=(infra-socket-proxy infra-traefik infra-postgres infra-uptime-kuma infra-dozzle infra-console
                      infra-prometheus infra-node-exporter infra-cadvisor infra-grafana infra-registry)
 PLATFORM_NETWORKS=(infra_proxy infra_data infra_socket infra_metrics)
 
@@ -166,7 +170,7 @@ case $action in
     write_managed_override
     new=$(sha256sum "$T/traefik.yml" | cut -d' ' -f1)
     old=$(cat "$T/.static.sha" 2>/dev/null || true)
-    dc up -d --remove-orphans --wait
+    dc up -d --build --remove-orphans --wait
     if [[ -n $old && $new != "$old" ]]; then
       log "Traefik static config changed — restarting traefik"
       dc restart traefik
@@ -177,6 +181,7 @@ case $action in
       log "Traefik listens on http://$TRAEFIK_BIND:$TRAEFIK_HTTPS_PORT — point your existing proxy's *.$DOMAIN at it"
     fi
     log "platform is up:"
+    log "  $scheme://console.$DOMAIN$URL_PORT_SUFFIX   (DevOps console, ops-auth)"
     log "  $scheme://traefik.$DOMAIN$URL_PORT_SUFFIX   (dashboard, ops-auth)"
     log "  $scheme://logs.$DOMAIN$URL_PORT_SUFFIX      (dozzle, ops-auth — shows only infra-managed containers)"
     log "  $scheme://status.$DOMAIN$URL_PORT_SUFFIX    (uptime-kuma)"
