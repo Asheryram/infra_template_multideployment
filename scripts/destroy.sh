@@ -71,6 +71,11 @@ fi
 
 rm -rf "$STACK_DIR"
 rm -f "$(overrides_file "$APP" "$ENV_NAME")"
+# Variables set for exactly this preview (pr-12.env, pr-12.api.env) die with it — PR numbers are never reused.
+# Long-lived scopes (common, preview, develop, staging, prod) are kept.
+if is_preview "$ENV_NAME"; then
+  rm -f "$SECRETS_ROOT/$APP/$ENV_NAME.env" "$SECRETS_ROOT/$APP/$ENV_NAME".*.env
+fi
 rmdir "$DEPLOY_ROOT/$APP" 2>/dev/null || true
 
 if is_preview "$ENV_NAME" && [[ -n $BRANCH && $TYPE != frontend ]]; then
