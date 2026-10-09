@@ -3,7 +3,7 @@ FROM docker:cli AS docker
 
 FROM python:3.12-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends bash jq openssl curl ca-certificates gettext-base util-linux procps \
+ && apt-get install -y --no-install-recommends bash git jq openssl curl ca-certificates gettext-base util-linux procps \
  && rm -rf /var/lib/apt/lists/*
 # Docker CLI + compose plugin, so the console runs the exact same scripts as the CLI and CI.
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
