@@ -20,8 +20,13 @@ APP=$(val APP_NAME); TYPE=$(val TYPE); IMG=$(val IMAGE_REPO)
 set -a; . /etc/infra/infra.env; set +a
 S=""; if [[ ${TLS_MODE:-selfsigned} != external && ${TRAEFIK_HTTPS_PORT:-443} != 443 ]]; then S=":$TRAEFIK_HTTPS_PORT"; fi
 export INFRA_WEBHOOK_URL="https://hooks.$DOMAIN$S/webhook"
+# Real GitHub keeps the secret as a repo secret. Locally this script runs ON the server, so it can
+# read the project's secret straight from the registry — register the project in the console and go.
 export INFRA_WEBHOOK_SECRET=${INFRA_WEBHOOK_SECRET:-$(cat "/root/.infra-secrets/$APP" 2>/dev/null || true)}
-[[ -n $INFRA_WEBHOOK_SECRET ]] || { echo "no secret for $APP — save it to /root/.infra-secrets/$APP (from 'infra project add')"; exit 1; }
+if [[ -z $INFRA_WEBHOOK_SECRET ]]; then
+  INFRA_WEBHOOK_SECRET=$(sed -nE "s/^SECRET='([0-9a-f]+)'$/\1/p" "${STATE_DIR:-/var/lib/infra}/projects/$APP.env" 2>/dev/null || true)
+fi
+[[ -n $INFRA_WEBHOOK_SECRET ]] || { echo "project $APP is not registered — add it in the console (Projects tab) first"; exit 1; }
 
 git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
 branch=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)

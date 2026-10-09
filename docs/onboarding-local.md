@@ -64,8 +64,8 @@ If Docker Desktop was restarted since last time, run `docker restart infra-traef
 Click **Add project**.
 - [ ] a box shows the webhook secret, with copy buttons
 
-**1.2** That box also shows a line like `mkdir -p /root/.infra-secrets && echo '…' > /root/.infra-secrets/shop-api`. **Copy it into the server shell** and run it. (With real GitHub, you'd instead give the team the two values as repo secrets.)
-- [ ] done → click **I've saved it**
+**1.2** With real GitHub, you'd now give the team the two values shown as repo secrets. **Locally there's nothing to copy**: the local "GitHub" (`ci-local.sh`) runs on the server and reads the secret from the registry itself.
+- [ ] click **I've saved it**
 
 **1.3** Repeat 1.1–1.2 for `shop-web` with repo `local/shop-web`.
 - [ ] both projects listed under *Registered projects*, with "none yet" running
@@ -271,8 +271,8 @@ for r in shop-api shop-web; do git -C "$P/$r" checkout -q develop; git -C "$P/$r
 |---|---|
 | Browser can't open any `…sslip.io:8443` page | Start Docker Desktop. Then run `docker restart infra-traefik infra-console` in the server shell |
 | Frontend says "Network error" / "unreachable" | Open that environment's **API URL** once in the browser and accept its certificate (local self-signed only) |
-| `no secret for shop-api` | Redo step 1.2. If you lost the secret: Projects → **Rotate secret** |
-| `rejected: HTTP 401` | The secret in `/root/.infra-secrets/<app>` doesn't match. Rotate and save it again |
+| `project shop-api is not registered` | Add it in the console → **Projects** (step 1.1) |
+| `rejected: HTTP 401` | A stale `/root/.infra-secrets/<app>` file overrides the registry: delete it |
 | `rejected: HTTP 403 … not registered` / `not allowed` | The repo or environment isn't allowed for that project. Projects → **Environments…** |
 | `missing required variables: …` | Expected when the manifest requires a key: add it in **Variables**, then **Retry deploy** |
 | `the stack violates the platform policy` | The repo's `compose.extra.yml` asked for something dangerous (ports, host mounts, privileges…), and the message lists what |

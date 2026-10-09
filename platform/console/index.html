@@ -333,8 +333,8 @@ async function renderProjects(reveal) {
        <tr><td>INFRA_WEBHOOK_URL</td><td class="mono">${esc(j.webhook_url)}</td><td><button class="btn" data-copy="${esc(j.webhook_url)}">Copy</button></td></tr>
        <tr><td>INFRA_WEBHOOK_SECRET</td><td class="mono">${esc(reveal.secret)}</td><td><button class="btn" data-copy="${esc(reveal.secret)}">Copy</button></td></tr>
      </table>
-     <p class="muted">Local testing with <span class="mono">ci-local.sh</span>? Save it in the server shell:
-       <span class="mono">mkdir -p /root/.infra-secrets && echo '${esc(reveal.secret)}' &gt; /root/.infra-secrets/${esc(reveal.app)}</span></p>
+     <p class="muted">Local testing with <span class="mono">ci-local.sh</span>? Nothing to do — it reads the secret from the registry. (Only needed if you run it elsewhere:
+       <span class="mono">echo '${esc(reveal.secret)}' &gt; /root/.infra-secrets/${esc(reveal.app)}</span>)</p>
      <p class="muted">Lost it? <b>Rotate secret</b> below issues a new one (the old one stops working).</p>
      <button class="btn primary" id="doneSecret">I've saved it</button></div></div>` : ''}
 

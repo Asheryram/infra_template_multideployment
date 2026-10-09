@@ -118,7 +118,7 @@ case $action in
     printf '%-24s %-34s %-30s %s\n' PROJECT REPO ENVS ENVIRONMENTS
     for f in "$PDIR"/*.env; do
       app=$(meta_get "$f" APP)
-      n=$(find "$DEPLOY_ROOT/$app" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+      n=$( { find "$DEPLOY_ROOT/$app" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true; } | wc -l)
       printf '%-24s %-34s %-30s %s\n' "$app" "$(meta_get "$f" REPO)" "$(meta_get "$f" ENVS)" "$n"
     done
     ;;
