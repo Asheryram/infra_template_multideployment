@@ -178,6 +178,11 @@ case $action in
     echo "$new" > "$T/.static.sha"
     # Recreated platform containers lose runtime network attachments — restore them.
     bash "$INFRA_ROOT/scripts/networks.sh" reconnect
+    # Start the GitOps watcher now that the platform (webhook endpoint) is up.
+    if systemctl is-enabled infra-gitops.service >/dev/null 2>&1; then
+      systemctl restart infra-gitops.service
+      log "GitOps watcher started (infra-gitops.service) — polls GitHub every 30s for all registered projects"
+    fi
     scheme=https
     if [[ $TLS_MODE == external ]]; then
       log "Traefik listens on http://$TRAEFIK_BIND:$TRAEFIK_HTTPS_PORT — point your existing proxy's *.$DOMAIN at it"

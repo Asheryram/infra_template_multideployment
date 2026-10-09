@@ -445,6 +445,7 @@ def projects(s):
             "app": app, "repo": p.get("REPO", ""), "envs": p.get("ENVS", ""),
             "prod_branch": p.get("PROD_BRANCH", "main"),
             "registry_user": p.get("REGISTRY_USER", ""), "has_registry_token": bool(p.get("REGISTRY_TOKEN")),
+            "has_gh_token": bool(p.get("GH_TOKEN")),
             "created_at": p.get("CREATED_AT", ""), "created_by": p.get("CREATED_BY", ""),
             "environments": sorted(os.path.basename(d.rstrip("/")) for d in glob.glob(f"{s['deploy_root']}/{app}/*/")),
         })
@@ -453,6 +454,17 @@ def projects(s):
 
 def webhook_url(s):
     return f"https://hooks.{s['domain']}{s['suffix']}/webhook"
+
+
+def gitops_status():
+    """Is the GitOps watcher running? Returns {running, pid}."""
+    pid_file = "/tmp/infra-gitops.pid"
+    try:
+        pid = int(open(pid_file).read().strip())
+        os.kill(pid, 0)   # signal 0 = just check existence
+        return {"running": True, "pid": pid}
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        return {"running": False, "pid": None}
 
 
 def webhook_job(s, headers, job_id):
@@ -575,7 +587,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.audit(s, "reveal", f"{app}/{env} {comp}:{key}")
                 return self.send(200, {"value": reveal_variable(s, app, env, comp, key)})
             if u.path == "/api/projects":
-                return self.send(200, {"projects": projects(s), "webhook_url": webhook_url(s)})
+                return self.send(200, {"projects": projects(s), "webhook_url": webhook_url(s),
+                                       "gitops": gitops_status()})
             if u.path == "/api/activity":
                 lines = tail(f"{s['log_dir']}/console.log", 100) + tail(f"{s['log_dir']}/deploy.log", 150)
                 lines = [ln for ln in lines if ln[:4].isdigit()]
@@ -602,22 +615,58 @@ class Handler(BaseHTTPRequestHandler):
         if not NAME.match(app):
             return self.send(400, {"error": "bad app"})
         try:
+            if u == "/api/gitops":
+                op = body.get("op", "")
+                interval = int(body.get("interval", 30))
+                pid_file = "/tmp/infra-gitops.pid"
+                watcher = os.path.join(INFRA_ROOT, "local", "watch-repo.sh")
+                if op == "start":
+                    st = gitops_status()
+                    if st["running"]:
+                        return self.send(200, {"ok": True, "output": f"already running (pid {st['pid']})"})
+                    log_path = "/tmp/infra-gitops.log"
+                    with open(log_path, "a") as lf:
+                        proc = subprocess.Popen(
+                            ["bash", watcher, "--interval", str(interval)],
+                            stdout=lf, stderr=lf, start_new_session=True)
+                    with open(pid_file, "w") as pf:
+                        pf.write(str(proc.pid))
+                    self.audit(s, "gitops:start", f"pid={proc.pid} interval={interval}")
+                    return self.send(200, {"ok": True, "output": f"GitOps watcher started (pid {proc.pid}), logging to {log_path}"})
+                elif op == "stop":
+                    st = gitops_status()
+                    if not st["running"]:
+                        return self.send(200, {"ok": True, "output": "not running"})
+                    os.kill(st["pid"], 15)  # SIGTERM
+                    try:
+                        os.remove(pid_file)
+                    except FileNotFoundError:
+                        pass
+                    self.audit(s, "gitops:stop", f"pid={st['pid']}")
+                    return self.send(200, {"ok": True, "output": f"GitOps watcher stopped (pid {st['pid']})"})
+                elif op == "logs":
+                    lines = tail("/tmp/infra-gitops.log", 100)
+                    return self.send(200, {"ok": True, "output": "".join(lines)})
+                return self.send(400, {"error": "op must be start, stop or logs"})
+
             if u == "/api/project":
                 op = body.get("op", "")
                 repo, envs = body.get("repo", ""), body.get("envs", "")
                 prod_branch = body.get("prod_branch", "")
                 reg_user, reg_token = body.get("registry_user", ""), body.get("registry_token", "")
+                gh_token = body.get("gh_token", "")
                 if repo and not REPO_RE.match(repo):
                     return self.send(400, {"error": "repo must look like owner/repo"})
                 if envs and not ENVS_RE.match(envs):
                     return self.send(400, {"error": "environments must be a comma list, e.g. preview,develop"})
                 if prod_branch and not BRANCH_RE.match(prod_branch):
                     return self.send(400, {"error": "bad prod branch"})
-                if any(c in reg_user + reg_token for c in "'\n\r\" "):
-                    return self.send(400, {"error": "registry user/token contain invalid characters"})
+                if any(c in reg_user + reg_token + gh_token for c in "'\n\r\" "):
+                    return self.send(400, {"error": "tokens contain invalid characters"})
                 opts = []
                 for flag, val in (("--repo", repo), ("--envs", envs), ("--prod-branch", prod_branch),
-                                  ("--registry-user", reg_user), ("--registry-token", reg_token)):
+                                  ("--registry-user", reg_user), ("--registry-token", reg_token),
+                                  ("--gh-token", gh_token)):
                     if val:
                         opts += [flag, val]
                 if op == "add":

@@ -1,0 +1,18 @@
+[Unit]
+Description=Infra GitOps watcher — polls GitHub and deploys on every push
+After=docker.service network-online.target infra-platform.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@DEPLOY_USER@
+EnvironmentFile=/etc/infra/infra.env
+ExecStart=/bin/bash @INFRA_ROOT@/local/watch-repo.sh --interval 30
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=infra-gitops
+
+[Install]
+WantedBy=multi-user.target

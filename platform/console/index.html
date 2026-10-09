@@ -710,6 +710,7 @@ async function renderVarsFor(app) {
 const ALL_ENVS = ['preview', 'develop', 'staging', 'prod'];
 async function renderProjects(reveal) {
   const j = await api('/api/projects');
+  const g = j.gitops || {};
   const el = $('#tab-projects');
   el.innerHTML = `
   ${reveal ? `<div class="card" style="border-color:var(--accent)">
@@ -725,6 +726,29 @@ async function renderProjects(reveal) {
     </div></div>` : ''}
 
   <div class="card">
+    <div class="card-header">
+      <h2>GitOps Watcher</h2>
+      <span class="card-meta" style="color:${g.running ? 'var(--ok)' : 'var(--muted)'}">
+        ${g.running ? `● running (pid ${g.pid})` : '○ stopped'}
+      </span>
+    </div>
+    <div style="padding:16px 18px">
+      <p class="muted" style="font-size:12.5px;margin-bottom:12px">
+        Polls every registered project's GitHub repo for new commits and PRs, then builds and deploys automatically — no GitHub Actions runner needed.
+        Requires <span class="mono">GH_TOKEN</span> in <span class="mono">/etc/infra/platform.secrets.env</span>.
+      </p>
+      <div class="row">
+        ${g.running
+          ? `<button class="btn danger" id="gitopsStop">Stop watcher</button>`
+          : `<button class="btn primary" id="gitopsStart">▶ Start watcher</button>
+             every <input id="gitopsInterval" type="number" value="30" min="10" max="300" style="width:70px"> seconds`}
+        <button class="btn" id="gitopsLogs">View logs</button>
+      </div>
+      <div id="gitopsOut" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-header"><h2>Add a Project</h2></div>
     <div style="padding:16px 18px">
       <p class="muted" style="font-size:12.5px;margin-bottom:12px">Lets a repo deploy to this server through signed webhooks. The app name must equal <span class="mono">APP_NAME</span> in the repo's <span class="mono">.deploy/manifest.env</span>.</p>
@@ -736,10 +760,13 @@ async function renderProjects(reveal) {
         ${ALL_ENVS.map(e => `<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="pEnv" value="${e}" checked> ${e}</label>`).join(' ')}
         &nbsp; prod from branch <input id="pProdBranch" value="main" class="mono" style="width:90px">
       </div>
-      <details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12.5px">Private images? Registry pull token (optional)</summary>
+      <details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12.5px">Private repo or images? Tokens (optional)</summary>
         <div class="row" style="margin-top:8px">
-          <input id="pRegUser" placeholder="registry user" style="width:200px">
-          <input id="pRegToken" placeholder="read-only token" type="password" style="width:280px">
+          <input id="pGhToken" placeholder="GitHub token (private repo)" type="password" style="width:280px">
+        </div>
+        <div class="row">
+          <input id="pRegUser" placeholder="registry user (private images)" style="width:200px">
+          <input id="pRegToken" placeholder="registry read token" type="password" style="width:280px">
         </div></details>
       <div class="row" style="margin-top:12px"><button class="btn primary" id="pAdd">Add project</button></div>
       <div id="pOut"></div>
@@ -755,7 +782,8 @@ async function renderProjects(reveal) {
         <td class="mono" style="color:var(--muted)">${esc(p.repo)}</td>
         <td>${p.envs.split(',').map(e => envBadge(e === 'preview' ? 'pr-…' : e).replace('pr-…', 'preview')).join(' ')}<br><span class="muted" style="font-size:12px">prod from <span class="mono">${esc(p.prod_branch)}</span></span></td>
         <td>${p.environments.length ? p.environments.map(envBadge).join(' ') : '<span class="muted">none yet</span>'}</td>
-        <td style="font-size:12.5px">${p.has_registry_token ? `<span style="color:var(--ok)">✓</span> ${esc(p.registry_user)}` : '<span class="muted">public</span>'}</td>
+        <td style="font-size:12.5px">${p.has_registry_token ? `<span style="color:var(--ok)">✓</span> ${esc(p.registry_user)}` : '<span class="muted">public</span>'}
+          ${p.has_gh_token ? '<span style="color:var(--ok);margin-left:6px">✓ gh-token</span>' : ''}</td>
         <td style="white-space:nowrap;font-size:12.5px">${ago(p.created_at)}<br><span class="muted">${esc(p.created_by)}</span></td>
         <td style="white-space:nowrap">
           <button class="btn" data-penvs="${esc(p.app)}|${esc(p.envs)}" style="font-size:12px">Envs…</button>
@@ -767,6 +795,22 @@ async function renderProjects(reveal) {
 
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied ✓')));
   $('#doneSecret', el)?.addEventListener('click', () => renderProjects());
+
+  const gitopsOut = $('#gitopsOut', el);
+  const gitopsAction = async (op, interval) => {
+    const btn = op === 'start' ? $('#gitopsStart', el) : op === 'stop' ? $('#gitopsStop', el) : $('#gitopsLogs', el);
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api('/api/gitops', { op, interval });
+      gitopsOut.innerHTML = `<pre>${esc(r.output || '')}</pre>`;
+      if (op !== 'logs') renderProjects();
+    } catch (e) { toast(e.message); }
+    finally { if (btn) btn.disabled = false; }
+  };
+  $('#gitopsStart', el)?.addEventListener('click', () =>
+    gitopsAction('start', parseInt($('#gitopsInterval', el)?.value || 30)));
+  $('#gitopsStop', el)?.addEventListener('click', () => gitopsAction('stop'));
+  $('#gitopsLogs', el)?.addEventListener('click', () => gitopsAction('logs'));
   $('#pAdd', el).onclick = async e => {
     const app = $('#pApp').value.trim(), repo = $('#pRepo').value.trim();
     const envs = [...el.querySelectorAll('.pEnv:checked')].map(c => c.value).join(',');
@@ -776,6 +820,7 @@ async function renderProjects(reveal) {
     e.target.disabled = true;
     try {
       const r = await api('/api/project', { op: 'add', app, repo, envs, prod_branch: $('#pProdBranch').value.trim(),
+        gh_token: $('#pGhToken').value.trim(),
         registry_user: $('#pRegUser').value.trim(), registry_token: $('#pRegToken').value.trim() });
       if (!r.ok || !r.secret) { $('#pOut').innerHTML = `<pre>${esc(r.output)}</pre>`; return; }
       renderProjects({ app, repo, secret: r.secret });

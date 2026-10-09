@@ -49,4 +49,11 @@ chmod 755 /usr/local/bin/infra
 sed "s/@DEPLOY_USER@/$G/g" "$INFRA_ROOT/bootstrap/files/cron" > /etc/cron.d/infra
 chmod 644 /etc/cron.d/infra
 
+# GitOps watcher — starts automatically after platform up, restarts on failure.
+sed -e "s|@DEPLOY_USER@|$G|g" -e "s|@INFRA_ROOT@|$INFRA_ROOT|g" \
+  "$INFRA_ROOT/bootstrap/files/infra-gitops.service" > /etc/systemd/system/infra-gitops.service
+systemctl daemon-reload
+systemctl enable infra-gitops.service
+echo "infra-gitops.service enabled — starts automatically after 'infra platform up'"
+
 echo "infra OK — CLI at /usr/local/bin/infra, config in /etc/infra"

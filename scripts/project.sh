@@ -2,10 +2,10 @@
 # Project registry — which repos may deploy to this server through signed webhooks.
 #
 #   infra project add <app> --repo <owner/repo> [--envs preview,develop,staging,prod]
-#                     [--prod-branch main] [--registry-user U --registry-token T]
+#                     [--prod-branch main] [--registry-user U --registry-token T] [--gh-token T]
 #   infra project list
 #   infra project show <app>
-#   infra project set <app> [--repo R] [--envs E] [--prod-branch B] [--registry-user U --registry-token T]
+#   infra project set <app> [--repo R] [--envs E] [--prod-branch B] [--registry-user U --registry-token T] [--gh-token T]
 #   infra project rotate-secret <app>     new webhook secret (old one stops working immediately)
 #   infra project remove <app>            revoke webhook access (environments keep running)
 #
@@ -40,7 +40,7 @@ save() { # app key=value… (rewrites the whole file)
 get() { meta_get "$(pfile "$1")" "$2"; }
 
 parse_opts() {
-  REPO="" ENVS="" PROD_BRANCH="" REG_USER="" REG_TOKEN=""
+  REPO="" ENVS="" PROD_BRANCH="" REG_USER="" REG_TOKEN="" GH_TOKEN=""
   while (( $# )); do
     case $1 in
       --repo) REPO=${2:?}; shift 2 ;;
@@ -48,6 +48,7 @@ parse_opts() {
       --prod-branch) PROD_BRANCH=${2:?}; shift 2 ;;
       --registry-user) REG_USER=${2:?}; shift 2 ;;
       --registry-token) REG_TOKEN=${2:?}; shift 2 ;;
+      --gh-token) GH_TOKEN=${2:?}; shift 2 ;;
       *) die "unknown option $1" ;;
     esac
   done
@@ -78,7 +79,7 @@ case $action in
     secret=$(new_secret)
     save "$app" "APP=$app" "REPO=$REPO" "ENVS=${ENVS:-preview,develop,staging,prod}" \
       "PROD_BRANCH=${PROD_BRANCH:-main}" "SECRET=$secret" \
-      "REGISTRY_USER=$REG_USER" "REGISTRY_TOKEN=$REG_TOKEN" \
+      "REGISTRY_USER=$REG_USER" "REGISTRY_TOKEN=$REG_TOKEN" "GH_TOKEN=$GH_TOKEN" \
       "CREATED_AT=$(date +%s)" "CREATED_BY=$ACTOR"
     log "project $app registered for $REPO (envs: ${ENVS:-preview,develop,staging,prod})"; audit "add $app repo=$REPO envs=${ENVS:-preview,develop,staging,prod}"
     print_onboarding "$app" "$secret"
@@ -90,6 +91,7 @@ case $action in
     save "$app" "APP=$app" "REPO=${REPO:-$(get "$app" REPO)}" "ENVS=${ENVS:-$(get "$app" ENVS)}" \
       "PROD_BRANCH=${PROD_BRANCH:-$(get "$app" PROD_BRANCH)}" "SECRET=$(get "$app" SECRET)" \
       "REGISTRY_USER=${REG_USER:-$(get "$app" REGISTRY_USER)}" "REGISTRY_TOKEN=${REG_TOKEN:-$(get "$app" REGISTRY_TOKEN)}" \
+      "GH_TOKEN=${GH_TOKEN:-$(get "$app" GH_TOKEN)}" \
       "CREATED_AT=$(get "$app" CREATED_AT)" "CREATED_BY=$(get "$app" CREATED_BY)"
     log "project $app updated"; audit "set $app"
     ;;
@@ -110,7 +112,7 @@ case $action in
 
   show)
     app=${1:?app}; f=$(pfile "$app"); [[ -f $f ]] || die "no project $app"
-    sed -E "s/^(SECRET|REGISTRY_TOKEN)='.+'/\1='••••••'/" "$f"
+    sed -E "s/^(SECRET|REGISTRY_TOKEN|GH_TOKEN)='.+'/\1='••••••'/" "$f"
     echo "WEBHOOK_URL='$(hook_url)'"
     ;;
 
