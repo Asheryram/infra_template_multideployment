@@ -64,6 +64,8 @@ else
   docker network ls -q --filter "$label" | xargs -r docker network rm
   docker volume ls -q --filter "$label" | xargs -r docker volume rm
 fi
+# The environment's private network (compose treats it as external, so it's ours to remove).
+remove_stack_network "$(stack_network "$APP" "$ENV_NAME")"
 
 if (( ! KEEP_DB )); then
   db_drop "$DB_NAME" "$DB_NAME"        # IF EXISTS — no-op when it never had its own DB

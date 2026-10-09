@@ -97,6 +97,30 @@ check "web pr-11 now → api pr-7 (auto relink)"         "$(web_api_url pr-11)" 
 check "develop untouched"                              "$(api develop .message)"     "hello from demo-api"
 pause "$(url demo-web pr-11)" "$(url demo-api pr-7)"
 
+title "4b. Isolation: an app can't reach other apps, other environments or the DB directly"
+# Acts like a compromised container: joins one environment's private network and tries to connect.
+PROBE_IMG=$(docker inspect -f '{{.Config.Image}}' infra-demo-api-develop-api-1 2>/dev/null)
+probe() { # <network> <host> <port> → open | blocked
+  docker run --rm --network "$1" --entrypoint python "$PROBE_IMG" -c \
+    'import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 2)' "$2" "$3" >/dev/null 2>&1 \
+    && echo open || echo blocked
+}
+ip_on() { docker inspect -f "{{(index .NetworkSettings.Networks \"$2\").IPAddress}}" "$1" 2>/dev/null; }
+WEBNET=infra-demo-web-pr-11_net; APIDEV=infra-demo-api-develop_net; APIPR=infra-demo-api-pr-7_net
+DEV_API_IP=$(ip_on infra-demo-api-develop-api-1 "$APIDEV")
+check "frontend → backend container by IP: blocked"      "$(probe "$WEBNET" "$DEV_API_IP" 8080)" blocked
+check "frontend → backend container by name: blocked"    "$(probe "$WEBNET" infra-demo-api-develop-api-1 8080)" blocked
+check "preview pr-7 → develop's container: blocked"      "$(probe "$APIPR" "$DEV_API_IP" 8080)" blocked
+check "frontend → Postgres: blocked"                      "$(probe "$WEBNET" infra-postgres 5432)" blocked
+pg_reach=blocked
+for ip in $(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' infra-postgres); do
+  [[ $(probe "$WEBNET" "$ip" 5432) == open ]] && pg_reach="open via $ip"
+done
+check "frontend → any Postgres IP: blocked"               "$pg_reach" blocked
+check "backend → its own service: open (sanity)"          "$(probe "$APIDEV" api 8080)" open
+check "backend → Postgres: open (it uses the DB)"         "$(probe "$APIDEV" infra-postgres 5432)" open
+check "web still reaches the API through Traefik"         "$(web_api_url pr-11 | grep -c pr-7)" 1
+
 title "5. The feature needs a NEW secret → blocked until DevOps adds it"
 sim commit demo-api feature/checkout "v2 needs NEW_FEATURE_KEY" -- bash -c \
   "sed -i 's/^VERSION = \"v1\"/VERSION = \"v2\"/' app.py && echo 'API_REQUIRED_ENV=\"NEW_FEATURE_KEY\"' >> .deploy/manifest.env"

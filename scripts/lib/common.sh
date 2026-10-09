@@ -189,6 +189,43 @@ relink_frontends() {
   done
 }
 
+# ----------------------------------------------------------------------------- per-environment networks
+# Every environment gets its own private bridge network "<stack>_net". Only that environment's
+# containers, Traefik, and (if it uses the DB) Postgres are on it — so no app can reach another
+# project's or another environment's containers directly, bypassing Traefik and preview auth.
+# Traefik/Postgres connections are made at runtime; `infra networks reconnect` restores them
+# after the platform containers are recreated.
+
+TRAEFIK_CONTAINER=infra-traefik
+stack_network() { echo "$(stack_name "$1" "$2")_net"; }
+
+net_has()        { docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$2"; }
+net_connect()    { net_has "$1" "$2" || docker network connect "$1" "$2"; }
+net_disconnect() { if net_has "$1" "$2"; then docker network disconnect "$1" "$2"; fi; }
+
+# ensure_stack_network <net> <app> <env> <uses_pg:true|false>
+ensure_stack_network() {
+  local net=$1 app=$2 env=$3 uses_pg=$4
+  if docker network inspect "$net" >/dev/null 2>&1; then
+    [[ $(docker network inspect -f '{{index .Labels "infra.managed"}}' "$net") == true ]] \
+      || die "network $net exists and was not created by infra — not touching it"
+  else
+    docker network create --driver bridge --label infra.managed=true \
+      --label "infra.app=$app" --label "infra.env=$env" "$net" >/dev/null
+  fi
+  net_connect "$net" "$TRAEFIK_CONTAINER"
+  if [[ $uses_pg == true ]]; then net_connect "$net" "$PG_CONTAINER"; else net_disconnect "$net" "$PG_CONTAINER"; fi
+}
+
+remove_stack_network() {
+  local net=$1
+  docker network inspect "$net" >/dev/null 2>&1 || return 0
+  [[ $(docker network inspect -f '{{index .Labels "infra.managed"}}' "$net") == true ]] || return 0
+  net_disconnect "$net" "$TRAEFIK_CONTAINER"
+  net_disconnect "$net" "$PG_CONTAINER"
+  docker network rm "$net" >/dev/null || warn "could not remove network $net (still in use?)"
+}
+
 # Remember images that weren't on the host before we pulled them — cleanup only ever
 # removes images from this list, never anything another user pulled.
 record_owned_images() {

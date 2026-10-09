@@ -36,6 +36,7 @@ Data
 
 Platform & housekeeping
   infra platform up | down | ps | logs [svc] | pull | render
+  infra networks list | reconnect | migrate   (each environment has its own private network)
   infra cleanup [--dry-run]
   infra host-check
   sudo infra secrets edit <app> <name> | list [app]
@@ -60,6 +61,7 @@ case $cmd in
   host-check) exec bash "$S/host-check.sh" "$@" ;;
   secrets)  exec bash "$S/secrets.sh" "$@" ;;
   platform) exec bash "$INFRA_ROOT/platform/platform.sh" "$@" ;;
+  networks) exec bash "$S/networks.sh" "$@" ;;
   help|-h|--help) help ;;
   *) echo "unknown command: $cmd" >&2; help; exit 1 ;;
 esac

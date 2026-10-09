@@ -100,4 +100,4 @@ server {
    Then run `infra platform check` after step 50.
 3. Pick a `DEPLOY_USER` name that doesn't exist yet (`getent passwd <name>`).
 4. Check that Docker has the Compose v2 plugin (`docker compose version`). On an existing Docker setup we won't install it for you.
-5. Check that Docker's address pools have room. Each environment creates one bridge network, and default pools allow about 30 networks in total, *including other users'* (`docker network ls | wc -l`). If you'll exceed that, agree a `default-address-pools` change with the server owner. That change requires a Docker restart, so it's never done automatically.
+5. Check that Docker's address pools have room. Each environment creates one private bridge network (that's what isolates it from every other app), and default pools allow about 30 networks in total, *including other users'* (`docker network ls | wc -l`). If you'll exceed that, agree a `default-address-pools` change with the server owner. That change requires a Docker restart, so it's never done automatically.

@@ -46,6 +46,7 @@ jobs:
           APP_MIDDLEWARES=secure-headers@file
           WEB_MIDDLEWARES=secure-headers@file
           API_MIDDLEWARES=secure-headers@file
+          STACK_NETWORK=t-pr-1_net
           EOF
           sed -i 's/^ *//' /tmp/stack/stack.env
           docker compose --project-directory /tmp/stack --env-file /tmp/stack/stack.env \

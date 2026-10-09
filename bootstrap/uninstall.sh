@@ -75,7 +75,7 @@ fi
 docker rmi infra-console:local >/dev/null 2>&1 || true
 
 echo "== files, user"
-rm -f /etc/cron.d/infra /etc/logrotate.d/infra /usr/local/bin/infra
+rm -f /etc/cron.d/infra /etc/logrotate.d/infra /etc/tmpfiles.d/infra.conf /usr/local/bin/infra
 rm -rf "$DEPLOY_ROOT" "$STATE_DIR" /var/log/infra /run/lock/infra /etc/infra
 if id "$DEPLOY_USER" &>/dev/null; then userdel -r "$DEPLOY_USER" 2>/dev/null || userdel "$DEPLOY_USER"; fi
 

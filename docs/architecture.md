@@ -11,11 +11,26 @@
 ## Request flow
 
 ```
-browser ──https──▶ Traefik :443 ──(Host header)──▶ container on network infra_proxy
-                       │                                   │
-          middlewares: secure-headers, compress,           └──▶ infra-postgres on infra_data (internal)
-          preview-auth + noindex (previews only)
+browser ──https──▶ Traefik ──(Host header)──▶ shop-pr-7 containers      on infra-shop-pr-7_net
+                     │                       ▶ shop-prod containers      on infra-shop-prod_net
+                     │                       ▶ blog-develop containers   on infra-blog-develop_net
+     middlewares: secure-headers, compress,          │
+     preview-auth + noindex (previews only)          └─▶ infra-postgres, attached ONLY to the
+                                                         networks of environments that use the DB
 ```
+
+**Every environment has its own private network** (`<stack>_net`). Only these containers are on it:
+- the environment's own containers (including sidecars from `compose.extra.yml`)
+- Traefik
+- Postgres, but only if the environment uses the platform DB
+
+That gives you:
+- **No cross-project access.** `blog` can't open a connection to `shop`'s containers, so it can't bypass Traefik, preview auth or middlewares.
+- **No cross-environment access.** A PR preview can't reach prod's containers of the same app.
+- **No DB route for apps that don't need one.** Frontends have no path to Postgres.
+- **No extra networks.** The network replaces the default one Compose would have created per stack anyway.
+
+The deploy script creates the network and attaches Traefik and Postgres at runtime (`ensure_stack_network`). Destroy detaches them and removes it. Recreating a platform container drops runtime attachments, so `infra platform up` runs `infra networks reconnect`. The old shared `infra_proxy` / `infra_data` networks now hold only platform containers. `infra networks migrate` moves stacks deployed before this change, and the e2e chapter "4b" proves the isolation with a probe container.
 
 Traefik learns routes from container labels, which it reads through `socket-proxy` (read-only Docker API). Adding or removing an environment never touches Traefik config.
 

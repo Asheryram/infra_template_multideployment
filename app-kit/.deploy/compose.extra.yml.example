@@ -8,6 +8,8 @@
 # runtime/api.env is the same env file the api container gets.
 #
 # Rules: no `ports:` (use Traefik labels), always set mem_limit and logging.
+# Don't set `networks:` — every service lands on this environment's own private network
+# (Postgres is reachable there only if the app uses the platform DB; other apps can't see it).
 services:
   redis:
     image: redis:7-alpine
@@ -27,7 +29,6 @@ services:
     env_file: [runtime/api.env]
     environment:
       REDIS_URL: redis://redis:6379
-    networks: [default, data]
     mem_limit: 256m
     logging:
       driver: json-file

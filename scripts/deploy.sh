@@ -341,6 +341,11 @@ write_kv "$tmp" ENV_NAME "$ENV_NAME"
 write_kv "$tmp" TAG "$TAG"
 write_kv "$tmp" DOMAIN "$DOMAIN"
 write_kv "$tmp" ROUTER_TLS "$ROUTER_TLS"
+STACK_NETWORK=$(stack_network "$APP" "$ENV_NAME")
+write_kv "$tmp" STACK_NETWORK "$STACK_NETWORK"
+# Postgres joins this environment's network only if it actually uses the platform DB.
+USES_PG=false
+if [[ $DB_MODE == share || ( $DB_MODE == own && -n $DB_NAME ) ]]; then USES_PG=true; fi
 for comp in "${COMPONENTS[@]}"; do
   C=${comp^^}
   write_kv "$tmp" "${C}_IMAGE" "${IMAGE[$comp]}"
@@ -372,6 +377,9 @@ echo "stack:managed.yml" >> "$STACK_DIR/compose-files"
 load_stack "$APP" "$ENV_NAME"
 
 # ----------------------------------------------------------------------------- roll out
+
+# Before migrations: `compose run` already needs the network (and Postgres on it).
+ensure_stack_network "$STACK_NETWORK" "$APP" "$ENV_NAME" "$USES_PG"
 
 registry_login
 if (( PULL )); then
@@ -440,6 +448,8 @@ write_kv "$tmp" BACKEND_APP "${BACKEND_APP:-}"
 write_kv "$tmp" DB_NAME "$DB_NAME"
 write_kv "$tmp" DB_MODE "$DB_MODE"
 write_kv "$tmp" DB_SOURCE "$DB_SOURCE"
+write_kv "$tmp" STACK_NETWORK "$STACK_NETWORK"
+write_kv "$tmp" USES_PG "$USES_PG"
 write_kv "$tmp" REPO "${GITHUB_REPOSITORY:-$(meta_get "$STACK_DIR/meta.env" REPO 2>/dev/null || true)}"
 write_kv "$tmp" DEPLOYED_AT "$(date +%s)"
 write_kv "$tmp" DEPLOYED_BY "${GITHUB_ACTOR:-${SUDO_USER:-${USER:-unknown}}}"

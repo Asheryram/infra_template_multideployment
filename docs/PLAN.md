@@ -2,7 +2,7 @@
 
 Living to-do list for this repo. **To resume in a new session:** say *"continue with docs/PLAN.md"*. Work top to bottom, tick items off here, and commit after each one.
 
-_Last updated: 2026-10-09 · last commit at time of writing: `eed1c72`_
+_Last updated: 2026-10-09 · next up: item 2_
 
 ---
 
@@ -34,24 +34,26 @@ _Last updated: 2026-10-09 · last commit at time of writing: `eed1c72`_
 
 ## To do
 
-### 1. Per-project network isolation (security fix, highest priority)
+### 1. Per-project network isolation ✅ DONE 2026-10-09 (per ENVIRONMENT, not just per project)
+
+_Done: each environment gets its own `<stack>_net`; Traefik always and Postgres only when used are attached at runtime; `infra networks list|reconnect|migrate`; platform up reconnects; destroy removes. Found+fixed on the way: `/run/lock/infra` lost at reboot (now `/etc/tmpfiles.d/infra.conf`). Tests: smoke 17/17, e2e 55/55 incl. chapter 4b (7 isolation probes), verify-isolation all PASS. Local-only note: after Docker Desktop restarts on WSL, run `docker restart infra-traefik infra-console` (it starts containers before WSL mounts exist)._
 
 **Problem:** every app joins the shared `infra_proxy` network, and DB apps join `infra_data`. Project A's containers can reach project B's containers directly, bypassing Traefik, preview basic auth and middlewares. Postgres is reachable from all of them (credentials still separate databases).
 
 **Do:**
-- [ ] `deploy.sh`: create a network per app, `infra_p_<app>` (labels `infra.managed=true`, `infra.app=<app>`). Connect `infra-traefik` to it (`docker network connect`, idempotent). If the app needs a DB, also connect `infra-postgres` to it.
-- [ ] Templates `templates/components/{app,web,api}.yml`: replace `proxy` and `data` with one external network `${APP_NETWORK}`. Set label `traefik.docker.network=${APP_NETWORK}`. Write `APP_NETWORK` into `stack.env`.
-- [ ] `destroy.sh`: when the app's **last** environment is destroyed, disconnect traefik/postgres and remove `infra_p_<app>`.
-- [ ] Console/platform containers keep `infra_proxy` (platform-only network).
-- [ ] Overrides: `attach-db --share` across apps must also connect the borrower to the lender's network. `--url host.docker.internal` is unchanged.
-- [ ] `compose.extra.yml.example`: use `${APP_NETWORK}` instead of `data`.
-- [ ] Migration: existing stacks move on their next redeploy. Provide `infra migrate-networks`, which redeploys every stack once.
-- [ ] Docker address pools: one network per **app** (not per env) keeps the count low. Document it in `docs/shared-host.md`.
+- [x] `deploy.sh`: create a network per app, `infra_p_<app>` (labels `infra.managed=true`, `infra.app=<app>`). Connect `infra-traefik` to it (`docker network connect`, idempotent). If the app needs a DB, also connect `infra-postgres` to it.
+- [x] Templates `templates/components/{app,web,api}.yml`: replace `proxy` and `data` with one external network `${APP_NETWORK}`. Set label `traefik.docker.network=${APP_NETWORK}`. Write `APP_NETWORK` into `stack.env`.
+- [x] `destroy.sh`: when the app's **last** environment is destroyed, disconnect traefik/postgres and remove `infra_p_<app>`.
+- [x] Console/platform containers keep `infra_proxy` (platform-only network).
+- [x] Overrides: `attach-db --share` across apps must also connect the borrower to the lender's network. `--url host.docker.internal` is unchanged.
+- [x] `compose.extra.yml.example`: use `${APP_NETWORK}` instead of `data`.
+- [x] Migration: existing stacks move on their next redeploy. Provide `infra migrate-networks`, which redeploys every stack once.
+- [x] Docker address pools: one network per **app** (not per env) keeps the count low. Document it in `docs/shared-host.md`.
 
 **Test / accept:**
-- [ ] New e2e chapter: from inside a `demo-web` container, a request to a `demo-api` container must FAIL directly but WORK through its public URL.
-- [ ] `demo-api` reaches Postgres, while a `frontend`-only app has no route to Postgres.
-- [ ] smoke 17/17, e2e all green, isolation all green.
+- [x] New e2e chapter: from inside a `demo-web` container, a request to a `demo-api` container must FAIL directly but WORK through its public URL.
+- [x] `demo-api` reaches Postgres, while a `frontend`-only app has no route to Postgres.
+- [x] smoke 17/17, e2e all green, isolation all green.
 
 ### 2. Project registry + signed webhook trigger (scales to many repos/orgs)
 

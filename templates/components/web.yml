@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     init: true
     env_file: [runtime/web.env]
-    networks: [default, proxy]
+    networks: [default]          # this environment's private network only (see ensure_stack_network)
     mem_limit: ${WEB_MEM_LIMIT:-256m}
     cpus: ${WEB_CPUS:-0.5}
     pids_limit: 256
@@ -19,7 +19,7 @@ services:
       - infra.app=${APP}
       - infra.env=${ENV_NAME}
       - traefik.enable=true
-      - traefik.docker.network=infra_proxy
+      - traefik.docker.network=${STACK_NETWORK}
       - traefik.http.routers.${STACK}-web.rule=Host(`${WEB_HOST}`)
       - traefik.http.routers.${STACK}-web.entrypoints=websecure
       - traefik.http.routers.${STACK}-web.tls=${ROUTER_TLS:-true}
@@ -28,4 +28,7 @@ services:
       - traefik.http.services.${STACK}-web.loadbalancer.server.port=${WEB_PORT}
 
 networks:
-  proxy: { name: infra_proxy, external: true }
+  # Created by infra deploy (not compose) so Traefik/Postgres can be attached per environment.
+  default:
+    name: ${STACK_NETWORK:?STACK_NETWORK not set}
+    external: true

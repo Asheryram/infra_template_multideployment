@@ -176,6 +176,8 @@ case $action in
       dc restart traefik
     fi
     echo "$new" > "$T/.static.sha"
+    # Recreated platform containers lose runtime network attachments — restore them.
+    bash "$INFRA_ROOT/scripts/networks.sh" reconnect
     scheme=https
     if [[ $TLS_MODE == external ]]; then
       log "Traefik listens on http://$TRAEFIK_BIND:$TRAEFIK_HTTPS_PORT — point your existing proxy's *.$DOMAIN at it"

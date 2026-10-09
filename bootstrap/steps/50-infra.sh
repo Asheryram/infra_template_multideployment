@@ -33,6 +33,12 @@ for d in "${DEPLOY_ROOT:-/srv/deployments}" "${STATE_DIR:-/var/lib/infra}"; do
 done
 install -d -m 700 -o "$G" -g "$G" "${BACKUP_DIR:-/srv/backups}"
 
+# Deploy locks live in /run (tmpfs — wiped at every boot). Recreate the directory with the right
+# owner at boot; otherwise Docker may create it as root when it bind-mounts it into the console.
+echo "d ${LOCK_DIR:-/run/lock/infra} 2775 root $G -" > /etc/tmpfiles.d/infra.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/infra.conf
+chown root:"$G" "${LOCK_DIR:-/run/lock/infra}"; chmod 2775 "${LOCK_DIR:-/run/lock/infra}"
+
 # CLI wrapper (works even if the repo is on a mount without exec bits).
 cat > /usr/local/bin/infra <<EOF
 #!/bin/sh
