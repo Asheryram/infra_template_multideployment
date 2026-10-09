@@ -84,11 +84,12 @@ def mask_url(url):
     return re.sub(r"(://[^:/@]+:)[^@]*@", r"\1••••@", url or "")
 
 
-def infra(*args, timeout=900):
+def infra(*args, timeout=900, actor=None):
     """Run the infra CLI; returns (ok, output)."""
+    env = dict(os.environ, INFRA_ACTOR=f"console:{actor}") if actor else None
     try:
         p = subprocess.run(["bash", os.path.join(INFRA_ROOT, "bin", "infra"), *args],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout, env=env)
         return p.returncode == 0, ANSI.sub("", p.stdout + p.stderr)
     except subprocess.TimeoutExpired:
         return False, f"timed out after {timeout}s"
@@ -369,6 +370,31 @@ def webhook(s, headers, payload):
     return 202, {"job": job_id}
 
 
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+ENVS_RE = re.compile(r"^[a-z0-9-]+(,[a-z0-9-]+)*$")
+SECRET_RE = re.compile(r"INFRA_WEBHOOK_SECRET\s+([0-9a-f]{64})")
+
+
+def projects(s):
+    """Registered projects — never includes secrets or tokens."""
+    out = []
+    for f in sorted(glob.glob(f"{s['state_dir']}/projects/*.env")):
+        p = read_env(f)
+        app = p.get("APP", "")
+        out.append({
+            "app": app, "repo": p.get("REPO", ""), "envs": p.get("ENVS", ""),
+            "prod_branch": p.get("PROD_BRANCH", "main"),
+            "registry_user": p.get("REGISTRY_USER", ""), "has_registry_token": bool(p.get("REGISTRY_TOKEN")),
+            "created_at": p.get("CREATED_AT", ""), "created_by": p.get("CREATED_BY", ""),
+            "environments": sorted(os.path.basename(d.rstrip("/")) for d in glob.glob(f"{s['deploy_root']}/{app}/*/")),
+        })
+    return out
+
+
+def webhook_url(s):
+    return f"https://hooks.{s['domain']}{s['suffix']}/webhook"
+
+
 def webhook_job(s, headers, job_id):
     try:
         p = verify_signature(s, headers, job_id.encode())
@@ -465,6 +491,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "bad app/env"})
                 ok, out = infra("tail", app, env, str(min(int(q.get("n", 200)), 2000)), timeout=60)
                 return self.send(200, {"ok": ok, "output": out})
+            if u.path == "/api/projects":
+                return self.send(200, {"projects": projects(s), "webhook_url": webhook_url(s)})
             if u.path == "/api/activity":
                 lines = tail(f"{s['log_dir']}/console.log", 100) + tail(f"{s['log_dir']}/deploy.log", 150)
                 lines = [ln for ln in lines if ln[:4].isdigit()]
@@ -491,6 +519,46 @@ class Handler(BaseHTTPRequestHandler):
         if not NAME.match(app):
             return self.send(400, {"error": "bad app"})
         try:
+            if u == "/api/project":
+                op = body.get("op", "")
+                repo, envs = body.get("repo", ""), body.get("envs", "")
+                prod_branch = body.get("prod_branch", "")
+                reg_user, reg_token = body.get("registry_user", ""), body.get("registry_token", "")
+                if repo and not REPO_RE.match(repo):
+                    return self.send(400, {"error": "repo must look like owner/repo"})
+                if envs and not ENVS_RE.match(envs):
+                    return self.send(400, {"error": "environments must be a comma list, e.g. preview,develop"})
+                if prod_branch and not BRANCH_RE.match(prod_branch):
+                    return self.send(400, {"error": "bad prod branch"})
+                if any(c in reg_user + reg_token for c in "'\n\r\" "):
+                    return self.send(400, {"error": "registry user/token contain invalid characters"})
+                opts = []
+                for flag, val in (("--repo", repo), ("--envs", envs), ("--prod-branch", prod_branch),
+                                  ("--registry-user", reg_user), ("--registry-token", reg_token)):
+                    if val:
+                        opts += [flag, val]
+                if op == "add":
+                    if not repo:
+                        return self.send(400, {"error": "repo is required"})
+                    args = ["project", "add", app, *opts]
+                elif op == "set":
+                    args = ["project", "set", app, *opts]
+                elif op == "rotate":
+                    args = ["project", "rotate-secret", app]
+                elif op == "remove":
+                    if body.get("confirm") != app:
+                        return self.send(400, {"error": f"type {app} to confirm"})
+                    args = ["project", "remove", app]
+                else:
+                    return self.send(400, {"error": "unknown op"})
+                ok, out = infra(*args, timeout=60, actor=self.user())
+                m = SECRET_RE.search(out)
+                secret = m.group(1) if m else ""
+                if secret:
+                    out = out.replace(secret, "••••••")          # the secret is returned once, separately
+                self.audit(s, f"project:{op}{'' if ok else ':FAILED'}", f"{app} {('repo=' + repo) if repo else ''}")
+                return self.send(200, {"ok": ok, "output": out, "secret": secret, "webhook_url": webhook_url(s)})
+
             if u == "/api/secret":
                 scope, key, value = body.get("scope", ""), body.get("key", ""), body.get("value")
                 if not SCOPE.match(scope) or not KEY.match(key):

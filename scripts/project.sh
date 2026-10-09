@@ -20,7 +20,9 @@ action=${1:-}
 if [[ -z $action || $action == -h || $action == --help ]]; then usage; fi
 shift
 load_infra_env
-enable_file_log
+# No enable_file_log here: this command prints webhook secrets, which must never reach a log file.
+ACTOR=${INFRA_ACTOR:-${SUDO_USER:-${USER:-unknown}}}
+audit() { mkdir -p "$LOG_DIR" 2>/dev/null; echo "$(date -u +%FT%TZ) [project] user=$ACTOR $*" >> "$LOG_DIR/project.log" 2>/dev/null || true; }
 
 PDIR="$STATE_DIR/projects"
 mkdir -p "$PDIR"; chmod 700 "$PDIR"
@@ -69,6 +71,7 @@ EOF
 case $action in
   add)
     app=${1:?app}; shift; validate_name app "$app"
+    case $app in console|traefik|logs|status|hooks|grafana|www|api) die "app name '$app' is reserved by the platform" ;; esac
     [[ ! -f $(pfile "$app") ]] || die "project $app already exists (use 'infra project set')"
     parse_opts "$@"
     [[ -n $REPO ]] || die "--repo owner/repo is required"
@@ -76,8 +79,8 @@ case $action in
     save "$app" "APP=$app" "REPO=$REPO" "ENVS=${ENVS:-preview,develop,staging,prod}" \
       "PROD_BRANCH=${PROD_BRANCH:-main}" "SECRET=$secret" \
       "REGISTRY_USER=$REG_USER" "REGISTRY_TOKEN=$REG_TOKEN" \
-      "CREATED_AT=$(date +%s)" "CREATED_BY=${SUDO_USER:-${USER:-unknown}}"
-    log "project $app registered for $REPO (envs: ${ENVS:-preview,develop,staging,prod})"
+      "CREATED_AT=$(date +%s)" "CREATED_BY=$ACTOR"
+    log "project $app registered for $REPO (envs: ${ENVS:-preview,develop,staging,prod})"; audit "add $app repo=$REPO envs=${ENVS:-preview,develop,staging,prod}"
     print_onboarding "$app" "$secret"
     ;;
 
@@ -88,21 +91,21 @@ case $action in
       "PROD_BRANCH=${PROD_BRANCH:-$(get "$app" PROD_BRANCH)}" "SECRET=$(get "$app" SECRET)" \
       "REGISTRY_USER=${REG_USER:-$(get "$app" REGISTRY_USER)}" "REGISTRY_TOKEN=${REG_TOKEN:-$(get "$app" REGISTRY_TOKEN)}" \
       "CREATED_AT=$(get "$app" CREATED_AT)" "CREATED_BY=$(get "$app" CREATED_BY)"
-    log "project $app updated"
+    log "project $app updated"; audit "set $app"
     ;;
 
   rotate-secret)
     app=${1:?app}; [[ -f $(pfile "$app") ]] || die "no project $app"
     secret=$(new_secret)
     sed -i "s/^SECRET=.*/SECRET='$secret'/" "$(pfile "$app")"
-    log "webhook secret rotated for $app — the old one no longer works"
+    log "webhook secret rotated for $app — the old one no longer works"; audit "rotate-secret $app"
     print_onboarding "$app" "$secret"
     ;;
 
   remove)
     app=${1:?app}; [[ -f $(pfile "$app") ]] || die "no project $app"
     rm -f "$(pfile "$app")"
-    log "project $app removed — webhooks refused from now on. Its environments keep running; remove them with 'infra destroy'."
+    audit "remove $app"; log "project $app removed — webhooks refused from now on. Its environments keep running; remove them with 'infra destroy'."
     ;;
 
   show)

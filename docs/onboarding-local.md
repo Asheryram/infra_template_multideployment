@@ -32,6 +32,11 @@ If Docker Desktop was restarted, run `docker restart infra-traefik infra-console
 
 ## 1. DevOps: register the projects (once per project)
 
+**In the console** (`https://console.127-0-0-1.sslip.io:8443` → **Projects**):
+1. Add `shop-api` with repo `local/shop-api`, then `shop-web` with repo `local/shop-web`.
+2. Each one shows its secret **once**, with copy buttons and the exact `echo … > /root/.infra-secrets/<app>` line to paste into the server shell.
+
+**Or on the CLI:**
 ```bash
 sudo -u deploy infra project add shop-api --repo local/shop-api --envs preview,develop,staging,prod
 sudo -u deploy infra project add shop-web --repo local/shop-web --envs preview,develop,staging,prod

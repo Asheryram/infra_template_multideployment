@@ -70,11 +70,13 @@
 </header>
 <nav>
   <button data-tab="envs" class="on">Environments</button>
+  <button data-tab="projects">Projects</button>
   <button data-tab="vars">Variables</button>
   <button data-tab="activity">Activity</button>
 </nav>
 <main>
   <div id="tab-envs"></div>
+  <div id="tab-projects" hidden></div>
   <div id="tab-vars" hidden></div>
   <div id="tab-activity" hidden></div>
 </main>
@@ -142,8 +144,8 @@ document.addEventListener('click', e => {
   const m = e.target.closest('[data-manage]'); if (m) { const [a, en] = m.dataset.manage.split('|'); openDrawer(a, en); }
   const t = e.target.closest('nav button'); if (t) {
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b === t));
-    for (const id of ['envs', 'vars', 'activity']) $('#tab-' + id).hidden = id !== t.dataset.tab;
-    if (t.dataset.tab === 'vars') renderVars(); if (t.dataset.tab === 'activity') renderActivity();
+    for (const id of ['envs', 'projects', 'vars', 'activity']) $('#tab-' + id).hidden = id !== t.dataset.tab;
+    if (t.dataset.tab === 'vars') renderVars(); if (t.dataset.tab === 'activity') renderActivity(); if (t.dataset.tab === 'projects') renderProjects();
   }
 });
 
@@ -315,6 +317,94 @@ async function renderVarsFor(app) {
   $('#varBody').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
     const [scope, key] = b.dataset.edit.split('|'), [base, comp] = scope.split('.');
     $('#nScope').value = base; $('#nComp').value = comp ? '.' + comp : ''; $('#nKey').value = key; $('#nVal').value = ''; $('#nVal').placeholder = 'new value (current value is hidden)'; $('#nVal').focus(); showAffected();
+  });
+}
+
+// ------------------------------------------------------------------ Projects tab
+const ALL_ENVS = ['preview', 'develop', 'staging', 'prod'];
+async function renderProjects(reveal) {
+  const j = await api('/api/projects');
+  const el = $('#tab-projects');
+  el.innerHTML = `
+  ${reveal ? `<div class="card"><h2>🔑 Webhook secret for ${esc(reveal.app)} — shown only now</h2><div style="padding:12px 16px">
+     <p>Give the team these two values as <b>GitHub Actions secrets</b> in <span class="mono">${esc(reveal.repo || '')}</span>
+        (Settings → Secrets and variables → Actions):</p>
+     <table class="kv">
+       <tr><td>INFRA_WEBHOOK_URL</td><td class="mono">${esc(j.webhook_url)}</td><td><button class="btn" data-copy="${esc(j.webhook_url)}">Copy</button></td></tr>
+       <tr><td>INFRA_WEBHOOK_SECRET</td><td class="mono">${esc(reveal.secret)}</td><td><button class="btn" data-copy="${esc(reveal.secret)}">Copy</button></td></tr>
+     </table>
+     <p class="muted">Local testing with <span class="mono">ci-local.sh</span>? Save it in the server shell:
+       <span class="mono">mkdir -p /root/.infra-secrets && echo '${esc(reveal.secret)}' &gt; /root/.infra-secrets/${esc(reveal.app)}</span></p>
+     <p class="muted">Lost it? <b>Rotate secret</b> below issues a new one (the old one stops working).</p>
+     <button class="btn primary" id="doneSecret">I've saved it</button></div></div>` : ''}
+
+  <div class="card"><h2>Add a project</h2><div style="padding:12px 16px">
+    <p class="muted">Lets a repo deploy to this server through signed webhooks. The app name must equal <span class="mono">APP_NAME</span> in the repo's <span class="mono">.deploy/manifest.env</span>; a repo with a frontend and a backend registers each app.</p>
+    <div class="row">
+      <input id="pApp" placeholder="app name, e.g. shop-api" class="mono" style="width:200px">
+      <input id="pRepo" placeholder="owner/repo (local test: local/shop-api)" class="mono" style="width:300px">
+    </div>
+    <div class="row">Allowed environments:
+      ${ALL_ENVS.map(e => `<label><input type="checkbox" class="pEnv" value="${e}" checked> ${e}</label>`).join(' ')}
+      &nbsp; prod only from branch <input id="pProdBranch" value="main" class="mono" style="width:100px">
+    </div>
+    <details><summary class="muted">Private images? Registry pull token (optional)</summary>
+      <div class="row"><input id="pRegUser" placeholder="registry user" style="width:200px">
+        <input id="pRegToken" placeholder="read-only token (read:packages)" type="password" style="width:300px"></div></details>
+    <div class="row"><button class="btn primary" id="pAdd">Add project</button></div>
+    <div id="pOut"></div>
+  </div></div>
+
+  <div class="card"><h2>Registered projects <span class="muted" style="font-weight:400">${j.projects.length}</span></h2><div class="scroll"><table>
+    <tr><th>Project</th><th>Repo</th><th>Allowed environments</th><th>Running environments</th><th>Registry</th><th>Added</th><th></th></tr>
+    ${j.projects.map(p => `<tr>
+      <td class="mono"><b>${esc(p.app)}</b></td>
+      <td class="mono">${esc(p.repo)}</td>
+      <td>${p.envs.split(',').map(e => envBadge(e === 'preview' ? 'pr-…' : e).replace('pr-…', 'preview')).join(' ')}<br><span class="muted">prod from <span class="mono">${esc(p.prod_branch)}</span></span></td>
+      <td>${p.environments.length ? p.environments.map(envBadge).join(' ') : '<span class="muted">none yet</span>'}</td>
+      <td>${p.has_registry_token ? `token ✓ <span class="muted">${esc(p.registry_user)}</span>` : '<span class="muted">public / global</span>'}</td>
+      <td>${ago(p.created_at)}<br><span class="muted">${esc(p.created_by)}</span></td>
+      <td style="white-space:nowrap"><button class="btn" data-penvs="${esc(p.app)}|${esc(p.envs)}">Environments…</button>
+        <button class="btn" data-prot="${esc(p.app)}|${esc(p.repo)}">Rotate secret</button>
+        <button class="btn danger" data-prm="${esc(p.app)}">Remove</button></td></tr>`).join('')
+      || '<tr><td colspan="7" class="empty">No projects yet — add one above.</td></tr>'}
+  </table></div></div>`;
+
+  el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied')));
+  $('#doneSecret', el)?.addEventListener('click', () => renderProjects());
+  $('#pAdd', el).onclick = async e => {
+    const app = $('#pApp').value.trim(), repo = $('#pRepo').value.trim();
+    const envs = [...el.querySelectorAll('.pEnv:checked')].map(c => c.value).join(',');
+    if (!/^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$/.test(app)) return toast('App name: lowercase letters, digits, dashes');
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return toast('Repo must look like owner/repo');
+    if (!envs) return toast('Allow at least one environment');
+    e.target.disabled = true;
+    try {
+      const r = await api('/api/project', { op: 'add', app, repo, envs, prod_branch: $('#pProdBranch').value.trim(),
+        registry_user: $('#pRegUser').value.trim(), registry_token: $('#pRegToken').value.trim() });
+      if (!r.ok || !r.secret) { $('#pOut').innerHTML = `<pre>${esc(r.output)}</pre>`; return; }
+      renderProjects({ app, repo, secret: r.secret });
+    } catch (err) { toast(err.message); } finally { e.target.disabled = false; }
+  };
+  el.querySelectorAll('[data-prot]').forEach(b => b.onclick = async () => {
+    const [app, repo] = b.dataset.prot.split('|');
+    if (!window.confirm(`Issue a new webhook secret for ${app}? The current one stops working immediately — the repo's INFRA_WEBHOOK_SECRET must be updated.`)) return;
+    const r = await api('/api/project', { op: 'rotate', app });
+    if (r.secret) renderProjects({ app, repo, secret: r.secret }); else toast('Failed — see Activity');
+  });
+  el.querySelectorAll('[data-penvs]').forEach(b => b.onclick = async () => {
+    const [app, envs] = b.dataset.penvs.split('|');
+    const v = prompt(`Allowed environments for ${app} (comma separated: ${ALL_ENVS.join(', ')})`, envs);
+    if (v === null) return;
+    const r = await api('/api/project', { op: 'set', app, envs: v.replace(/\s+/g, '') }).catch(e => ({ output: e.message }));
+    toast(r.ok ? `${app} updated` : (r.output || 'Failed')); renderProjects();
+  });
+  el.querySelectorAll('[data-prm]').forEach(b => b.onclick = async () => {
+    const app = b.dataset.prm;
+    const c = prompt(`Remove ${app}? Its webhooks will be refused from now on (running environments stay until you destroy them).\nType ${app} to confirm:`);
+    if (c !== app) return toast('Not confirmed');
+    const r = await api('/api/project', { op: 'remove', app, confirm: c });
+    toast(r.ok ? `${app} removed` : 'Failed'); renderProjects();
   });
 }
 
