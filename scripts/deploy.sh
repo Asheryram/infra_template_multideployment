@@ -483,7 +483,7 @@ for comp in "${COMPONENTS[@]}"; do
     elif [[ $h == "$PG_CONTAINER" ]]; then DB_CONNECTED="platform:$d"
     else DB_CONNECTED="external:$h"; fi
     break
-  done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=postgres' "$STACK_DIR/runtime/$comp.env" 2>/dev/null)
+  done < <(awk '/^[A-Za-z_][A-Za-z0-9_]*=postgres/ { print }' "$STACK_DIR/runtime/$comp.env")
 done
 write_kv "$tmp" DB_NAME "$([[ $OWN_DB == true ]] && echo "$DB_NAME")"
 write_kv "$tmp" DB_CONNECTED "$DB_CONNECTED"
