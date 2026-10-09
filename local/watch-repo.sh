@@ -43,7 +43,7 @@ POLL_STATE="/tmp/infra-gitops"
 mkdir -p "$POLL_STATE"
 
 S=""; if [[ ${TLS_MODE:-selfsigned} != external && ${TRAEFIK_HTTPS_PORT:-443} != 443 ]]; then S=":$TRAEFIK_HTTPS_PORT"; fi
-WEBHOOK_BASE="https://hooks.$DOMAIN$S"
+WEBHOOK_BASE=${INFRA_GITOPS_WEBHOOK_BASE:-"https://hooks.$DOMAIN$S"}
 
 log()  { printf '\033[36m[%s gitops]\033[0m %s\n'   "$(date '+%H:%M:%S')" "$*"; }
 ok()   { printf '\033[32m[%s gitops]\033[0m ✔ %s\n' "$(date '+%H:%M:%S')" "$*"; }

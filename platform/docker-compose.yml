@@ -138,6 +138,7 @@ services:
       RUN_UID: ${DEPLOY_UID:?run via 'infra platform up'}
       RUN_GID: ${DEPLOY_GID:?run via 'infra platform up'}
       DOCKER_SOCKET_GID: ${DOCKER_SOCKET_GID:?run via 'infra platform up'}
+      INFRA_GITOPS_WEBHOOK_BASE: http://infra-console:8000
     volumes:
       # identical paths inside and out, so the scripts behave exactly as on the host
       - ${INFRA_ROOT}:${INFRA_ROOT}:ro
