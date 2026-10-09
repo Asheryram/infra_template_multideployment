@@ -7,6 +7,8 @@
 SCRIPT_NAME=cleanup
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+# shellcheck source=lib/db.sh
+source "$INFRA_ROOT/scripts/lib/db.sh"
 
 DRY=0
 case ${1:-} in
@@ -45,6 +47,30 @@ for meta in "$DEPLOY_ROOT"/*/pr-*/meta.env; do
   fi
 done
 
+# Orphaned stacks: a directory exists under DEPLOY_ROOT with no meta.env and no running containers.
+# This happens when a first deploy fails before writing meta.env (OOM, image pull error, etc.).
+# The DB and role may have been provisioned — clean them up too.
+for stack_dir in "$DEPLOY_ROOT"/*/*; do
+  [[ -d $stack_dir ]] || continue
+  app=$(basename "$(dirname "$stack_dir")")
+  env=$(basename "$stack_dir")
+  [[ -f $stack_dir/meta.env ]] && continue          # normal deployment, skip
+  [[ -f $stack_dir/status.env ]] && continue        # blocked deploy waiting for secrets, skip
+  # No meta and no status — check if any containers are running for this stack.
+  stack=$(stack_name "$app" "$env")
+  running=$(docker ps -q --filter "label=com.docker.compose.project=$stack" --filter "label=$MANAGED_LABEL" 2>/dev/null | wc -l)
+  (( running == 0 )) || continue
+  if (( DRY )); then
+    log "[dry-run] would clean orphaned stack $app/$env (no meta.env, no running containers)"
+  else
+    log "cleaning orphaned stack $app/$env (failed first deploy)"
+    db=$(db_ident "${app}_${env}")
+    db_drop "$db" "$db"
+    rm -rf "$stack_dir"
+    rmdir "$DEPLOY_ROOT/$app" 2>/dev/null || true
+  fi
+done
+
 # No global `docker * prune` — this host may run other people's containers.
 # We only remove images WE pulled (recorded in owned-images) that no container uses
 # and that we haven't pulled for PRUNE_IMAGES_DAYS. Our networks/volumes are already
@@ -72,3 +98,16 @@ if [[ -f $f ]]; then
 fi
 
 log "OK  disk now: $(df -h --output=pcent / | tail -1 | tr -d ' ') used"
+
+# DB sprawl report: log how many databases exist per app vs how many environments are deployed.
+# Surfaces orphaned DBs before they become a disk problem.
+if pg_running; then
+  log "--- database summary ---"
+  for app_dir in "$DEPLOY_ROOT"/*/; do
+    app=$(basename "$app_dir")
+    deployed=$(find "$app_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    db_count=$(sql_scalar "SELECT count(*) FROM pg_database WHERE datname LIKE '$(db_ident "$app")%' AND NOT datistemplate" 2>/dev/null || echo '?')
+    db_size=$(sql_scalar "SELECT pg_size_pretty(sum(pg_database_size(datname))) FROM pg_database WHERE datname LIKE '$(db_ident "$app")%' AND NOT datistemplate" 2>/dev/null || echo '?')
+    log "  $app: $deployed environment(s) deployed, $db_count database(s), total $db_size"
+  done
+fi

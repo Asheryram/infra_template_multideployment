@@ -89,6 +89,12 @@ fi
 if [[ $PREVIEW == true && ! -f $STACK_DIR/meta.env ]]; then
   n=$(count_previews)
   (( n < MAX_PREVIEWS )) || die "preview limit reached ($n/$MAX_PREVIEWS). Close old PRs or run 'infra cleanup'."
+  # Per-app cap: MAX_PREVIEWS_PER_APP in the manifest overrides the global limit for this app.
+  if [[ -n ${MAX_PREVIEWS_PER_APP:-} ]]; then
+    app_n=$(find "$DEPLOY_ROOT/$APP" -mindepth 1 -maxdepth 1 -type d -name 'pr-*' 2>/dev/null | wc -l)
+    (( app_n < MAX_PREVIEWS_PER_APP )) \
+      || die "per-app preview limit reached for $APP ($app_n/$MAX_PREVIEWS_PER_APP). Close old PRs or run 'infra cleanup'."
+  fi
 fi
 
 PREV_TAG=""
@@ -170,23 +176,17 @@ case $TYPE in
   backend|split) SELF_API_URL="https://${HOST[api]}$URL_PORT_SUFFIX" ;;
 esac
 
-# ----------------------------------------------------------------------------- database (provisioned, never wired)
-# Render model: NEEDS_DB=true provisions an empty, isolated database for this environment on its
-# FIRST deploy — and that's all. Nothing is injected into the app: DevOps decides what the app
-# connects to by setting DATABASE_URL (or any name) as a variable — this DB, another env's, an
-# external one, or none. A wiped DB is NOT recreated by later deploys; only `infra db create`
-# (console: Database → Create) brings it back, empty, with the same URL.
+# ----------------------------------------------------------------------------- database
+# Deploy never provisions or wires a database. If an environment needs one:
+#   infra db create <app> <env>          — spin up an isolated DB for that branch
+#   infra db url <app> <env>             — get the connection URL
+# Then paste the URL into the console as DATABASE_URL (or any variable name the app uses).
+# One environment can point at another's DB — just set the variable to that URL.
+# If a DB already exists for this environment it is left completely untouched.
 
 DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
-pwfile="$STACK_DIR/.db_password"
-if [[ ${NEEDS_DB:-false} == true && ! -f $STACK_DIR/meta.env && ! -f $STACK_DIR/.db_wiped ]]; then
-  if [[ ! -s $pwfile ]]; then ( umask 077; openssl rand -hex 24 > "$pwfile" ); fi
-  template=""
-  if [[ $PREVIEW == true && ${DB_PREVIEW_SOURCE:-template} == template ]]; then template=$(db_template_name "$APP"); fi
-  db_ensure "$DB_NAME" "$DB_NAME" "$(<"$pwfile")" "$template"
-  log "database $DB_NAME provisioned (not connected — set DATABASE_URL in the console to use it)"
-fi
 OWN_DB=false
+pwfile="$STACK_DIR/.db_password"
 if [[ -s $pwfile ]] && pg_running && db_exists "$DB_NAME"; then OWN_DB=true; fi
 
 
@@ -383,25 +383,45 @@ if (( PULL )); then
   fi
 fi
 
-# Migrations need a database the service is actually told about — and must not alter someone
-# else's: they run only against THIS environment's own DB, unless DevOps sets the variable
-# MIGRATE_ON_SHARED_DB=true for the service.
-db_of_url() { sed -nE 's#^[a-z]+://[^@]*@([^:/]+)(:[0-9]+)?/([^?]+).*#\1 \3#p' <<<"$1"; }   # → "host db"
+# Migrations: scan the service's runtime env for any variable whose value is a postgres URL
+# pointing at the platform DB. The variable name doesn't matter — apps call it whatever they want
+# (DATABASE_URL, DB_URL, PG_DSN, POSTGRES_URI, …). We find it, check it's this env's own DB,
+# and use it. If it points at another env's DB, MIGRATE_ON_SHARED_DB=true is required.
+#
+# Atomicity guard: pre-migration snapshot for non-prod so DevOps can restore if compose up
+# fails after a successful migration.
+db_of_url() { sed -nE 's#^[a-z]+://[^@]*@([^:/]+)(:[0-9]+)?/([^?]+).*#\1 \3#p' <<<"$1"; }
 if [[ -n ${MIGRATE_CMD:-} ]]; then
   msvc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
-  murl=$(sed -nE 's/^DATABASE_URL=(.+)$/\1/p' "$STACK_DIR/runtime/$msvc.env" | tail -1)
+  # Find the first env var whose value looks like a postgres URL pointing at the platform DB.
+  murl=$(grep -E "^[A-Za-z_][A-Za-z0-9_]*=postgres(ql)?://" "$STACK_DIR/runtime/$msvc.env" \
+         | grep "@$PG_CONTAINER[:/]" | head -1 | cut -d= -f2-)
   read -r mhost mdb <<<"$(db_of_url "$murl")"
   if [[ -z $murl ]]; then
-    log "migrations skipped: '$msvc' has no DATABASE_URL yet (set it in the console → Manage → Database)"
+    log "migrations skipped: no variable in '$msvc' points at the platform DB yet — set one in the console then redeploy"
     MIGRATE_CMD=""
-  elif [[ ! ( $mhost == "$PG_CONTAINER" && $mdb == "$DB_NAME" ) ]] \
+  elif [[ $mdb != "$DB_NAME" ]] \
        && ! grep -qE '^MIGRATE_ON_SHARED_DB=true$' "$STACK_DIR/runtime/$msvc.env"; then
-    warn "migrations skipped: DATABASE_URL points to '$mdb' on '$mhost', not this environment's own DB (set MIGRATE_ON_SHARED_DB=true to allow)"
+    warn "migrations skipped: DB variable points at '$mdb', not this environment's own DB '$DB_NAME' (set MIGRATE_ON_SHARED_DB=true to allow)"
     MIGRATE_CMD=""
   fi
 fi
 if [[ -n ${MIGRATE_CMD:-} ]]; then
   svc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
+  # Pre-migration snapshot for non-prod: lets DevOps restore if compose up fails after a
+  # successful migration. Stored in BACKUP_DIR/pre-migrate/<stack>-<tag>.dump, kept for 3 days.
+  if [[ $ENV_NAME != prod && -n ${BACKUP_DIR:-} ]]; then
+    snap_dir="$BACKUP_DIR/pre-migrate"
+    mkdir -p "$snap_dir"; chmod 700 "$snap_dir"
+    snap="$snap_dir/$STACK-$TAG.dump"
+    if docker exec "$PG_CONTAINER" pg_dump -U postgres -Fc "$DB_NAME" > "$snap" 2>/dev/null; then
+      log "pre-migration snapshot: $snap"
+      find "$snap_dir" -name "$STACK-*.dump" -mtime +3 -delete 2>/dev/null || true
+    else
+      warn "pre-migration snapshot failed — continuing anyway"
+      rm -f "$snap"
+    fi
+  fi
   log "running migrations in '$svc': $MIGRATE_CMD"
   if ! "${COMPOSE[@]}" run --rm --no-deps -T --label traefik.enable=false "$svc" sh -c "$MIGRATE_CMD"; then
     alert "migrations FAILED for $STACK ($TAG) — old version still running"
@@ -446,15 +466,20 @@ write_kv "$tmp" BRANCH "$BRANCH"
 write_kv "$tmp" COMMIT "$COMMIT"
 write_kv "$tmp" URL "$URL"
 write_kv "$tmp" API_URL "$SELF_API_URL"
-# What the service is actually connected to (for the console) — read from its env, not assumed.
+# What the service is actually connected to (for the console) — scan all env vars for any
+# postgres URL, not just DATABASE_URL (apps name it whatever their framework expects).
+db_of_url() { sed -nE 's#^[a-z]+://[^@]*@([^:/]+)(:[0-9]+)?/([^?]+).*#\1 \3#p' <<<"$1"; }
 DB_CONNECTED=none
 for comp in "${COMPONENTS[@]}"; do
-  u=$(sed -nE 's/^DATABASE_URL=(.+)$/\1/p' "$STACK_DIR/runtime/$comp.env" | tail -1)
-  [[ -n $u ]] || continue
-  read -r h d <<<"$(db_of_url "$u")"
-  if [[ $h == "$PG_CONTAINER" && $d == "$DB_NAME" ]]; then DB_CONNECTED=own
-  elif [[ $h == "$PG_CONTAINER" ]]; then DB_CONNECTED="platform:$d"
-  else DB_CONNECTED="external:$h"; fi
+  while IFS='=' read -r _ val; do
+    [[ $val == postgres* ]] || continue
+    read -r h d <<<"$(db_of_url "$val")"
+    [[ -n $h ]] || continue
+    if [[ $h == "$PG_CONTAINER" && $d == "$DB_NAME" ]]; then DB_CONNECTED=own
+    elif [[ $h == "$PG_CONTAINER" ]]; then DB_CONNECTED="platform:$d"
+    else DB_CONNECTED="external:$h"; fi
+    break
+  done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=postgres' "$STACK_DIR/runtime/$comp.env" 2>/dev/null)
 done
 write_kv "$tmp" DB_NAME "$([[ $OWN_DB == true ]] && echo "$DB_NAME")"
 write_kv "$tmp" DB_CONNECTED "$DB_CONNECTED"

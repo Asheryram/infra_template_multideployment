@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Database operations on the shared Postgres.
 #
-#   Per-environment database — provisioned, never wired. The app only uses it if DevOps sets
-#   DATABASE_URL (or any name) as a variable:
-#   infra db info   <app> <env> [--json]       exists? size, URL (masked), what the app is connected to
-#   infra db create <app> <env>                create the (empty) DB — same URL as before if it was wiped
-#   infra db wipe   <app> <env>                DROP it. The app keeps running (its DB calls fail) and later
-#                                              deploys do NOT recreate it — only `create` does
-#   infra db url    <app> <env>                print the connection URL (internal to the platform)
-#   infra db use    <app> <env> [--from <app>/<env>] [--key DATABASE_URL] [--scope <scope>] [--allow-prod]
-#                                              set a variable on <app>/<env> pointing at a DB (default: its own)
+#   Per-environment database — provisioned on demand, never wired automatically.
+#   DevOps creates a DB when a branch needs one, then sets the connection URL as whatever
+#   variable name the app reads (DB_URL, PG_DSN, POSTGRES_URI, …) in the console.
+#   infra db info   <app> <env> [--json]
+#   infra db create <app> <env>
+#   infra db wipe   <app> <env>
+#   infra db url    <app> <env>                print the connection URL to paste into the console
+#   infra db use    <app> <env> --key <VAR> [--from <app>/<env>] [--scope <scope>] [--allow-prod]
+#                                              set <VAR> on <app>/<env> to point at a DB
 #
 #   infra db list
 #   infra db psql     <app> <env>
@@ -71,7 +71,7 @@ case $action in
     else
       echo "database:  $db ($([[ $exists == true ]] && echo "exists, $size" || echo "does not exist${wiped:+}"))"
       echo "url:       ${url:+${url%%:*}://$db:••••@$PG_CONTAINER:5432/$db}"
-      echo "app uses:  ${connected:-none}   (set DATABASE_URL in the console, or: infra db use $app $env)"
+      echo "app uses:  ${connected:-none}   (set the DB connection variable in the console, or: infra db use $app $env --key YOUR_VAR_NAME)"
     fi
     ;;
 
@@ -81,7 +81,8 @@ case $action in
     db_ensure "$db" "$db" "$(<"$SD/.db_password")"
     rm -f "$SD/.db_wiped"
     attach_pg "$app" "$env"
-    log "database $db ready (empty) — the app uses it only if its DATABASE_URL points here (infra db use $app $env)"
+    log "database $db ready — copy the URL into your app's DB connection variable in the console: infra db url $app $env"
+    log "then: infra db use $app $env --key YOUR_VAR_NAME  (e.g. --key DB_URL or --key PG_DSN)"
     ;;
 
   wipe)
@@ -99,16 +100,17 @@ case $action in
 
   use)
     app=${1:?app}; env=${2:?env}; shift 2; need_stack "$app" "$env"
-    from="$app/$env" key=DATABASE_URL scope=$env allow_prod=false
+    from="$app/$env" key="" scope=$env allow_prod=false
     while (( $# )); do
       case $1 in
-        --from) from=${2:?}; shift 2 ;;
-        --key) key=${2:?}; shift 2 ;;
-        --scope) scope=${2:?}; shift 2 ;;
+        --from)       from=${2:?}; shift 2 ;;
+        --key)        key=${2:?}; shift 2 ;;
+        --scope)      scope=${2:?}; shift 2 ;;
         --allow-prod) allow_prod=true; shift ;;
         *) die "unknown option $1" ;;
       esac
     done
+    [[ -n $key ]] || die "--key is required: the variable name the app reads its DB URL from (e.g. --key DB_URL)"
     [[ $from =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || die "--from must be <app>/<env>"
     [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "bad key"
     [[ $scope =~ ^[a-z0-9-]+(\.(app|web|api))?$ ]] || die "bad scope"

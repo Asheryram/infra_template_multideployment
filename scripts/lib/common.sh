@@ -78,7 +78,7 @@ write_kv() {
 # Parse a repo's manifest.env WITHOUT executing it. The manifest comes from the app repo — on a
 # multi-tenant host it is untrusted input, so it's never `source`d. Only known keys are accepted,
 # values are taken literally (no $(), no ${}, no backticks), and every value is format-checked.
-MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|NEEDS_DB|DB_PREVIEW_SOURCE|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|WATCH_PATHS|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
+MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|MAX_PREVIEWS_PER_APP|WATCH_PATHS|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
 load_manifest() {
   local file=$1 line key val n=0
   [[ -f $file ]] || die "manifest not found: $file"
@@ -105,7 +105,8 @@ load_manifest() {
       *_HOST_*)                [[ $val =~ ^[a-z0-9.-]+$ ]] ;;
       IMAGE_REPO|*_IMAGE)      [[ -z $val || $val =~ ^[a-zA-Z0-9._/:@{}-]+$ ]] ;;
       EXTRA_MIDDLEWARES)       [[ -z $val || $val =~ ^[a-zA-Z0-9@,_-]+$ ]] ;;
-      NEEDS_DB|PREVIEW_AUTH|API_PREVIEW_AUTH) [[ $val =~ ^(true|false)$ ]] ;;
+      PREVIEW_AUTH|API_PREVIEW_AUTH) [[ $val =~ ^(true|false)$ ]] ;;
+      MAX_PREVIEWS_PER_APP) [[ $val =~ ^[0-9]+$ ]] ;;
       *)                       true ;;
     esac || die "manifest line $n: invalid value for $key: $val"
     printf -v "$key" '%s' "$val"

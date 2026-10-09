@@ -250,7 +250,7 @@ def secrets(s, app):
     return out
 
 
-def set_secret(s, app, scope, key, value):
+def set_secret(s, app, scope, key, value, actor="unknown"):
     d = f"{s['secrets_root']}/{app}"
     os.makedirs(d, exist_ok=True)
     try:
@@ -261,11 +261,16 @@ def set_secret(s, app, scope, key, value):
     lines = []
     if os.path.exists(path):
         with open(path) as f:
-            lines = [ln for ln in f.read().splitlines() if not re.match(rf"^(export\s+)?{key}=", ln)]
+            lines = [ln for ln in f.read().splitlines() if not re.match(rf"^(export\s+)?{key}=", ln)
+                     and not re.match(rf"^# {key} (set|deleted) by ", ln)]
     else:
         lines = [f"# Variables for {app} ({scope}) — managed in the infra console / 'infra secrets edit'."]
+    ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     if value is not None:
+        lines.append(f"# {key} set by {actor} at {ts}")
         lines.append(f"{key}={value}")
+    else:
+        lines.append(f"# {key} deleted by {actor} at {ts}")
     tmp = f"{path}.tmp"
     with open(tmp, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -643,7 +648,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "bad scope or key"})
                 if value is not None and ("\n" in value or "\r" in value):
                     return self.send(400, {"error": "values can't contain newlines"})
-                set_secret(s, app, scope, key, value)
+                set_secret(s, app, scope, key, value, actor=self.user())
                 self.audit(s, "variable", f"{app} scope={scope} key={key} {'deleted' if value is None else 'set'}")
                 return self.send(200, {"ok": True})
 

@@ -3,92 +3,269 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>infra console</title>
+<title>Infra Console</title>
 <style>
+:root {
+  --bg: #f0f2f5;
+  --sidebar: #0f1623;
+  --sidebar-hover: #1a2235;
+  --sidebar-active: #1e3a5f;
+  --panel: #ffffff;
+  --text: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2563eb;
+  --accent-soft: #eff6ff;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --bad: #dc2626;
+  --prod: #991b1b;
+  --staging: #92400e;
+  --develop: #1d4ed8;
+  --preview: #6d28d9;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -1px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #667085; --line: #e4e7ec;
-    --accent: #3b5bdb; --accent-soft: #e8edff; --ok: #12b76a; --warn: #f79009; --bad: #f04438;
-    --prod: #b42318; --staging: #b54708; --develop: #175cd3; --preview: #6941c6;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg: #0a0d14; --panel: #111827; --text: #f3f4f6; --muted: #9ca3af;
+    --line: #1f2937; --accent: #3b82f6; --accent-soft: #1e3a5f;
+    --sidebar: #080b12; --sidebar-hover: #111827; --sidebar-active: #1e3a5f;
   }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #0f1218; --panel: #171b23; --text: #e6e9ef; --muted: #98a2b3; --line: #262c38;
-            --accent: #7c95ff; --accent-soft: #1f2640; }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0; }
-  header .meta { color: var(--muted); font-size: 13px; }
-  header .links { margin-left: auto; display: flex; gap: 12px; flex-wrap: wrap; }
-  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
-  nav { display: flex; gap: 4px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-  nav button { border: 0; background: none; padding: 10px 14px; color: var(--muted); font: inherit; cursor: pointer; border-bottom: 2px solid transparent; }
-  nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-  main { padding: 20px; max-width: 1400px; margin: 0 auto; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
-  .card > h2 { font-size: 15px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
-  tr:last-child td { border-bottom: 0; }
-  .scroll { overflow-x: auto; }
-  .mono { font-family: var(--mono); font-size: 12.5px; }
-  .muted { color: var(--muted); }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--accent-soft); color: var(--accent); }
-  .env-prod { background: #fee4e2; color: var(--prod); } .env-staging { background: #fef0c7; color: var(--staging); }
-  .env-develop { background: #d1e9ff; color: var(--develop); } .env-preview { background: #ebe9fe; color: var(--preview); }
-  @media (prefers-color-scheme: dark) { .env-prod, .env-staging, .env-develop, .env-preview { background: #262c38; } }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .up { background: var(--ok); } .down { background: var(--bad); } .blocked { background: var(--warn); }
-  .chip { display: inline-block; font-size: 11.5px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--warn); color: var(--warn); margin-left: 4px; }
-  button.btn { border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 6px 12px; border-radius: 7px; font: inherit; cursor: pointer; }
-  button.btn:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button.danger { color: var(--bad); border-color: var(--bad); }
-  button:disabled { opacity: .5; cursor: wait; }
-  input, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
-  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 100vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -10px 0 30px rgba(0,0,0,.12); z-index: 10; overflow-y: auto; transform: translateX(100%); transition: transform .2s; }
-  .drawer.open { transform: none; }
-  .drawer header { position: sticky; }
-  .drawer section { padding: 14px 20px; border-bottom: 1px solid var(--line); }
-  .drawer h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
-  pre { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 8px; overflow: auto; max-height: 420px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
-  .banner { background: #fffaeb; border: 1px solid #fedf89; color: #93370d; padding: 10px 12px; border-radius: 8px; }
-  @media (prefers-color-scheme: dark) { .banner { background: #2a2110; border-color: #6b4e16; color: #fec84b; } }
-  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--panel); padding: 10px 16px; border-radius: 8px; z-index: 20; display: none; max-width: 90vw; }
-  .kv td:first-child { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
-  .empty { padding: 24px; color: var(--muted); text-align: center; }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; min-height: 100vh; }
+
+/* ── Sidebar ── */
+#sidebar {
+  width: 220px; min-height: 100vh; background: var(--sidebar); color: #e2e8f0;
+  display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; z-index: 20;
+}
+#sidebar .brand {
+  display: flex; align-items: center; gap: 10px; padding: 20px 18px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+}
+#sidebar .brand svg { flex-shrink: 0; }
+#sidebar .brand-name { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: -.01em; }
+#sidebar .brand-sub { font-size: 11px; color: #64748b; margin-top: 1px; }
+#sidebar nav { flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; }
+#sidebar nav button {
+  width: 100%; text-align: left; border: 0; background: none; color: #94a3b8;
+  padding: 9px 12px; border-radius: 6px; font: inherit; font-size: 13.5px; cursor: pointer;
+  display: flex; align-items: center; gap: 10px; transition: background .15s, color .15s;
+}
+#sidebar nav button:hover { background: var(--sidebar-hover); color: #e2e8f0; }
+#sidebar nav button.on { background: var(--sidebar-active); color: #fff; font-weight: 600; }
+#sidebar nav button svg { opacity: .7; flex-shrink: 0; }
+#sidebar nav button.on svg { opacity: 1; }
+#sidebar .sidebar-footer {
+  padding: 14px 18px; border-top: 1px solid rgba(255,255,255,.07);
+  font-size: 12px; color: #475569;
+}
+#sidebar .sidebar-footer a { color: #64748b; text-decoration: none; }
+#sidebar .sidebar-footer a:hover { color: #94a3b8; }
+
+/* ── Main ── */
+#main { margin-left: 220px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
+#topbar {
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  padding: 0 24px; height: 56px; display: flex; align-items: center; gap: 16px;
+  position: sticky; top: 0; z-index: 10; box-shadow: var(--shadow);
+}
+#topbar h1 { font-size: 15px; font-weight: 600; }
+#topbar .meta { color: var(--muted); font-size: 13px; margin-left: 4px; }
+#topbar .links { margin-left: auto; display: flex; gap: 8px; }
+#topbar .links a {
+  font-size: 12.5px; color: var(--muted); text-decoration: none; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: 6px; display: flex; align-items: center; gap: 5px;
+  transition: border-color .15s, color .15s;
+}
+#topbar .links a:hover { border-color: var(--accent); color: var(--accent); }
+#content { padding: 24px; max-width: 1280px; width: 100%; }
+
+/* ── Stats row ── */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 22px; }
+.stat-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 18px; box-shadow: var(--shadow);
+}
+.stat-card .stat-label { font-size: 12px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
+.stat-card .stat-value { font-size: 26px; font-weight: 700; margin-top: 4px; line-height: 1; }
+.stat-card .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* ── Cards ── */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 16px; overflow: hidden; box-shadow: var(--shadow); }
+.card-header {
+  display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.card-header h2 { font-size: 14px; font-weight: 600; }
+.card-header .card-meta { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+/* ── Table ── */
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 10px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
+td { padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13.5px; }
+tr:last-child td { border-bottom: 0; }
+tr:hover td { background: rgba(0,0,0,.015); }
+@media (prefers-color-scheme: dark) { tr:hover td { background: rgba(255,255,255,.02); } }
+
+/* ── Badges ── */
+.badge {
+  display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; letter-spacing: .01em;
+}
+.env-prod    { background: #fee2e2; color: var(--prod); }
+.env-staging { background: #fef3c7; color: var(--staging); }
+.env-develop { background: #dbeafe; color: var(--develop); }
+.env-preview { background: #ede9fe; color: var(--preview); }
+@media (prefers-color-scheme: dark) {
+  .env-prod { background: #3b0a0a; } .env-staging { background: #3b2000; }
+  .env-develop { background: #0f2040; } .env-preview { background: #2d1b5e; }
+}
+.badge-type { background: var(--accent-soft); color: var(--accent); }
+
+/* ── Status dot ── */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
+.up { background: var(--ok); box-shadow: 0 0 0 2px rgba(22,163,74,.2); }
+.down { background: var(--bad); box-shadow: 0 0 0 2px rgba(220,38,38,.2); }
+.blocked { background: var(--warn); box-shadow: 0 0 0 2px rgba(217,119,6,.2); }
+
+/* ── Chips ── */
+.chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--warn); color: var(--warn); margin-left: 5px; font-weight: 500; }
+
+/* ── Buttons ── */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button.btn {
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  padding: 6px 13px; border-radius: 6px; font: inherit; font-size: 13px; cursor: pointer;
+  transition: border-color .15s, background .15s; white-space: nowrap;
+}
+button.btn:hover { border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary:hover { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+button.danger { color: var(--bad); border-color: var(--bad); }
+button.danger:hover { background: #fee2e2; }
+button:disabled { opacity: .45; cursor: wait; }
+input, select {
+  font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: var(--text);
+  transition: border-color .15s;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+
+/* ── Misc ── */
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.empty { padding: 32px; color: var(--muted); text-align: center; font-size: 13.5px; }
+pre {
+  background: #0d1117; color: #c9d1d9; padding: 14px 16px; border-radius: var(--radius);
+  overflow: auto; max-height: 440px; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
+}
+.banner {
+  background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+  padding: 11px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.5;
+}
+@media (prefers-color-scheme: dark) { .banner { background: #2a1f00; border-color: #78350f; color: #fbbf24; } }
+
+/* ── Drawer ── */
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(680px, 100vw);
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: -8px 0 32px rgba(0,0,0,.12); z-index: 30;
+  overflow-y: auto; transform: translateX(100%); transition: transform .22s cubic-bezier(.4,0,.2,1);
+}
+.drawer.open { transform: none; }
+.drawer-header {
+  display: flex; align-items: center; gap: 12px; padding: 16px 20px;
+  border-bottom: 1px solid var(--line); position: sticky; top: 0;
+  background: var(--panel); z-index: 1;
+}
+.drawer-header h2 { font-size: 15px; font-weight: 600; }
+.drawer-header .close-btn { margin-left: auto; }
+.drawer section { padding: 18px 20px; border-bottom: 1px solid var(--line); }
+.drawer h3 { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 10px; }
+.kv td:first-child { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; color: var(--muted); width: 1%; padding-right: 20px; }
+
+/* ── Toast ── */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: #1f2937; color: #f9fafb; padding: 11px 20px; border-radius: 8px;
+  z-index: 50; display: none; max-width: 90vw; font-size: 13.5px;
+  box-shadow: var(--shadow-md);
+}
+
+/* ── Overlay ── */
+#overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 25; }
+#overlay.on { display: block; }
 </style>
 </head>
 <body>
-<header>
-  <h1>infra console</h1>
-  <span class="meta" id="meta"></span>
-  <span class="links" id="links"></span>
-</header>
-<nav>
-  <button data-tab="envs" class="on">Environments</button>
-  <button data-tab="projects">Projects</button>
-  <button data-tab="vars">Variables</button>
-  <button data-tab="activity">Activity</button>
-</nav>
-<main>
-  <div id="tab-envs"></div>
-  <div id="tab-projects" hidden></div>
-  <div id="tab-vars" hidden></div>
-  <div id="tab-activity" hidden></div>
-</main>
+
+<div id="sidebar">
+  <div class="brand">
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+      <rect width="28" height="28" rx="7" fill="#2563eb"/>
+      <path d="M7 14h14M14 7v14M9 9l10 10M19 9L9 19" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    <div>
+      <div class="brand-name">Infra Console</div>
+      <div class="brand-sub" id="sidebarDomain">loading…</div>
+    </div>
+  </div>
+  <nav>
+    <button data-tab="envs" class="on">
+      <svg width="16" height="16" fill="none" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
+      Environments
+    </button>
+    <button data-tab="projects">
+      <svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M2 4a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4z" stroke="currentColor" stroke-width="1.5"/><path d="M5 8h6M5 5.5h6M5 10.5h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      Projects
+    </button>
+    <button data-tab="vars">
+      <svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      Variables
+    </button>
+    <button data-tab="activity">
+      <svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M8 2v4l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/></svg>
+      Activity
+    </button>
+  </nav>
+  <div class="sidebar-footer">
+    <div id="sidebarUser" style="margin-bottom:6px;color:#64748b"></div>
+    <div id="sidebarLinks" style="display:flex;flex-direction:column;gap:4px"></div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="topbar">
+    <h1 id="topTitle">Environments</h1>
+    <span class="meta" id="topMeta"></span>
+    <div class="links" id="topLinks"></div>
+  </div>
+  <div id="content">
+    <div id="tab-envs"></div>
+    <div id="tab-projects" hidden></div>
+    <div id="tab-vars" hidden></div>
+    <div id="tab-activity" hidden></div>
+  </div>
+</div>
+
+<div id="overlay"></div>
 <aside class="drawer" id="drawer"></aside>
 <div class="toast" id="toast"></div>
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc = s => String(s ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let STATE = { deployments: [], settings: {} };
-let current = null;   // {app, env} open in drawer
-let lastOut = { key: "", html: "" };   // survives the drawer re-render after an action
+let current = null;
+let lastOut = { key: '', html: '' };
 
 async function api(path, body) {
   const opts = body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Infra-Console': '1' }, body: JSON.stringify(body) } : {};
@@ -97,97 +274,185 @@ async function api(path, body) {
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
-function toast(msg, ms = 3500) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms); }
-function ago(ts) { if (!ts) return ''; const s = Date.now() / 1000 - Number(ts); if (s < 90) return 'just now'; if (s < 5400) return Math.round(s / 60) + ' min ago'; if (s < 172800) return Math.round(s / 3600) + ' h ago'; return Math.round(s / 86400) + ' d ago'; }
+function toast(msg, ms = 3500) {
+  const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms);
+}
+function ago(ts) {
+  if (!ts) return '';
+  const s = Date.now() / 1000 - Number(ts);
+  if (s < 90) return 'just now';
+  if (s < 5400) return Math.round(s / 60) + ' min ago';
+  if (s < 172800) return Math.round(s / 3600) + ' h ago';
+  return Math.round(s / 86400) + ' d ago';
+}
 function envClass(env) { return env.startsWith('pr-') ? 'preview' : env; }
-function envBadge(env) { const c = envClass(env); return `<span class="badge env-${['prod','staging','develop','preview'].includes(c) ? c : 'develop'}">${esc(env)}</span>`; }
-function hostLink(url) { return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url.replace(/^https?:\/\//, ''))}</a>` : '<span class="muted">—</span>'; }
+function envBadge(env) {
+  const c = envClass(env);
+  const cls = ['prod','staging','develop','preview'].includes(c) ? c : 'develop';
+  return `<span class="badge env-${cls}">${esc(env)}</span>`;
+}
+function hostLink(url) {
+  return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url.replace(/^https?:\/\//, ''))}</a>` : '<span class="muted">—</span>';
+}
 function byApp() { const m = {}; for (const d of STATE.deployments) (m[d.APP] ||= []).push(d); return m; }
 const ORDER = { prod: 0, staging: 1, develop: 2 };
 const sortEnvs = list => list.sort((a, b) => (ORDER[a.ENV_NAME] ?? 3) - (ORDER[b.ENV_NAME] ?? 3) || a.ENV_NAME.localeCompare(b.ENV_NAME, undefined, { numeric: true }));
+const CONNECTED_LABEL = c => c === 'own' ? 'its own database' : c?.startsWith('platform:') ? `platform DB ${c.slice(9)}` : c?.startsWith('external:') ? `external on ${c.slice(9)}` : 'none';
+
+const TAB_TITLES = { envs: 'Environments', projects: 'Projects', vars: 'Variables', activity: 'Activity' };
 
 async function load() {
   STATE = await api('/api/state');
-  const s = STATE.settings, base = d => `https://${d}.${s.domain}${s.suffix}`;
-  $('#meta').textContent = `${s.server} · ${s.domain} · signed in as ${STATE.user}`;
-  $('#links').innerHTML = [['Traefik', base('traefik')], ['Container logs', base('logs')], ['Uptime', base('status')]]
+  const s = STATE.settings;
+  const base = d => `https://${d}.${s.domain}${s.suffix}`;
+  $('#sidebarDomain').textContent = s.domain || s.server;
+  $('#sidebarUser').textContent = '👤 ' + (STATE.user || 'unknown');
+  $('#sidebarLinks').innerHTML = [['Traefik', base('traefik')], ['Logs', base('logs')], ['Status', base('status')]]
     .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener">${n} ↗</a>`).join('');
+  $('#topMeta').textContent = s.server;
+  $('#topLinks').innerHTML = [['Traefik', base('traefik')], ['Container logs', base('logs')], ['Uptime', base('status')]]
+    .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener"><svg width="12" height="12" fill="none" viewBox="0 0 12 12"><path d="M2 10L10 2M10 2H5M10 2v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>${n}</a>`).join('');
   renderEnvs();
   if (!$('#tab-vars').hidden) renderVars();
   if (current) openDrawer(current.app, current.env, true);
 }
 
-// ------------------------------------------------------------------ Environments tab
+// ── Environments tab ──────────────────────────────────────────────────────────
 function renderEnvs() {
   const apps = byApp(), names = Object.keys(apps).sort();
+  const total = STATE.deployments.length;
+  const up = STATE.deployments.filter(d => d.STATE === 'up').length;
   const previews = STATE.deployments.filter(d => d.ENV_NAME.startsWith('pr-')).length;
-  if (!names.length) { $('#tab-envs').innerHTML = '<div class="card empty">Nothing deployed yet. Open a PR in an app repo, or run <span class="mono">infra deploy</span>.</div>'; return; }
-  $('#tab-envs').innerHTML = `<p class="muted">${STATE.deployments.length} environments · previews ${previews}/${esc(STATE.settings.max_previews)}</p>` +
-    names.map(app => {
-      const rows = sortEnvs(apps[app]);
-      return `<div class="card"><h2>${esc(app)} <span class="badge">${esc(rows[0].TYPE || '')}</span></h2><div class="scroll"><table>
-        <tr><th>Env</th><th>Open</th><th>Branch · tag</th><th>Database</th><th>Deployed</th><th></th></tr>
+  const blocked = STATE.deployments.filter(d => d.STATE === 'blocked').length;
+
+  if (!names.length) {
+    $('#tab-envs').innerHTML = '<div class="card"><div class="empty">Nothing deployed yet. Open a PR in an app repo, or run <span class="mono">infra deploy</span>.</div></div>';
+    return;
+  }
+
+  const stats = `
+    <div class="stats">
+      <div class="stat-card"><div class="stat-label">Total Environments</div><div class="stat-value">${total}</div><div class="stat-sub">${names.length} app${names.length !== 1 ? 's' : ''}</div></div>
+      <div class="stat-card"><div class="stat-label">Running</div><div class="stat-value" style="color:var(--ok)">${up}</div><div class="stat-sub">${total - up} down</div></div>
+      <div class="stat-card"><div class="stat-label">Previews</div><div class="stat-value" style="color:var(--preview)">${previews}</div><div class="stat-sub">of ${esc(STATE.settings.max_previews)} max</div></div>
+      <div class="stat-card"><div class="stat-label">Blocked</div><div class="stat-value" style="color:${blocked ? 'var(--bad)' : 'var(--ok)'}">${blocked}</div><div class="stat-sub">${blocked ? 'missing secrets' : 'all clear'}</div></div>
+    </div>`;
+
+  const tables = names.map(app => {
+    const rows = sortEnvs(apps[app]);
+    return `<div class="card">
+      <div class="card-header">
+        <h2>${esc(app)}</h2>
+        <span class="badge badge-type">${esc(rows[0].TYPE || 'unknown')}</span>
+        <span class="card-meta">${rows.length} environment${rows.length !== 1 ? 's' : ''}</span>
+      </div>
+      <div class="scroll"><table>
+        <tr><th>Status</th><th>Environment</th><th>URL</th><th>Branch / Tag</th><th>Database</th><th>Deployed</th><th></th></tr>
         ${rows.map(d => {
+          const chips = [
+            d.STATE === 'blocked' ? '<span class="chip">blocked</span>' : '',
+            d.MISSING?.length && d.STATE !== 'blocked' ? `<span class="chip">${d.MISSING.length} missing</span>` : '',
+            d.UPCOMING_MISSING?.length ? `<span class="chip" title="required by newer branch: ${esc(d.UPCOMING_MISSING.join(', '))}">will miss ${d.UPCOMING_MISSING.length}</span>` : '',
+          ].join('');
           return `<tr>
-            <td><span class="dot ${d.STATE}"></span>${envBadge(d.ENV_NAME)}${d.STATE === 'blocked' ? '<span class="chip">blocked</span>' : ''}${d.MISSING?.length && d.STATE !== 'blocked' ? `<span class="chip">${d.MISSING.length} missing</span>` : ''}${d.UPCOMING_MISSING?.length ? `<span class="chip" title="required by a newer branch: ${esc(d.UPCOMING_MISSING.join(', '))}">will miss ${d.UPCOMING_MISSING.length}</span>` : ''}</td>
+            <td><span class="dot ${d.STATE}"></span></td>
+            <td>${envBadge(d.ENV_NAME)}${chips}</td>
             <td>${hostLink(d.URL)}${d.API_URL && d.API_URL !== d.URL ? '<br>' + hostLink(d.API_URL) : ''}</td>
             <td class="mono">${esc(d.BRANCH || '—')}<br><span class="muted">${esc(d.TAG || '')}</span></td>
-            <td>${d.HAS_OWN_DB ? 'provisioned' : d.DB_WIPED ? '<span class="chip">wiped</span>' : '<span class="muted">—</span>'}${d.TYPE === 'frontend' ? '' : `<br><span class="muted">app uses: ${esc(CONNECTED_LABEL(d.DB_CONNECTED))}</span>`}</td>
-            <td>${ago(d.DEPLOYED_AT || d.BLOCKED_AT)}<br><span class="muted">${esc(d.DEPLOYED_BY || '')}</span></td>
-            <td><button class="btn" data-manage="${esc(d.APP)}|${esc(d.ENV_NAME)}">Manage</button></td></tr>`;
-        }).join('')}</table></div></div>`;
-    }).join('');
+            <td>${d.HAS_OWN_DB ? '<span style="color:var(--ok)">provisioned</span>' : d.DB_WIPED ? '<span class="chip">wiped</span>' : '<span class="muted">—</span>'}</td>
+            <td style="white-space:nowrap">${ago(d.DEPLOYED_AT || d.BLOCKED_AT)}<br><span class="muted">${esc(d.DEPLOYED_BY || '')}</span></td>
+            <td><button class="btn" data-manage="${esc(d.APP)}|${esc(d.ENV_NAME)}">Manage →</button></td>
+          </tr>`;
+        }).join('')}
+      </table></div>
+    </div>`;
+  }).join('');
+
+  $('#tab-envs').innerHTML = stats + tables;
 }
+
 document.addEventListener('click', e => {
-  const m = e.target.closest('[data-manage]'); if (m) { const [a, en] = m.dataset.manage.split('|'); openDrawer(a, en); }
-  const t = e.target.closest('nav button'); if (t) {
-    document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b === t));
+  const m = e.target.closest('[data-manage]');
+  if (m) { const [a, en] = m.dataset.manage.split('|'); openDrawer(a, en); }
+  const t = e.target.closest('#sidebar nav button');
+  if (t) {
+    document.querySelectorAll('#sidebar nav button').forEach(b => b.classList.toggle('on', b === t));
     for (const id of ['envs', 'projects', 'vars', 'activity']) $('#tab-' + id).hidden = id !== t.dataset.tab;
-    if (t.dataset.tab === 'vars') renderVars(); if (t.dataset.tab === 'activity') renderActivity(); if (t.dataset.tab === 'projects') renderProjects();
+    $('#topTitle').textContent = TAB_TITLES[t.dataset.tab] || '';
+    if (t.dataset.tab === 'vars') renderVars();
+    if (t.dataset.tab === 'activity') renderActivity();
+    if (t.dataset.tab === 'projects') renderProjects();
   }
 });
 
-// ------------------------------------------------------------------ Drawer
+// ── Drawer ────────────────────────────────────────────────────────────────────
 async function openDrawer(app, env, refresh) {
   current = { app, env };
   const d = STATE.deployments.find(x => x.APP === app && x.ENV_NAME === env);
   if (!d) { closeDrawer(); return; }
   const dr = $('#drawer'), isPreview = env.startsWith('pr-');
-  const dbSources = STATE.deployments.filter(x => x.HAS_OWN_DB);   // DBs this env could point at
+  const dbSources = STATE.deployments.filter(x => x.HAS_OWN_DB);
 
   dr.innerHTML = `
-  <header><h1>${esc(app)} ${envBadge(env)}</h1><span class="meta">${esc(d.TYPE || '')}</span>
-    <span class="links"><button class="btn" id="close">Close</button></span></header>
-  ${d.MISSING?.length ? `<section><div class="banner"><b>${d.STATE === 'blocked' ? 'Deploy blocked' : 'Required variables missing'}:</b> <span class="mono">${d.MISSING.map(esc).join(', ')}</span><br>
-     Add them under <a href="#" id="goVars">Variables → ${esc(app)}</a> (scope <span class="mono">${esc(env)}</span> or <span class="mono">${esc(envClass(env))}</span>), then
-     <button class="btn primary" data-act="redeploy">Retry deploy</button></div></section>` : ''}
-  <section><h3>Open</h3>
-    <div>App: ${hostLink(d.URL)}</div>${d.API_URL && d.API_URL !== d.URL ? `<div>API: ${hostLink(d.API_URL)}</div>` : ''}
-    <div class="muted">Branch <span class="mono">${esc(d.BRANCH || '—')}</span> · tag <span class="mono">${esc(d.TAG || '')}</span>${d.PREV_TAG ? ` · previous <span class="mono">${esc(d.PREV_TAG)}</span>` : ''} · commit <span class="mono">${esc((d.COMMIT || '').slice(0, 10))}</span></div>
-    ${isPreview ? '<div class="muted">Preview login: the preview basic-auth credentials from the inventory.</div>' : ''}
+  <div class="drawer-header">
+    <h2>${esc(app)}</h2>${envBadge(env)}
+    <span class="muted" style="font-size:13px">${esc(d.TYPE || '')}</span>
+    <button class="btn close-btn" id="drawerClose">✕ Close</button>
+  </div>
+  ${d.MISSING?.length ? `<section><div class="banner"><b>${d.STATE === 'blocked' ? 'Deploy blocked' : 'Required variables missing'}:</b>
+    <span class="mono"> ${d.MISSING.map(esc).join(', ')}</span><br>
+    Add them under <a href="#" id="goVars">Variables → ${esc(app)}</a>, then
+    <button class="btn primary" data-act="redeploy" style="margin-top:6px">Retry deploy</button></div></section>` : ''}
+  <section>
+    <h3>Open</h3>
+    <div style="margin-bottom:6px">App: ${hostLink(d.URL)}</div>
+    ${d.API_URL && d.API_URL !== d.URL ? `<div style="margin-bottom:6px">API: ${hostLink(d.API_URL)}</div>` : ''}
+    <div class="muted" style="font-size:12.5px">Branch <span class="mono">${esc(d.BRANCH || '—')}</span> · tag <span class="mono">${esc(d.TAG || '')}</span>${d.PREV_TAG ? ` · prev <span class="mono">${esc(d.PREV_TAG)}</span>` : ''} · commit <span class="mono">${esc((d.COMMIT || '').slice(0, 10))}</span></div>
+    ${isPreview ? '<div class="muted" style="margin-top:6px;font-size:12.5px">Preview login: use the preview basic-auth credentials from the inventory.</div>' : ''}
   </section>
   <section><h3>Database</h3><div id="dbBox" class="muted">loading…</div></section>
-  <section><h3>Environment variables</h3><div id="varsBox" class="muted">loading…</div></section>
-  <section><h3>Actions</h3><div class="row">
-    <button class="btn" data-act="redeploy">Redeploy</button>
-    <button class="btn" data-act="restart">Restart</button>
-    ${d.PREV_TAG ? `<button class="btn" data-act="rollback">Roll back to ${esc(d.PREV_TAG)}</button>` : ''}
-    <button class="btn danger" data-act="destroy">Destroy…</button></div></section>
-  <section><h3>Logs <button class="btn" id="loadLogs">Last 200 lines</button></h3><div id="logOut"></div></section>
-  <section><h3>Output</h3><div id="out" class="muted">${lastOut.key === app + "/" + env ? lastOut.html : "Results of actions appear here."}</div></section>`;
-  dr.classList.add('open');
+  <section><h3>Environment Variables</h3><div id="varsBox" class="muted">loading…</div></section>
+  <section>
+    <h3>Actions</h3>
+    <div class="row">
+      <button class="btn primary" data-act="redeploy">↺ Redeploy</button>
+      <button class="btn" data-act="restart">⟳ Restart</button>
+      ${d.PREV_TAG ? `<button class="btn" data-act="rollback">⬅ Roll back to ${esc(d.PREV_TAG)}</button>` : ''}
+      <button class="btn danger" data-act="destroy">✕ Destroy…</button>
+    </div>
+  </section>
+  <section>
+    <h3>Logs <button class="btn" id="loadLogs" style="margin-left:8px;font-size:12px">Load last 200 lines</button></h3>
+    <div id="logOut" style="margin-top:8px"></div>
+  </section>
+  <section>
+    <h3>Output</h3>
+    <div id="out" class="muted" style="font-size:13px">${lastOut.key === app + '/' + env ? lastOut.html : 'Results of actions appear here.'}</div>
+  </section>`;
 
-  $('#close', dr).onclick = closeDrawer;
-  $('#goVars', dr)?.addEventListener('click', e => { e.preventDefault(); closeDrawer(); document.querySelector('nav button[data-tab=vars]').click(); $('#varApp').value = app; renderVarsFor(app); });
+  dr.classList.add('open');
+  $('#overlay').classList.add('on');
+
+  $('#drawerClose', dr).onclick = closeDrawer;
+  $('#overlay').onclick = closeDrawer;
+  $('#goVars', dr)?.addEventListener('click', e => {
+    e.preventDefault(); closeDrawer();
+    document.querySelector('#sidebar nav button[data-tab=vars]').click();
+    $('#varApp').value = app; renderVarsFor(app);
+  });
   dr.querySelectorAll('[data-act]').forEach(b => b.onclick = () => act(b, app, env, b.dataset.act));
   renderEnvVars(dr, app, env);
   renderDatabase(dr, app, env, dbSources);
-  $('#loadLogs', dr).onclick = async e => { e.target.disabled = true; try { const j = await api(`/api/logs?app=${app}&env=${env}&n=200`); $('#logOut', dr).innerHTML = `<pre>${esc(j.output)}</pre>`; } finally { e.target.disabled = false; } };
+  $('#loadLogs', dr).onclick = async e => {
+    e.target.disabled = true;
+    try { const j = await api(`/api/logs?app=${app}&env=${env}&n=200`); $('#logOut', dr).innerHTML = `<pre>${esc(j.output)}</pre>`; }
+    finally { e.target.disabled = false; }
+  };
 }
-// ---- per-environment database (inside Manage): provisioned, never wired
-const CONNECTED_LABEL = c => c === 'own' ? 'its own database'
-  : c?.startsWith('platform:') ? `platform database ${c.slice(9)}`
-  : c?.startsWith('external:') ? `external database on ${c.slice(9)}` : 'nothing (no DATABASE_URL)';
+
+const ORIGIN_LABEL = { platform: 'platform', repo: 'repo', console: 'console', deleted: 'deleted — pending' };
+
 async function renderDatabase(dr, app, env, dbSources) {
   const box = $('#dbBox', dr);
   const i = await api(`/api/database?app=${app}&env=${env}`).catch(e => ({ error: e.message }));
@@ -196,20 +461,21 @@ async function renderDatabase(dr, app, env, dbSources) {
   box.classList.remove('muted');
   box.innerHTML = `
     <table class="kv">
-      <tr><td>This environment's DB</td><td>${i.exists ? `<b>${esc(i.name)}</b> · ${esc(i.size)}` : i.wiped ? '<span class="chip">wiped</span>' : '<span class="muted">none</span>'}</td></tr>
+      <tr><td>This env's DB</td><td>${i.exists ? `<b>${esc(i.name)}</b> · ${esc(i.size)}` : i.wiped ? '<span class="chip">wiped</span>' : '<span class="muted">none</span>'}</td></tr>
       ${i.url_masked ? `<tr><td>Connection URL</td><td class="mono">${esc(i.url_masked)}</td></tr>` : ''}
-      <tr><td>App is connected to</td><td>${esc(CONNECTED_LABEL(i.connected))} <span class="muted">(from its DATABASE_URL at last deploy)</span></td></tr>
+      <tr><td>App connected to</td><td>${esc(CONNECTED_LABEL(i.connected))}</td></tr>
     </table>
-    <p class="muted">The database is only <b>provisioned</b> — the app uses whatever its <span class="mono">DATABASE_URL</span> variable says.
-      Wiping removes it; the app keeps running (its DB calls fail) and later deploys don't bring it back — only <b>Create</b> does (empty, same URL).</p>
+    <p class="muted" style="font-size:12.5px;margin:10px 0">The database is only <b>provisioned</b> — the app uses it only if you set its connection variable (whatever the app calls it) to this URL. Wiping removes it; the app keeps running until you recreate it.</p>
     <div class="row">
       ${i.exists ? '' : `<button class="btn primary" id="dbCreate">${i.wiped ? 'Recreate (empty)' : 'Create database'}</button>`}
-      ${i.exists ? `<button class="btn primary" id="dbUseOwn">Set DATABASE_URL → this DB</button>` : ''}
       ${i.exists ? `<button class="btn danger" id="dbWipe">Wipe…</button>` : ''}
     </div>
-    ${others.length ? `<div class="row">or point this environment at
+    ${i.exists ? `<div class="row" style="margin-top:4px">
+      Copy URL into variable <input id="dbKey" placeholder="e.g. DB_URL, PG_DSN, DATABASE_URL" class="mono" style="flex:1;min-width:220px">
+      <button class="btn primary" id="dbUseOwn">Set variable → this DB</button></div>` : ''}
+    ${others.length ? `<div class="row" style="margin-top:4px">or point at another env's DB
       <select id="dbFrom">${others.map(x => `<option value="${esc(x.APP)}/${esc(x.ENV_NAME)}">${esc(x.APP)} / ${esc(x.ENV_NAME)}</option>`).join('')}</select>
-      as <input id="dbKey" value="DATABASE_URL" class="mono" style="width:150px">
+      as <input id="dbKey2" placeholder="variable name" class="mono" style="width:180px">
       <button class="btn" id="dbUseOther">Set variable</button></div>` : ''}
     <div id="dbOut"></div>`;
 
@@ -218,32 +484,29 @@ async function renderDatabase(dr, app, env, dbSources) {
     toast(r.ok ? what : 'Failed — see output');
     renderDatabase(dr, app, env, dbSources); renderEnvVars(dr, app, env);
   };
-  $('#dbCreate', box)?.addEventListener('click', async () => done(await api('/api/dbop', { app, env, op: 'create' }), 'Database ready (empty)'));
-  $('#dbUseOwn', box)?.addEventListener('click', async () =>
-    done(await api('/api/dbop', { app, env, op: 'use', from: `${app}/${env}`, key: 'DATABASE_URL', scope: env }), 'DATABASE_URL set — redeploy to apply'));
+  $('#dbCreate', box)?.addEventListener('click', async () => done(await api('/api/dbop', { app, env, op: 'create' }), 'Database ready'));
+  $('#dbUseOwn', box)?.addEventListener('click', async () => {
+    const key = $('#dbKey', box).value.trim();
+    if (!key) return toast('Enter the variable name your app uses for the DB connection');
+    done(await api('/api/dbop', { app, env, op: 'use', from: `${app}/${env}`, key, scope: env }), `${key} set — redeploy to apply`);
+  });
   $('#dbUseOther', box)?.addEventListener('click', async () => {
-    const from = $('#dbFrom', box).value, key = $('#dbKey', box).value.trim();
+    const from = $('#dbFrom', box).value, key = ($('#dbKey2', box) || $('#dbKey', box)).value.trim();
+    if (!key) return toast('Enter the variable name your app uses for the DB connection');
     let allow_prod = false;
     if (from.endsWith('/prod')) {
-      if (!window.confirm(`Point ${app}/${env} at the PROD database ${from}? Its data will be read and written by this environment.`)) return;
+      if (!window.confirm(`Point ${app}/${env} at the PROD database ${from}?`)) return;
       allow_prod = true;
     }
     done(await api('/api/dbop', { app, env, op: 'use', from, key, scope: env, allow_prod }), `${key} → ${from} — redeploy to apply`);
   });
   $('#dbWipe', box)?.addEventListener('click', async () => {
-    const c = prompt(`Wipe the database of ${app}/${env}? All its data is deleted. The app keeps running without it until you press "Recreate".\nType ${app}/${env} to confirm:`);
+    const c = prompt(`Wipe the database of ${app}/${env}? All data is deleted.\nType ${app}/${env} to confirm:`);
     if (c !== `${app}/${env}`) return toast('Not confirmed');
     done(await api('/api/dbop', { app, env, op: 'wipe', confirm: c }), 'Database wiped');
   });
 }
 
-// ---- per-environment variable editor (inside Manage)
-const ORIGIN_LABEL = {
-  platform: 'set by the platform',
-  repo: 'from the repo',
-  console: 'set in the console',
-  deleted: 'deleted — redeploy to remove',
-};
 async function renderEnvVars(dr, app, env) {
   const box = $('#varsBox', dr);
   const j = await api(`/api/vars?app=${app}&env=${env}`).catch(e => ({ error: e.message }));
@@ -251,7 +514,7 @@ async function renderEnvVars(dr, app, env) {
   const comps = Object.keys(j.components);
   const isPr = env.startsWith('pr-'), cls = envClass(env);
   const scopeOpts = [
-    [env, isPr ? `only ${env}` : `${env}`],
+    [env, isPr ? `only ${env}` : env],
     ...(isPr ? [['preview', `all ${app} previews`]] : []),
     ['common', `all ${app} environments`],
   ];
@@ -260,24 +523,24 @@ async function renderEnvVars(dr, app, env) {
 
   box.classList.remove('muted');
   box.innerHTML = `
-    <p class="muted" style="margin-top:0">What this environment's containers get. Set a value in the console to add a variable or
-      <b>override</b> one from the repo or platform (e.g. <span class="mono">API_URL</span>). Changes apply on the next deploy.</p>
-    ${pending ? `<div class="banner">${pending} change(s) saved but not live yet. <button class="btn primary" id="varsRedeploy">Redeploy now</button></div>` : ''}
+    <p class="muted" style="font-size:12.5px;margin-bottom:10px">Variables the containers receive. Override repo/platform values here. Changes apply on next deploy.</p>
+    ${pending ? `<div class="banner" style="margin-bottom:10px">${pending} change(s) pending. <button class="btn primary" id="varsRedeploy" style="margin-left:8px">Redeploy now</button></div>` : ''}
     ${comps.map(c => `
-      ${comps.length > 1 ? `<h3 style="margin:14px 0 6px">${esc(c)}</h3>` : ''}
+      ${comps.length > 1 ? `<div style="font-weight:600;font-size:13px;margin:12px 0 6px">${esc(c)}</div>` : ''}
       <table class="kv">
         ${j.components[c].map(v => `<tr style="${v.pending ? 'background:var(--accent-soft)' : ''}">
           <td>${esc(v.key)}</td>
           <td class="mono" style="word-break:break-all"><span data-val="${esc(c)}|${esc(v.key)}">${esc(v.value)}</span>
-            ${v.sensitive ? `<button class="btn" data-reveal="${esc(c)}|${esc(v.key)}" style="padding:1px 6px">show</button>` : ''}</td>
-          <td class="muted" style="white-space:nowrap">${esc(srcText(v))}${v.pending ? ' · <b>pending</b>' : ''}</td>
+            ${v.sensitive ? `<button class="btn" data-reveal="${esc(c)}|${esc(v.key)}" style="padding:1px 6px;font-size:11px;margin-left:4px">show</button>` : ''}</td>
+          <td class="muted" style="white-space:nowrap;font-size:12px">${esc(srcText(v))}${v.pending ? ' · <b>pending</b>' : ''}</td>
           <td style="white-space:nowrap;text-align:right">
-            <button class="btn" data-vedit="${esc(c)}|${esc(v.key)}|${esc(v.origin === 'console' ? v.scope : '')}">${v.origin === 'console' ? 'Edit' : 'Override'}</button>
-            ${v.origin === 'console' ? `<button class="btn danger" data-vdel="${esc(v.scope)}|${esc(v.key)}">✕</button>` : ''}</td></tr>`).join('')}
+            <button class="btn" data-vedit="${esc(c)}|${esc(v.key)}|${esc(v.origin === 'console' ? v.scope : '')}" style="font-size:12px">${v.origin === 'console' ? 'Edit' : 'Override'}</button>
+            ${v.origin === 'console' ? `<button class="btn danger" data-vdel="${esc(v.scope)}|${esc(v.key)}" style="font-size:12px;margin-left:4px">✕</button>` : ''}
+          </td></tr>`).join('')}
       </table>`).join('')}
-    <div class="row" style="margin-top:12px">
-      <input id="vKey" placeholder="KEY, e.g. VITE_API_URL" class="mono" style="width:190px">
-      <input id="vVal" placeholder="value" class="mono" style="flex:1;min-width:180px">
+    <div class="row" style="margin-top:14px">
+      <input id="vKey" placeholder="KEY" class="mono" style="width:170px">
+      <input id="vVal" placeholder="value" class="mono" style="flex:1;min-width:160px">
     </div>
     <div class="row">
       for <select id="vScope">${scopeOpts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select>
@@ -309,7 +572,7 @@ async function renderEnvVars(dr, app, env) {
   });
   box.querySelectorAll('[data-vdel]').forEach(b => b.onclick = async () => {
     const [scope, key] = b.dataset.vdel.split('|');
-    if (!window.confirm(`Delete ${key} (${scope === 'common' ? 'all environments' : scope})? Applies on the next deploy.`)) return;
+    if (!window.confirm(`Delete ${key} (${scope === 'common' ? 'all environments' : scope})?`)) return;
     await api('/api/secret', { app, scope, key, value: null }); toast(`${key} deleted`); renderEnvVars(dr, app, env);
   });
   box.querySelectorAll('[data-reveal]').forEach(b => b.onclick = async () => {
@@ -320,15 +583,21 @@ async function renderEnvVars(dr, app, env) {
   });
 }
 
-function closeDrawer() { current = null; $('#drawer').classList.remove('open'); }
+function closeDrawer() {
+  current = null;
+  $('#drawer').classList.remove('open');
+  $('#overlay').classList.remove('on');
+}
 
 async function run(btn, path, body) {
-  btn.disabled = true; const out = $('#out'); if (out) out.innerHTML = '<span class="muted">Working… (a redeploy can take a minute)</span>';
+  btn.disabled = true;
+  const out = $('#out');
+  if (out) out.innerHTML = '<span class="muted">Working… (a redeploy can take a minute)</span>';
   try {
     const j = await api(path, body);
-    lastOut = { key: current ? current.app + "/" + current.env : "", html: `<pre>${esc(j.output || "done")}</pre>` };
+    lastOut = { key: current ? current.app + '/' + current.env : '', html: `<pre>${esc(j.output || 'done')}</pre>` };
     if (out) out.innerHTML = lastOut.html;
-    toast(j.ok === false ? 'Failed — see output' : 'Done');
+    toast(j.ok === false ? 'Failed — see output' : 'Done ✓');
     await load();
   } catch (e) { if (out) out.innerHTML = `<pre>${esc(e.message)}</pre>`; toast(e.message); }
   finally { btn.disabled = false; }
@@ -341,17 +610,25 @@ async function act(btn, app, env, action) {
   } else if (env === 'prod' && !window.confirm(`${action} PROD for ${app}?`)) return;
   run(btn, '/api/action', { app, env, action, confirm });
 }
+</script>
 
-// ------------------------------------------------------------------ Variables tab
+<script>
+// ── Variables tab ─────────────────────────────────────────────────────────────
 function renderVars() {
   const apps = Object.keys(byApp()).sort();
   const el = $('#tab-vars');
   if (!el.dataset.ready) {
-    el.innerHTML = `<div class="card"><h2>Variables & secrets</h2><div style="padding:12px 16px">
-      <div class="row">App <select id="varApp"></select> <input id="varAppNew" placeholder="or type an app name" style="width:200px"></div>
-      <p class="muted">Precedence (later wins): repo <span class="mono">.deploy/env</span> → <b>all</b> → <b>class</b> (preview / develop / staging / prod) → <b>one environment</b> (e.g. pr-12).
-      Append <span class="mono">.api</span> / <span class="mono">.web</span> / <span class="mono">.app</span> to a scope to target one component. Values with KEY/SECRET/TOKEN/PASS… are masked.</p></div>
-      <div id="varBody"></div></div>`;
+    el.innerHTML = `<div class="card">
+      <div class="card-header"><h2>Variables &amp; Secrets</h2></div>
+      <div style="padding:16px 18px">
+        <div class="row">App
+          <select id="varApp"></select>
+          <input id="varAppNew" placeholder="or type an app name" style="width:200px">
+        </div>
+        <p class="muted" style="font-size:12.5px;margin-top:8px">Precedence (later wins): repo <span class="mono">.deploy/env</span> → <b>all</b> → <b>class</b> → <b>one environment</b>. Append <span class="mono">.api/.web/.app</span> to target one component.</p>
+      </div>
+      <div id="varBody"></div>
+    </div>`;
     el.dataset.ready = 1;
     $('#varApp').onchange = () => renderVarsFor($('#varApp').value);
     $('#varAppNew').onchange = () => renderVarsFor($('#varAppNew').value.trim());
@@ -361,6 +638,7 @@ function renderVars() {
   if (keep && apps.includes(keep)) sel.value = keep;
   if (sel.value) renderVarsFor(sel.value);
 }
+
 async function renderVarsFor(app) {
   if (!app) return;
   const j = await api(`/api/secrets?app=${encodeURIComponent(app)}`);
@@ -369,20 +647,30 @@ async function renderVarsFor(app) {
   const missing = envs.filter(d => d.MISSING?.length);
   const upcoming = envs.filter(d => d.UPCOMING_MISSING?.length);
   const label = s => s === 'common' ? 'all environments' : s === 'preview' ? 'all previews' : s.includes('.') ? `${s.split('.')[0]} · ${s.split('.')[1]} only` : s;
+
   $('#varBody').innerHTML = `
-    ${missing.length ? `<div style="padding:0 16px"><div class="banner"><b>Missing required variables</b><br>${missing.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
-    ${upcoming.length ? `<div style="padding:8px 16px 0"><div class="banner"><b>Will be missing once newer code reaches them</b> (a PR requires these keys)<br>${upcoming.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.UPCOMING_MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
-    <div style="padding:12px 16px"><div class="row">
-      <select id="nScope">${[...scopes].map(s => `<option value="${esc(s)}">${esc(label(s))}</option>`).join('')}</select>
-      <select id="nComp"><option value="">all components</option><option value=".api">api only</option><option value=".web">web only</option><option value=".app">app only</option></select>
-      <input id="nKey" placeholder="KEY" class="mono" style="width:200px">
-      <input id="nVal" placeholder="value" class="mono" style="flex:1;min-width:200px">
-      <button class="btn primary" id="nSave">Save</button></div>
-      <div class="row muted">After saving, apply with Redeploy on the affected environments: <span id="affected"></span></div></div>
-    ${Object.keys(j.files).length ? '' : '<div class="empty">No server-side variables for this app yet.</div>'}
-    ${Object.entries(j.files).map(([scope, kv]) => `<div style="padding:0 16px 12px"><h3 class="muted" style="font-size:13px;margin:8px 0">${esc(label(scope))} <span class="mono">(${esc(scope)}.env)</span></h3>
-      <table class="kv">${kv.map(x => `<tr><td>${esc(x.key)}</td><td class="mono">${esc(x.value)}</td>
-        <td style="text-align:right;white-space:nowrap"><button class="btn" data-edit="${esc(scope)}|${esc(x.key)}">Edit</button> <button class="btn danger" data-del="${esc(scope)}|${esc(x.key)}">Delete</button></td></tr>`).join('') || '<tr><td class="muted">empty</td></tr>'}</table></div>`).join('')}`;
+    ${missing.length ? `<div style="padding:0 18px 12px"><div class="banner"><b>Missing required variables</b><br>${missing.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
+    ${upcoming.length ? `<div style="padding:0 18px 12px"><div class="banner"><b>Will be missing once newer code reaches them</b><br>${upcoming.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.UPCOMING_MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
+    <div style="padding:12px 18px;border-bottom:1px solid var(--line)">
+      <div class="row">
+        <select id="nScope">${[...scopes].map(s => `<option value="${esc(s)}">${esc(label(s))}</option>`).join('')}</select>
+        <select id="nComp"><option value="">all components</option><option value=".api">api only</option><option value=".web">web only</option><option value=".app">app only</option></select>
+        <input id="nKey" placeholder="KEY" class="mono" style="width:180px">
+        <input id="nVal" placeholder="value" class="mono" style="flex:1;min-width:180px">
+        <button class="btn primary" id="nSave">Save</button>
+      </div>
+      <div class="row muted" style="font-size:12.5px">Redeploy affected: <span id="affected"></span></div>
+    </div>
+    ${!Object.keys(j.files).length ? '<div class="empty">No server-side variables for this app yet.</div>' : ''}
+    ${Object.entries(j.files).map(([scope, kv]) => `
+      <div style="padding:12px 18px;border-bottom:1px solid var(--line)">
+        <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:8px">${esc(label(scope))} <span class="mono" style="text-transform:none">(${esc(scope)}.env)</span></div>
+        <table class="kv">${kv.map(x => `<tr><td>${esc(x.key)}</td><td class="mono">${esc(x.value)}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <button class="btn" data-edit="${esc(scope)}|${esc(x.key)}" style="font-size:12px">Edit</button>
+            <button class="btn danger" data-del="${esc(scope)}|${esc(x.key)}" style="font-size:12px;margin-left:4px">Delete</button>
+          </td></tr>`).join('') || '<tr><td class="muted">empty</td></tr>'}</table>
+      </div>`).join('')}`;
 
   const affectedFor = scope => {
     const base = scope.split('.')[0];
@@ -390,10 +678,12 @@ async function renderVarsFor(app) {
   };
   const showAffected = () => {
     const sc = $('#nScope').value, list = affectedFor(sc);
-    $('#affected').innerHTML = list.length ? list.map(d => `<button class="btn" data-redeploy="${esc(d.ENV_NAME)}">${esc(d.ENV_NAME)}</button>`).join(' ') : '<span>none deployed yet</span>';
+    $('#affected').innerHTML = list.length
+      ? list.map(d => `<button class="btn" data-redeploy="${esc(d.ENV_NAME)}" style="font-size:12px">${esc(d.ENV_NAME)}</button>`).join(' ')
+      : '<span>none deployed yet</span>';
     $('#affected').querySelectorAll('[data-redeploy]').forEach(b => b.onclick = async () => {
       b.disabled = true; toast(`Redeploying ${app}/${b.dataset.redeploy}…`, 60000);
-      try { const r = await api('/api/action', { app, env: b.dataset.redeploy, action: 'redeploy' }); toast(r.ok ? `${b.dataset.redeploy} redeployed` : `${b.dataset.redeploy} failed — open Manage → Output`); await load(); }
+      try { const r = await api('/api/action', { app, env: b.dataset.redeploy, action: 'redeploy' }); toast(r.ok ? `${b.dataset.redeploy} redeployed ✓` : `${b.dataset.redeploy} failed`); await load(); }
       catch (e) { toast(e.message); } finally { b.disabled = false; }
     });
   };
@@ -401,71 +691,81 @@ async function renderVarsFor(app) {
   $('#nSave').onclick = async () => {
     const scope = $('#nScope').value + $('#nComp').value, key = $('#nKey').value.trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return toast('Key must look like MY_KEY');
-    try { await api('/api/secret', { app, scope, key, value: $('#nVal').value }); toast(`${key} saved in ${scope} — redeploy to apply`); $('#nKey').value = $('#nVal').value = ''; renderVarsFor(app); }
+    try { await api('/api/secret', { app, scope, key, value: $('#nVal').value }); toast(`${key} saved — redeploy to apply`); $('#nKey').value = $('#nVal').value = ''; renderVarsFor(app); }
     catch (e) { toast(e.message); }
   };
   $('#varBody').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     const [scope, key] = b.dataset.del.split('|');
     if (!window.confirm(`Delete ${key} from ${scope}?`)) return;
-    await api('/api/secret', { app, scope, key, value: null }); toast(`${key} deleted — redeploy to apply`); renderVarsFor(app);
+    await api('/api/secret', { app, scope, key, value: null }); toast(`${key} deleted`); renderVarsFor(app);
   });
   $('#varBody').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
     const [scope, key] = b.dataset.edit.split('|'), [base, comp] = scope.split('.');
-    $('#nScope').value = base; $('#nComp').value = comp ? '.' + comp : ''; $('#nKey').value = key; $('#nVal').value = ''; $('#nVal').placeholder = 'new value (current value is hidden)'; $('#nVal').focus(); showAffected();
+    $('#nScope').value = base; $('#nComp').value = comp ? '.' + comp : ''; $('#nKey').value = key;
+    $('#nVal').value = ''; $('#nVal').placeholder = 'new value (current is hidden)'; $('#nVal').focus(); showAffected();
   });
 }
 
-// ------------------------------------------------------------------ Projects tab
+// ── Projects tab ──────────────────────────────────────────────────────────────
 const ALL_ENVS = ['preview', 'develop', 'staging', 'prod'];
 async function renderProjects(reveal) {
   const j = await api('/api/projects');
   const el = $('#tab-projects');
   el.innerHTML = `
-  ${reveal ? `<div class="card"><h2>🔑 Webhook secret for ${esc(reveal.app)} — shown only now</h2><div style="padding:12px 16px">
-     <p>Give the team these two values as <b>GitHub Actions secrets</b> in <span class="mono">${esc(reveal.repo || '')}</span>
-        (Settings → Secrets and variables → Actions):</p>
-     <table class="kv">
-       <tr><td>INFRA_WEBHOOK_URL</td><td class="mono">${esc(j.webhook_url)}</td><td><button class="btn" data-copy="${esc(j.webhook_url)}">Copy</button></td></tr>
-       <tr><td>INFRA_WEBHOOK_SECRET</td><td class="mono">${esc(reveal.secret)}</td><td><button class="btn" data-copy="${esc(reveal.secret)}">Copy</button></td></tr>
-     </table>
-     <p class="muted">Local testing with <span class="mono">ci-local.sh</span>? Nothing to do — it reads the secret from the registry. (Only needed if you run it elsewhere:
-       <span class="mono">echo '${esc(reveal.secret)}' &gt; /root/.infra-secrets/${esc(reveal.app)}</span>)</p>
-     <p class="muted">Lost it? <b>Rotate secret</b> below issues a new one (the old one stops working).</p>
-     <button class="btn primary" id="doneSecret">I've saved it</button></div></div>` : ''}
+  ${reveal ? `<div class="card" style="border-color:var(--accent)">
+    <div class="card-header"><h2>🔑 Webhook secret for ${esc(reveal.app)} — shown only now</h2></div>
+    <div style="padding:16px 18px">
+      <p style="margin-bottom:12px">Add these as <b>GitHub Actions secrets</b> in <span class="mono">${esc(reveal.repo || '')}</span>:</p>
+      <table class="kv">
+        <tr><td>INFRA_WEBHOOK_URL</td><td class="mono">${esc(j.webhook_url)}</td><td><button class="btn" data-copy="${esc(j.webhook_url)}">Copy</button></td></tr>
+        <tr><td>INFRA_WEBHOOK_SECRET</td><td class="mono">${esc(reveal.secret)}</td><td><button class="btn" data-copy="${esc(reveal.secret)}">Copy</button></td></tr>
+      </table>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">Lost it? Use <b>Rotate secret</b> below to issue a new one.</p>
+      <button class="btn primary" id="doneSecret" style="margin-top:10px">I've saved it</button>
+    </div></div>` : ''}
 
-  <div class="card"><h2>Add a project</h2><div style="padding:12px 16px">
-    <p class="muted">Lets a repo deploy to this server through signed webhooks. The app name must equal <span class="mono">APP_NAME</span> in the repo's <span class="mono">.deploy/manifest.env</span>; a repo with a frontend and a backend registers each app.</p>
-    <div class="row">
-      <input id="pApp" placeholder="app name, e.g. shop-api" class="mono" style="width:200px">
-      <input id="pRepo" placeholder="owner/repo (local test: local/shop-api)" class="mono" style="width:300px">
+  <div class="card">
+    <div class="card-header"><h2>Add a Project</h2></div>
+    <div style="padding:16px 18px">
+      <p class="muted" style="font-size:12.5px;margin-bottom:12px">Lets a repo deploy to this server through signed webhooks. The app name must equal <span class="mono">APP_NAME</span> in the repo's <span class="mono">.deploy/manifest.env</span>.</p>
+      <div class="row">
+        <input id="pApp" placeholder="app name, e.g. shop-api" class="mono" style="width:200px">
+        <input id="pRepo" placeholder="owner/repo" class="mono" style="width:280px">
+      </div>
+      <div class="row" style="margin-top:4px">Allowed environments:
+        ${ALL_ENVS.map(e => `<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="pEnv" value="${e}" checked> ${e}</label>`).join(' ')}
+        &nbsp; prod from branch <input id="pProdBranch" value="main" class="mono" style="width:90px">
+      </div>
+      <details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12.5px">Private images? Registry pull token (optional)</summary>
+        <div class="row" style="margin-top:8px">
+          <input id="pRegUser" placeholder="registry user" style="width:200px">
+          <input id="pRegToken" placeholder="read-only token" type="password" style="width:280px">
+        </div></details>
+      <div class="row" style="margin-top:12px"><button class="btn primary" id="pAdd">Add project</button></div>
+      <div id="pOut"></div>
     </div>
-    <div class="row">Allowed environments:
-      ${ALL_ENVS.map(e => `<label><input type="checkbox" class="pEnv" value="${e}" checked> ${e}</label>`).join(' ')}
-      &nbsp; prod only from branch <input id="pProdBranch" value="main" class="mono" style="width:100px">
-    </div>
-    <details><summary class="muted">Private images? Registry pull token (optional)</summary>
-      <div class="row"><input id="pRegUser" placeholder="registry user" style="width:200px">
-        <input id="pRegToken" placeholder="read-only token (read:packages)" type="password" style="width:300px"></div></details>
-    <div class="row"><button class="btn primary" id="pAdd">Add project</button></div>
-    <div id="pOut"></div>
-  </div></div>
+  </div>
 
-  <div class="card"><h2>Registered projects <span class="muted" style="font-weight:400">${j.projects.length}</span></h2><div class="scroll"><table>
-    <tr><th>Project</th><th>Repo</th><th>Allowed environments</th><th>Running environments</th><th>Registry</th><th>Added</th><th></th></tr>
-    ${j.projects.map(p => `<tr>
-      <td class="mono"><b>${esc(p.app)}</b></td>
-      <td class="mono">${esc(p.repo)}</td>
-      <td>${p.envs.split(',').map(e => envBadge(e === 'preview' ? 'pr-…' : e).replace('pr-…', 'preview')).join(' ')}<br><span class="muted">prod from <span class="mono">${esc(p.prod_branch)}</span></span></td>
-      <td>${p.environments.length ? p.environments.map(envBadge).join(' ') : '<span class="muted">none yet</span>'}</td>
-      <td>${p.has_registry_token ? `token ✓ <span class="muted">${esc(p.registry_user)}</span>` : '<span class="muted">public / global</span>'}</td>
-      <td>${ago(p.created_at)}<br><span class="muted">${esc(p.created_by)}</span></td>
-      <td style="white-space:nowrap"><button class="btn" data-penvs="${esc(p.app)}|${esc(p.envs)}">Environments…</button>
-        <button class="btn" data-prot="${esc(p.app)}|${esc(p.repo)}">Rotate secret</button>
-        <button class="btn danger" data-prm="${esc(p.app)}">Remove</button></td></tr>`).join('')
-      || '<tr><td colspan="7" class="empty">No projects yet — add one above.</td></tr>'}
-  </table></div></div>`;
+  <div class="card">
+    <div class="card-header"><h2>Registered Projects</h2><span class="card-meta">${j.projects.length} total</span></div>
+    <div class="scroll"><table>
+      <tr><th>Project</th><th>Repo</th><th>Allowed Envs</th><th>Running Envs</th><th>Registry</th><th>Added</th><th></th></tr>
+      ${j.projects.map(p => `<tr>
+        <td class="mono"><b>${esc(p.app)}</b></td>
+        <td class="mono" style="color:var(--muted)">${esc(p.repo)}</td>
+        <td>${p.envs.split(',').map(e => envBadge(e === 'preview' ? 'pr-…' : e).replace('pr-…', 'preview')).join(' ')}<br><span class="muted" style="font-size:12px">prod from <span class="mono">${esc(p.prod_branch)}</span></span></td>
+        <td>${p.environments.length ? p.environments.map(envBadge).join(' ') : '<span class="muted">none yet</span>'}</td>
+        <td style="font-size:12.5px">${p.has_registry_token ? `<span style="color:var(--ok)">✓</span> ${esc(p.registry_user)}` : '<span class="muted">public</span>'}</td>
+        <td style="white-space:nowrap;font-size:12.5px">${ago(p.created_at)}<br><span class="muted">${esc(p.created_by)}</span></td>
+        <td style="white-space:nowrap">
+          <button class="btn" data-penvs="${esc(p.app)}|${esc(p.envs)}" style="font-size:12px">Envs…</button>
+          <button class="btn" data-prot="${esc(p.app)}|${esc(p.repo)}" style="font-size:12px">Rotate</button>
+          <button class="btn danger" data-prm="${esc(p.app)}" style="font-size:12px">Remove</button>
+        </td></tr>`).join('') || '<tr><td colspan="7" class="empty">No projects yet.</td></tr>'}
+    </table></div>
+  </div>`;
 
-  el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied')));
+  el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied ✓')));
   $('#doneSecret', el)?.addEventListener('click', () => renderProjects());
   $('#pAdd', el).onclick = async e => {
     const app = $('#pApp').value.trim(), repo = $('#pRepo').value.trim();
@@ -483,7 +783,7 @@ async function renderProjects(reveal) {
   };
   el.querySelectorAll('[data-prot]').forEach(b => b.onclick = async () => {
     const [app, repo] = b.dataset.prot.split('|');
-    if (!window.confirm(`Issue a new webhook secret for ${app}? The current one stops working immediately — the repo's INFRA_WEBHOOK_SECRET must be updated.`)) return;
+    if (!window.confirm(`Issue a new webhook secret for ${app}? The current one stops working immediately.`)) return;
     const r = await api('/api/project', { op: 'rotate', app });
     if (r.secret) renderProjects({ app, repo, secret: r.secret }); else toast('Failed — see Activity');
   });
@@ -496,20 +796,24 @@ async function renderProjects(reveal) {
   });
   el.querySelectorAll('[data-prm]').forEach(b => b.onclick = async () => {
     const app = b.dataset.prm;
-    const c = prompt(`Remove ${app}? Its webhooks will be refused from now on (running environments stay until you destroy them).\nType ${app} to confirm:`);
+    const c = prompt(`Remove ${app}? Running environments stay until you destroy them.\nType ${app} to confirm:`);
     if (c !== app) return toast('Not confirmed');
     const r = await api('/api/project', { op: 'remove', app, confirm: c });
     toast(r.ok ? `${app} removed` : 'Failed'); renderProjects();
   });
 }
 
-// ------------------------------------------------------------------ Activity tab
+// ── Activity tab ──────────────────────────────────────────────────────────────
 async function renderActivity() {
   const j = await api('/api/activity');
-  $('#tab-activity').innerHTML = `<div class="card"><h2>Recent activity <span class="muted" style="font-weight:400">console actions + deploys</span></h2><div style="padding:12px 16px"><pre>${esc(j.lines.join('') || 'nothing yet')}</pre></div></div>`;
+  $('#tab-activity').innerHTML = `<div class="card">
+    <div class="card-header"><h2>Recent Activity</h2><span class="card-meta">console actions + deploys</span></div>
+    <div style="padding:16px 18px"><pre style="max-height:600px">${esc(j.lines.join('') || 'Nothing yet.')}</pre></div>
+  </div>`;
 }
 
-load().catch(e => { $('#tab-envs').innerHTML = `<div class="card empty">Could not load: ${esc(e.message)}</div>`; });
+// ── Boot ──────────────────────────────────────────────────────────────────────
+load().catch(e => { $('#tab-envs').innerHTML = `<div class="card"><div class="empty">Could not load: ${esc(e.message)}</div></div>`; });
 setInterval(() => { if (!document.hidden && !current) load().catch(() => {}); }, 15000);
 </script>
 </body>

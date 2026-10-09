@@ -26,16 +26,32 @@ role_exists() { [[ $(sql_scalar "SELECT 1 FROM pg_roles WHERE rolname = '$1'") =
 db_template_name()  { echo "$(db_ident "$1")__template"; }
 db_template_owner() { echo "$(db_ident "$1")__tpl"; }
 
-# db_ensure <db> <role> <password> [template-db]
+# db_ensure <db> <role> <password> [template-db] [env-class]
 # Creates role + database if missing (cloning from template when given and present).
+# Applies per-class connection limits and statement timeouts to the role:
+#   preview  → 5 connections, 10 s statement timeout
+#   develop  → 10 connections, 30 s statement timeout
+#   staging  → 20 connections, no timeout
+#   prod     → no limit, no timeout
 db_ensure() {
-  local db=$1 role=$2 pw=$3 tpl=${4:-}
+  local db=$1 role=$2 pw=$3 tpl=${4:-} cls=${5:-}
   pg_wait
+
+  # Per-class resource limits on the role.
+  local conn_limit=-1 stmt_timeout=0
+  case $cls in
+    preview) conn_limit=5;  stmt_timeout=10000 ;;
+    develop) conn_limit=10; stmt_timeout=30000 ;;
+    staging) conn_limit=20; stmt_timeout=0     ;;
+  esac
+
   if role_exists "$role"; then
-    psql_admin -c "ALTER ROLE \"$role\" WITH LOGIN PASSWORD '$pw'"
+    psql_admin -c "ALTER ROLE \"$role\" WITH LOGIN PASSWORD '$pw' CONNECTION LIMIT $conn_limit"
   else
-    psql_admin -c "CREATE ROLE \"$role\" WITH LOGIN PASSWORD '$pw'"
+    psql_admin -c "CREATE ROLE \"$role\" WITH LOGIN PASSWORD '$pw' CONNECTION LIMIT $conn_limit"
   fi
+  # Statement timeout is a role-level default — overrides postgresql.conf for this role only.
+  psql_admin -c "ALTER ROLE \"$role\" SET statement_timeout = $stmt_timeout"
 
   db_exists "$db" && return 0
 

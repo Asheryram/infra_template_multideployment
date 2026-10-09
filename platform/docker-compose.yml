@@ -146,6 +146,9 @@ services:
       - ${STATE_DIR}:${STATE_DIR}
       - ${LOG_DIR}:${LOG_DIR}
       - ${LOCK_DIR}:${LOCK_DIR}                 # shares deploy locks with CLI + CI runner
+      # No raw Docker socket: the console drives Docker exclusively through the infra CLI
+      # (bin/infra), which runs as the deploy user. This removes the console as a root-escalation
+      # path. The socket-proxy is used by Traefik and Dozzle for read-only access only.
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [proxy]
     mem_limit: 256m
