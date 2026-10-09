@@ -163,7 +163,26 @@ $CI "$P/shop-web" pr 2
 
 ## Part 5: 🛠 DevOps controls in the console
 
-**5.1 Rewire a frontend.** Environments → `shop-web` / `pr-2` → **Manage**:
+**5.0 Environment variables: add, change, override.** Go to Environments → `shop-web` / `pr-2` → **Manage** → *Environment variables*.
+
+This shows every variable the container has, and where it came from:
+- *set by the platform*
+- *from the repo* (`.deploy/env/…`)
+- *set in the console*, with its scope
+
+To change one:
+1. Click **Override** next to `API_URL`.
+2. Type `https://shop-api.127-0-0-1.sslip.io:8443` (prod's API).
+3. Keep "only pr-2" and click **Save & redeploy**.
+4. Reload pr-2: the backend is now `prod`.
+5. Click **✕** on your override, then **Redeploy now**. It's back to the automatic value.
+
+To add a new one, type a key and value at the bottom, and choose the scope: *only this env*, *all previews*, or *all environments*. Sensitive keys (`…KEY`, `…SECRET`, `…TOKEN`, `…PASSWORD`) are masked. Use **show** to reveal one; reveals are logged.
+- [ ] done
+
+> `shop-web` opted into *auto-wiring* (`BACKEND_APP` in its manifest), so `API_URL` starts out filled by the platform. Without `BACKEND_APP` nothing is automatic. You'd just set the frontend's API variable here per environment, which is the usual way teams pass it (e.g. `VITE_API_URL`).
+
+**5.1 Or use the API URL helper.** Environments → `shop-web` / `pr-2` → **Manage** → *API URL helper (optional)* picks from deployed backends:
 1. Under *Frontend → API*, choose `shop-api / prod` → **Apply**. Reload pr-2: the backend now shows env `prod`.
 2. Choose **Automatic** → **Apply**. It's back on `pr-1`.
 - [ ] seen both

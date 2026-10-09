@@ -173,7 +173,8 @@ async function openDrawer(app, env, refresh) {
     <div class="muted">Branch <span class="mono">${esc(d.BRANCH || '—')}</span> · tag <span class="mono">${esc(d.TAG || '')}</span>${d.PREV_TAG ? ` · previous <span class="mono">${esc(d.PREV_TAG)}</span>` : ''} · commit <span class="mono">${esc((d.COMMIT || '').slice(0, 10))}</span></div>
     ${isPreview ? '<div class="muted">Preview login: the preview basic-auth credentials from the inventory.</div>' : ''}
   </section>
-  ${wantsApi ? `<section><h3>Frontend → API</h3>
+  ${wantsApi ? `<section><h3>API URL helper (optional)</h3>
+    <div class="muted">Usually you just set the frontend's API variable under <b>Environment variables</b> below. This helper can fill it for you from another deployed environment.</div>
     <div class="muted">Now: ${hostLink(d.UPSTREAM_API_URL)} <span class="muted">(${esc(d.UPSTREAM_SOURCE || 'none')})</span></div>
     <div class="row">${scopeSel('apiScope')}
       <select id="apiMode">
@@ -196,12 +197,12 @@ async function openDrawer(app, env, refresh) {
       <label><input type="checkbox" id="dbMigrate"> run migrations</label>
       <button class="btn primary" id="applyDb">Apply</button></div>
     <div class="muted">Migrations are skipped on databases this environment doesn't own unless you tick “run migrations”.</div></section>` : ''}
+  <section><h3>Environment variables</h3><div id="varsBox" class="muted">loading…</div></section>
   <section><h3>Actions</h3><div class="row">
     <button class="btn" data-act="redeploy">Redeploy</button>
     <button class="btn" data-act="restart">Restart</button>
     ${d.PREV_TAG ? `<button class="btn" data-act="rollback">Roll back to ${esc(d.PREV_TAG)}</button>` : ''}
     <button class="btn danger" data-act="destroy">Destroy…</button></div></section>
-  <section><h3>Effective variables <button class="btn" id="loadEnv">Show</button></h3><div id="envOut"></div></section>
   <section><h3>Logs <button class="btn" id="loadLogs">Last 200 lines</button></h3><div id="logOut"></div></section>
   <section><h3>Output</h3><div id="out" class="muted">${lastOut.key === app + "/" + env ? lastOut.html : "Results of actions appear here."}</div></section>`;
   dr.classList.add('open');
@@ -219,12 +220,92 @@ async function openDrawer(app, env, refresh) {
     const body = v === 'own' ? { mode: 'own' } : v === 'url' ? { mode: 'url', url: $('#dbUrl', dr).value } : { mode: 'share', target: v.slice(6) };
     run(e.target, '/api/db', { app, scope, ...body, allow_prod: $('#dbProd', dr).checked, migrate: $('#dbMigrate', dr).checked });
   });
-  $('#loadEnv', dr).onclick = async () => {
-    const j = await api(`/api/env?app=${app}&env=${env}`);
-    $('#envOut', dr).innerHTML = Object.entries(j.runtime).map(([c, kv]) => `<div class="muted">${esc(c)}</div><table class="kv">${kv.map(x => `<tr><td>${esc(x.key)}</td><td class="mono">${esc(x.value)}</td></tr>`).join('')}</table>`).join('') || '<span class="muted">none</span>';
-  };
+  renderEnvVars(dr, app, env);
   $('#loadLogs', dr).onclick = async e => { e.target.disabled = true; try { const j = await api(`/api/logs?app=${app}&env=${env}&n=200`); $('#logOut', dr).innerHTML = `<pre>${esc(j.output)}</pre>`; } finally { e.target.disabled = false; } };
 }
+// ---- per-environment variable editor (inside Manage)
+const ORIGIN_LABEL = {
+  platform: 'set by the platform',
+  repo: 'from the repo',
+  console: 'set in the console',
+  deleted: 'deleted — redeploy to remove',
+};
+async function renderEnvVars(dr, app, env) {
+  const box = $('#varsBox', dr);
+  const j = await api(`/api/vars?app=${app}&env=${env}`).catch(e => ({ error: e.message }));
+  if (j.error) { box.textContent = j.error; return; }
+  const comps = Object.keys(j.components);
+  const isPr = env.startsWith('pr-'), cls = envClass(env);
+  const scopeOpts = [
+    [env, isPr ? `only ${env}` : `${env}`],
+    ...(isPr ? [['preview', `all ${app} previews`]] : []),
+    ['common', `all ${app} environments`],
+  ];
+  const pending = Object.values(j.components).flat().filter(v => v.pending).length;
+  const srcText = v => v.origin === 'console' ? `console · ${v.scope === 'common' ? 'all envs' : v.scope}` : v.origin === 'repo' ? `repo · ${v.scope}` : ORIGIN_LABEL[v.origin] || v.origin;
+
+  box.classList.remove('muted');
+  box.innerHTML = `
+    <p class="muted" style="margin-top:0">What this environment's containers get. Set a value in the console to add a variable or
+      <b>override</b> one from the repo or platform (e.g. <span class="mono">API_URL</span>). Changes apply on the next deploy.</p>
+    ${pending ? `<div class="banner">${pending} change(s) saved but not live yet. <button class="btn primary" id="varsRedeploy">Redeploy now</button></div>` : ''}
+    ${comps.map(c => `
+      ${comps.length > 1 ? `<h3 style="margin:14px 0 6px">${esc(c)}</h3>` : ''}
+      <table class="kv">
+        ${j.components[c].map(v => `<tr style="${v.pending ? 'background:var(--accent-soft)' : ''}">
+          <td>${esc(v.key)}</td>
+          <td class="mono" style="word-break:break-all"><span data-val="${esc(c)}|${esc(v.key)}">${esc(v.value)}</span>
+            ${v.sensitive ? `<button class="btn" data-reveal="${esc(c)}|${esc(v.key)}" style="padding:1px 6px">show</button>` : ''}</td>
+          <td class="muted" style="white-space:nowrap">${esc(srcText(v))}${v.pending ? ' · <b>pending</b>' : ''}</td>
+          <td style="white-space:nowrap;text-align:right">
+            <button class="btn" data-vedit="${esc(c)}|${esc(v.key)}|${esc(v.origin === 'console' ? v.scope : '')}">${v.origin === 'console' ? 'Edit' : 'Override'}</button>
+            ${v.origin === 'console' ? `<button class="btn danger" data-vdel="${esc(v.scope)}|${esc(v.key)}">✕</button>` : ''}</td></tr>`).join('')}
+      </table>`).join('')}
+    <div class="row" style="margin-top:12px">
+      <input id="vKey" placeholder="KEY, e.g. VITE_API_URL" class="mono" style="width:190px">
+      <input id="vVal" placeholder="value" class="mono" style="flex:1;min-width:180px">
+    </div>
+    <div class="row">
+      for <select id="vScope">${scopeOpts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select>
+      ${comps.length > 1 ? `<select id="vComp"><option value="">all parts</option>${comps.map(c => `<option value=".${esc(c)}">${esc(c)} only</option>`).join('')}</select>` : ''}
+      <button class="btn" id="vSave">Save</button>
+      <button class="btn primary" id="vSaveDeploy">Save &amp; redeploy</button>
+    </div>`;
+
+  const save = async redeploy => {
+    const key = $('#vKey', box).value.trim(), value = $('#vVal', box).value;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return toast('Key must look like MY_KEY');
+    const scope = $('#vScope', box).value + ($('#vComp', box)?.value || '');
+    try {
+      await api('/api/secret', { app, scope, key, value });
+      toast(`${key} saved for ${scope}`);
+      if (redeploy) return act($('#vSaveDeploy', box), app, env, 'redeploy');
+      renderEnvVars(dr, app, env);
+    } catch (e) { toast(e.message); }
+  };
+  $('#vSave', box).onclick = () => save(false);
+  $('#vSaveDeploy', box).onclick = () => save(true);
+  $('#varsRedeploy', box)?.addEventListener('click', e => act(e.target, app, env, 'redeploy'));
+  box.querySelectorAll('[data-vedit]').forEach(b => b.onclick = () => {
+    const [c, key, scope] = b.dataset.vedit.split('|');
+    $('#vKey', box).value = key; $('#vVal', box).value = ''; $('#vVal', box).placeholder = `new value for ${key}`;
+    if (scope) { const [base, part] = scope.split('.'); $('#vScope', box).value = base; if ($('#vComp', box)) $('#vComp', box).value = part ? '.' + part : ''; }
+    else { $('#vScope', box).value = env; if ($('#vComp', box) && comps.length > 1) $('#vComp', box).value = '.' + c; }
+    $('#vVal', box).focus();
+  });
+  box.querySelectorAll('[data-vdel]').forEach(b => b.onclick = async () => {
+    const [scope, key] = b.dataset.vdel.split('|');
+    if (!window.confirm(`Delete ${key} (${scope === 'common' ? 'all environments' : scope})? Applies on the next deploy.`)) return;
+    await api('/api/secret', { app, scope, key, value: null }); toast(`${key} deleted`); renderEnvVars(dr, app, env);
+  });
+  box.querySelectorAll('[data-reveal]').forEach(b => b.onclick = async () => {
+    const [c, key] = b.dataset.reveal.split('|');
+    const r = await api(`/api/reveal?app=${app}&env=${env}&comp=${c}&key=${key}`);
+    box.querySelector(`[data-val="${c}|${key}"]`).textContent = r.value ?? '';
+    b.remove();
+  });
+}
+
 function closeDrawer() { current = null; $('#drawer').classList.remove('open'); }
 
 async function run(btn, path, body) {

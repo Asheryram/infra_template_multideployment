@@ -186,6 +186,68 @@ def deployments(s):
     return rows
 
 
+def env_scopes(env, comp):
+    """Console variable files that apply to <env>/<comp>, lowest → highest precedence."""
+    cls = env_class(env)
+    scopes = ["common", cls, f"{cls}.{comp}"]
+    if env != cls:
+        scopes += [env, f"{env}.{comp}"]
+    return scopes
+
+
+def env_variables(s, app, env):
+    """Per component: every variable the container has (from its runtime env file), where it came
+    from, plus console changes saved but not yet deployed (pending)."""
+    d = f"{s['deploy_root']}/{app}/{env}"
+    out = {}
+    for f in sorted(glob.glob(f"{d}/runtime/*.env")):
+        comp = os.path.basename(f)[:-4]
+        applied, source = {}, ("platform", None)
+        with open(f) as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if line.startswith("# --- from "):
+                    path = line[len("# --- from "):]
+                    if path.startswith(f"{s['secrets_root']}/{app}/"):
+                        source = ("console", os.path.basename(path)[:-4])
+                    elif path.startswith(f"{d}/deploy/env/"):
+                        source = ("repo", ".deploy/env/" + os.path.basename(path))
+                    continue
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if KEY.match(k):
+                    applied[k] = (v, *source)
+        console = {}
+        for scope in env_scopes(env, comp):
+            for k, v in read_env(f"{s['secrets_root']}/{app}/{scope}.env").items():
+                console[k] = (v, scope)
+        rows = []
+        for k in sorted(set(applied) | set(console)):
+            av = applied.get(k)
+            cv = console.get(k)
+            if cv:
+                value, origin, scope = cv[0], "console", cv[1]
+                pending = av is None or av[0] != cv[0] or av[1] != "console" or av[2] != cv[1]
+            else:
+                value, origin, scope = av
+                pending = origin == "console"          # deleted in the console, still in the container
+            rows.append({"key": k, "value": mask(k, value), "sensitive": bool(SENSITIVE.search(k)),
+                         "origin": "deleted" if (pending and not cv) else origin,
+                         "scope": scope, "pending": pending, "editable": True})
+        out[comp] = rows
+    return out
+
+
+def reveal_variable(s, app, env, comp, key):
+    for scope in reversed(env_scopes(env, comp)):
+        v = read_env(f"{s['secrets_root']}/{app}/{scope}.env").get(key)
+        if v is not None:
+            return v
+    rt = read_env(f"{s['deploy_root']}/{app}/{env}/runtime/{comp}.env")
+    return rt.get(key)
+
+
 def secrets(s, app):
     out = {}
     for f in sorted(glob.glob(f"{s['secrets_root']}/{app}/*.env")):
@@ -491,6 +553,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "bad app/env"})
                 ok, out = infra("tail", app, env, str(min(int(q.get("n", 200)), 2000)), timeout=60)
                 return self.send(200, {"ok": ok, "output": out})
+            if u.path == "/api/vars":
+                app, env = q.get("app", ""), q.get("env", "")
+                if not (NAME.match(app) and NAME.match(env)):
+                    return self.send(400, {"error": "bad app/env"})
+                return self.send(200, {"components": env_variables(s, app, env)})
+            if u.path == "/api/reveal":
+                app, env, comp, key = q.get("app", ""), q.get("env", ""), q.get("comp", ""), q.get("key", "")
+                if not (NAME.match(app) and NAME.match(env) and comp in ("app", "web", "api") and KEY.match(key)):
+                    return self.send(400, {"error": "bad request"})
+                self.audit(s, "reveal", f"{app}/{env} {comp}:{key}")
+                return self.send(200, {"value": reveal_variable(s, app, env, comp, key)})
             if u.path == "/api/projects":
                 return self.send(200, {"projects": projects(s), "webhook_url": webhook_url(s)})
             if u.path == "/api/activity":

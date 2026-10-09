@@ -97,6 +97,7 @@ load_manifest() {
     fi
     if [[ ! $key =~ $MANIFEST_KEYS ]]; then warn "manifest: ignoring unknown key $key"; continue; fi
     case $key in
+      API_URL_VAR)             [[ $val =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ;;
       APP_NAME|BACKEND_APP|BACKEND_FALLBACK_ENV) [[ -z $val || $val =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] ;;
       TYPE)                    [[ $val =~ ^(monolith|frontend|backend|split)$ ]] ;;
       *_PORT)                  [[ $val =~ ^[0-9]{1,5}$ ]] ;;

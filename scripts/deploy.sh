@@ -303,7 +303,9 @@ for comp in "${COMPONENTS[@]}"; do
         echo "PGUSER=$DB_USER"
         echo "PGPASSWORD=$DB_PASSWORD"
       fi
-      if [[ $comp != api && -n $UPSTREAM_API_URL ]]; then echo "API_URL=$UPSTREAM_API_URL"; fi
+      # Optional auto-wiring (manifest BACKEND_APP): fills the variable the frontend actually reads
+      # (API_URL_VAR, e.g. VITE_API_URL). A value set in the console for the same key still wins.
+      if [[ $comp != api && -n $UPSTREAM_API_URL ]]; then echo "${API_URL_VAR:-API_URL}=$UPSTREAM_API_URL"; fi
       if [[ $TYPE == split && $comp == api ]]; then echo "FRONTEND_URL=https://${HOST[web]}$URL_PORT_SUFFIX"; fi
       cat_existing \
         "$DEPLOY_DIR/env/common.env" "$DEPLOY_DIR/env/$CLASS.env" "$DEPLOY_DIR/env/$CLASS.$comp.env" \
