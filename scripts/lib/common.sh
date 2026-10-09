@@ -78,7 +78,7 @@ write_kv() {
 # Parse a repo's manifest.env WITHOUT executing it. The manifest comes from the app repo — on a
 # multi-tenant host it is untrusted input, so it's never `source`d. Only known keys are accepted,
 # values are taken literally (no $(), no ${}, no backticks), and every value is format-checked.
-MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|NEEDS_DB|DB_PREVIEW_SOURCE|MIGRATE_CMD|MIGRATE_SERVICE|BACKEND_APP|BACKEND_FALLBACK_ENV|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|WATCH_PATHS|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+|API_URL_[A-Z0-9_]+)$'
+MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|NEEDS_DB|DB_PREVIEW_SOURCE|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|WATCH_PATHS|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
 load_manifest() {
   local file=$1 line key val n=0
   [[ -f $file ]] || die "manifest not found: $file"
@@ -97,8 +97,7 @@ load_manifest() {
     fi
     if [[ ! $key =~ $MANIFEST_KEYS ]]; then warn "manifest: ignoring unknown key $key"; continue; fi
     case $key in
-      API_URL_VAR)             [[ $val =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ;;
-      APP_NAME|BACKEND_APP|BACKEND_FALLBACK_ENV) [[ -z $val || $val =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] ;;
+      APP_NAME)                [[ -z $val || $val =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] ;;
       TYPE)                    [[ $val =~ ^(monolith|frontend|backend|split)$ ]] ;;
       *_PORT)                  [[ $val =~ ^[0-9]{1,5}$ ]] ;;
       *_MEM_LIMIT)             [[ $val =~ ^[0-9]+[kmgKMG]?$ ]] ;;
@@ -208,25 +207,6 @@ run_clean() {
     bash "$@"
 }
 
-# Redeploy frontend previews that track <backend_app> on <branch>, so they pick up
-# a newly created (or just destroyed) backend preview. Skips ones already on <url>.
-relink_frontends() {
-  local backend=$1 branch=$2 current=${3:-} meta app env
-  for meta in "$DEPLOY_ROOT"/*/pr-*/meta.env; do
-    [[ $(meta_get "$meta" TYPE) == frontend ]] || continue
-    [[ $(meta_get "$meta" BACKEND_APP) == "$backend" ]] || continue
-    [[ $(meta_get "$meta" BRANCH) == "$branch" ]] || continue
-    # Pinned by DevOps (infra link) — automatic relinking must not move it.
-    [[ $(meta_get "$meta" UPSTREAM_SOURCE) != override* ]] || continue
-    if [[ -n $current && $(meta_get "$meta" UPSTREAM_API_URL) == "$current" ]]; then continue; fi
-    app=$(meta_get "$meta" APP)
-    env=$(meta_get "$meta" ENV_NAME)
-    log "relinking frontend $app/$env (branch '$branch' → backend $backend)"
-    run_clean "$INFRA_ROOT/scripts/deploy.sh" --app "$app" --env "$env" --redeploy --no-pull \
-      || warn "relink of $app/$env failed"
-  done
-}
-
 # ----------------------------------------------------------------------------- per-environment networks
 # Every environment gets its own private bridge network "<stack>_net". Only that environment's
 # containers, Traefik, and (if it uses the DB) Postgres are on it — so no app can reach another
@@ -272,41 +252,6 @@ record_owned_images() {
   for img in "$@"; do
     if ! docker image inspect "$img" >/dev/null 2>&1; then
       echo "$(date +%s) $img" >> "$STATE_DIR/owned-images"
-    fi
-  done
-}
-
-# ----------------------------------------------------------------------------- overrides
-# DevOps overrides live in $STATE_DIR/overrides/<app>/<scope>.env, scope = an env name or
-# "preview" (all pr-* of the app). Env-specific wins over "preview".
-
-overrides_file() { echo "$STATE_DIR/overrides/$1/$2.env"; }
-
-# Sets OV_API_TARGET OV_API_URL OV_DB_MODE OV_DB_SHARE_FROM OV_DB_URL OV_DB_MIGRATE
-load_overrides() {
-  local app=$1 env=$2 f k
-  OV_API_TARGET="" OV_API_URL="" OV_DB_MODE="" OV_DB_SHARE_FROM="" OV_DB_URL="" OV_DB_MIGRATE=""
-  local files=()
-  if is_preview "$env"; then files+=("$(overrides_file "$app" preview)"); fi
-  files+=("$(overrides_file "$app" "$env")")
-  for f in "${files[@]}"; do
-    [[ -f $f ]] || continue
-    for k in API_TARGET API_URL DB_MODE DB_SHARE_FROM DB_URL DB_MIGRATE; do
-      local v; v=$(meta_get "$f" "$k")
-      if [[ -n $v ]]; then printf -v "OV_$k" '%s' "$v"; fi
-    done
-  done
-  if [[ -n $OV_API_TARGET$OV_API_URL$OV_DB_MODE ]]; then
-    log "DevOps overrides active for $app/$env: ${OV_API_TARGET:+api→$OV_API_TARGET }${OV_API_URL:+api→$OV_API_URL }${OV_DB_MODE:+db=$OV_DB_MODE}"
-  fi
-}
-
-# Environments whose override points at <app>/<env> (as API_TARGET or DB_SHARE_FROM).
-override_dependents() {
-  local key=$1 target=$2 f
-  for f in "$STATE_DIR"/overrides/*/*.env; do
-    if [[ $(meta_get "$f" "$key") == "$target" ]]; then
-      echo "$(basename "$(dirname "$f")")/$(basename "${f%.env}")"
     fi
   done
 }

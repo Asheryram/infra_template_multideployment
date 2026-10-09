@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Database operations on the shared Postgres.
 #
+#   Per-environment database — provisioned, never wired. The app only uses it if DevOps sets
+#   DATABASE_URL (or any name) as a variable:
+#   infra db info   <app> <env> [--json]       exists? size, URL (masked), what the app is connected to
+#   infra db create <app> <env>                create the (empty) DB — same URL as before if it was wiped
+#   infra db wipe   <app> <env>                DROP it. The app keeps running (its DB calls fail) and later
+#                                              deploys do NOT recreate it — only `create` does
+#   infra db url    <app> <env>                print the connection URL (internal to the platform)
+#   infra db use    <app> <env> [--from <app>/<env>] [--key DATABASE_URL] [--scope <scope>] [--allow-prod]
+#                                              set a variable on <app>/<env> pointing at a DB (default: its own)
+#
 #   infra db list
 #   infra db psql     <app> <env>
 #   infra db dump     <app> <env> [out-file]       custom-format dump (pg_restore-able)
@@ -24,7 +34,93 @@ pg_wait
 
 env_db() { validate_name app "$1"; validate_name env "$2"; db_ident "${1}_${2}"; }
 
+need_stack() { # app env → sets SD (stack dir); the environment must have been deployed
+  SD=$(stack_dir "$1" "$2")
+  [[ -d $SD ]] || die "$1/$2 is not deployed — deploy it first"
+}
+db_url_of() { # app env → URL (needs the env's password file)
+  local db; db=$(env_db "$1" "$2")
+  local pw="$(stack_dir "$1" "$2")/.db_password"
+  [[ -s $pw ]] || die "$1/$2 has never had a database (create it first)"
+  echo "postgres://$db:$(<"$pw")@$PG_CONTAINER:5432/$db"
+}
+attach_pg() { # connect Postgres to the env's private network so its containers can reach it
+  local net; net=$(stack_network "$1" "$2")
+  if docker network inspect "$net" >/dev/null 2>&1; then net_connect "$net" "$PG_CONTAINER"; fi
+}
+set_var() { # app scope key value → console variable file
+  local f="$SECRETS_ROOT/$1/$2.env"
+  mkdir -p "$SECRETS_ROOT/$1"; chmod 2770 "$SECRETS_ROOT/$1" 2>/dev/null || true
+  touch "$f"; chmod 660 "$f"
+  sed -i "/^$3=/d" "$f"
+  echo "$3=$4" >> "$f"
+}
+
 case $action in
+  info)
+    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"; db=$(env_db "$app" "$env")
+    exists=false size="" url=""
+    if db_exists "$db"; then exists=true; size=$(sql_scalar "SELECT pg_size_pretty(pg_database_size('$db'))"); fi
+    if [[ -s $SD/.db_password ]]; then url=$(db_url_of "$app" "$env"); fi
+    connected=$(meta_get "$SD/meta.env" DB_CONNECTED 2>/dev/null || true)
+    wiped=false; [[ -f $SD/.db_wiped ]] && wiped=true
+    if [[ ${3:-} == --json ]]; then
+      jq -cn --arg db "$db" --argjson exists "$exists" --arg size "$size" --arg url "$url" \
+        --arg connected "${connected:-none}" --argjson wiped "$wiped" --argjson provisioned "$([[ -n $url ]] && echo true || echo false)" \
+        '{name:$db, exists:$exists, size:$size, url:$url, connected:$connected, wiped:$wiped, provisioned:$provisioned}'
+    else
+      echo "database:  $db ($([[ $exists == true ]] && echo "exists, $size" || echo "does not exist${wiped:+}"))"
+      echo "url:       ${url:+${url%%:*}://$db:••••@$PG_CONTAINER:5432/$db}"
+      echo "app uses:  ${connected:-none}   (set DATABASE_URL in the console, or: infra db use $app $env)"
+    fi
+    ;;
+
+  create)
+    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"; db=$(env_db "$app" "$env")
+    if [[ ! -s $SD/.db_password ]]; then ( umask 077; openssl rand -hex 24 > "$SD/.db_password" ); fi
+    db_ensure "$db" "$db" "$(<"$SD/.db_password")"
+    rm -f "$SD/.db_wiped"
+    attach_pg "$app" "$env"
+    log "database $db ready (empty) — the app uses it only if its DATABASE_URL points here (infra db use $app $env)"
+    ;;
+
+  wipe)
+    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"; db=$(env_db "$app" "$env")
+    if [[ $env == prod && ${3:-} != --i-really-mean-prod ]]; then die "refusing to wipe prod without --i-really-mean-prod"; fi
+    acquire_lock "$(stack_name "$app" "$env")"
+    if db_exists "$db"; then psql_admin -c "DROP DATABASE \"$db\" WITH (FORCE)"; fi
+    touch "$SD/.db_wiped"            # later deploys must NOT bring it back — only `create` does
+    log "database $db wiped — the app keeps running without it. Recreate (empty, same URL): infra db create $app $env"
+    ;;
+
+  url)
+    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"; db_url_of "$app" "$env"
+    ;;
+
+  use)
+    app=${1:?app}; env=${2:?env}; shift 2; need_stack "$app" "$env"
+    from="$app/$env" key=DATABASE_URL scope=$env allow_prod=false
+    while (( $# )); do
+      case $1 in
+        --from) from=${2:?}; shift 2 ;;
+        --key) key=${2:?}; shift 2 ;;
+        --scope) scope=${2:?}; shift 2 ;;
+        --allow-prod) allow_prod=true; shift ;;
+        *) die "unknown option $1" ;;
+      esac
+    done
+    [[ $from =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || die "--from must be <app>/<env>"
+    [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "bad key"
+    [[ $scope =~ ^[a-z0-9-]+(\.(app|web|api))?$ ]] || die "bad scope"
+    if [[ ${from#*/} == prod && $from != "$app/$env" && $allow_prod != true ]]; then
+      die "$from is a PROD database — add --allow-prod if you really mean to point $app/$env at it"
+    fi
+    url=$(db_url_of "${from%%/*}" "${from#*/}")
+    set_var "$app" "$scope" "$key" "$url"
+    attach_pg "$app" "$env"
+    log "$app/$env: $key → database of $from (scope $scope). Apply with: infra redeploy $app $env"
+    ;;
+
   list)
     psql_admin -c "SELECT datname AS database,
                           pg_size_pretty(pg_database_size(datname)) AS size,

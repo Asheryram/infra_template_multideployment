@@ -2,7 +2,7 @@
 # Deploy or update one environment of one app.
 #
 #   infra deploy --manifest <repo>/.deploy --env <env> --tag <tag> [--branch <b>] [--commit <sha>] [--no-pull]
-#   infra redeploy <app> <env> [--tag <tag>]     re-run using the stored manifest (config/secret change, relink)
+#   infra redeploy <app> <env> [--tag <tag>]     re-run using the stored manifest (after a variable change)
 #   infra rollback <app> <env>                   redeploy the previous tag
 #
 # <env> is prod | staging | develop | pr-<number> | any short name (qa, demo...).
@@ -99,7 +99,7 @@ fi
 
 log "deploying $STACK  type=$TYPE  tag=$TAG  branch=${BRANCH:-n/a}"
 
-# Keep a snapshot of the manifest so redeploys/relinks don't need the app repo.
+# Keep a snapshot of the manifest so redeploys don't need the app repo.
 mkdir -p "$STACK_DIR/runtime"
 if (( ! REDEPLOY )); then
   rm -rf "$STACK_DIR/deploy.new"
@@ -170,111 +170,25 @@ case $TYPE in
   backend|split) SELF_API_URL="https://${HOST[api]}$URL_PORT_SUFFIX" ;;
 esac
 
-# ----------------------------------------------------------------------------- database
+# ----------------------------------------------------------------------------- database (provisioned, never wired)
+# Render model: NEEDS_DB=true provisions an empty, isolated database for this environment on its
+# FIRST deploy — and that's all. Nothing is injected into the app: DevOps decides what the app
+# connects to by setting DATABASE_URL (or any name) as a variable — this DB, another env's, an
+# external one, or none. A wiped DB is NOT recreated by later deploys; only `infra db create`
+# (console: Database → Create) brings it back, empty, with the same URL.
 
-# DevOps overrides (infra link / infra attach-db) beat everything the repo or CI says.
-load_overrides "$APP" "$ENV_NAME"
-
-# DB_MODE: own (default) | share (another environment's DB) | external (any URL)
-DB_MODE=${OV_DB_MODE:-own}
-DATABASE_URL="" DB_NAME="" DB_PASSWORD="" DB_HOST="$PG_CONTAINER" DB_PORT=5432 DB_USER="" DB_SOURCE=""
-case $DB_MODE in
-  own)
-    if [[ ${NEEDS_DB:-false} == true ]]; then
-      DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
-      pwfile="$STACK_DIR/.db_password"
-      if [[ ! -s $pwfile ]]; then ( umask 077; openssl rand -hex 24 > "$pwfile" ); fi
-      DB_PASSWORD=$(<"$pwfile")
-      template=""
-      if [[ $PREVIEW == true && ${DB_PREVIEW_SOURCE:-template} == template ]]; then
-        template=$(db_template_name "$APP")
-      fi
-      db_ensure "$DB_NAME" "$DB_NAME" "$DB_PASSWORD" "$template"
-      DB_USER=$DB_NAME
-      DB_SOURCE="own"
-    fi
-    ;;
-  share)
-    src_app=${OV_DB_SHARE_FROM%%/*}; src_env=${OV_DB_SHARE_FROM#*/}
-    src_dir=$(stack_dir "$src_app" "$src_env")
-    [[ -s $src_dir/.db_password ]] || die "cannot share DB of $OV_DB_SHARE_FROM: it isn't deployed or has no database of its own"
-    DB_NAME=$(db_ident "${src_app}_${src_env}")
-    DB_USER=$DB_NAME
-    DB_PASSWORD=$(<"$src_dir/.db_password")
-    DB_SOURCE="shared from $OV_DB_SHARE_FROM"
-    ;;
-  external)
-    # postgres://user:pass@host:port/dbname
-    if [[ $OV_DB_URL =~ ^postgres(ql)?://([^:@/]+)(:([^@]*))?@([^:/]+)(:([0-9]+))?/([^?]+) ]]; then
-      DB_USER=${BASH_REMATCH[2]}; DB_PASSWORD=${BASH_REMATCH[4]}; DB_HOST=${BASH_REMATCH[5]}
-      DB_PORT=${BASH_REMATCH[7]:-5432}; DB_NAME=${BASH_REMATCH[8]}
-    else
-      die "override DB_URL is not a postgres://user:pass@host:port/db URL"
-    fi
-    DATABASE_URL=$OV_DB_URL
-    DB_SOURCE="external ${DB_HOST}:${DB_PORT}/${DB_NAME}"
-    ;;
-  *) die "unknown DB_MODE override '$DB_MODE'" ;;
-esac
-if [[ -n $DB_NAME && -z $DATABASE_URL ]]; then
-  DATABASE_URL="postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME"
+DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
+pwfile="$STACK_DIR/.db_password"
+if [[ ${NEEDS_DB:-false} == true && ! -f $STACK_DIR/meta.env && ! -f $STACK_DIR/.db_wiped ]]; then
+  if [[ ! -s $pwfile ]]; then ( umask 077; openssl rand -hex 24 > "$pwfile" ); fi
+  template=""
+  if [[ $PREVIEW == true && ${DB_PREVIEW_SOURCE:-template} == template ]]; then template=$(db_template_name "$APP"); fi
+  db_ensure "$DB_NAME" "$DB_NAME" "$(<"$pwfile")" "$template"
+  log "database $DB_NAME provisioned (not connected — set DATABASE_URL in the console to use it)"
 fi
-if [[ -n $DB_SOURCE ]]; then log "database → $DB_SOURCE"; fi
+OWN_DB=false
+if [[ -s $pwfile ]] && pg_running && db_exists "$DB_NAME"; then OWN_DB=true; fi
 
-# ----------------------------------------------------------------------------- backend resolution
-# Frontend previews follow a backend preview built from the same branch name;
-# otherwise they fall back to BACKEND_FALLBACK_ENV (default: develop).
-
-UPSTREAM_API_URL="" UPSTREAM_SOURCE=""
-resolve_override() { # → 0 if a DevOps override decided the API
-  local meta
-  if [[ -n ${OV_API_URL:-} ]]; then
-    UPSTREAM_API_URL=$OV_API_URL; UPSTREAM_SOURCE="override url"; return 0
-  fi
-  if [[ -n ${OV_API_TARGET:-} ]]; then
-    meta="$(stack_dir "${OV_API_TARGET%%/*}" "${OV_API_TARGET#*/}")/meta.env"
-    if [[ -f $meta ]]; then
-      UPSTREAM_API_URL=$(meta_get "$meta" API_URL)
-    else
-      warn "override target $OV_API_TARGET is not deployed — API_URL will be empty"
-    fi
-    UPSTREAM_SOURCE="override $OV_API_TARGET"; return 0
-  fi
-  return 1
-}
-
-resolve_backend() {
-  local backend=${BACKEND_APP:-} target meta v
-  v="API_URL_${CLASS_VAR}"
-  if [[ -n ${!v:-} ]]; then UPSTREAM_API_URL=${!v}; UPSTREAM_SOURCE="manifest $v"; return 0; fi
-  [[ -n $backend ]] || return 0
-
-  if [[ $PREVIEW == true && -n $BRANCH ]]; then
-    for meta in "$DEPLOY_ROOT/$backend"/pr-*/meta.env; do
-      if [[ $(meta_get "$meta" BRANCH) == "$BRANCH" ]]; then
-        UPSTREAM_API_URL=$(meta_get "$meta" API_URL)
-        UPSTREAM_SOURCE="$backend/$(meta_get "$meta" ENV_NAME) (same branch)"
-        return 0
-      fi
-    done
-  fi
-
-  target=$ENV_NAME
-  if [[ $PREVIEW == true ]]; then target=${BACKEND_FALLBACK_ENV:-develop}; fi
-  meta="$DEPLOY_ROOT/$backend/$target/meta.env"
-  if [[ -f $meta ]]; then
-    UPSTREAM_API_URL=$(meta_get "$meta" API_URL)
-    UPSTREAM_SOURCE="$backend/$target"
-  else
-    warn "backend $backend/$target is not deployed — API_URL will be empty"
-  fi
-}
-
-case $TYPE in
-  split)    resolve_override || { UPSTREAM_API_URL=$SELF_API_URL; UPSTREAM_SOURCE=self; } ;;
-  frontend) resolve_override || resolve_backend ;;
-esac
-if [[ -n $UPSTREAM_SOURCE ]]; then log "API_URL → ${UPSTREAM_API_URL:-<none>} (from $UPSTREAM_SOURCE)"; fi
 
 # ----------------------------------------------------------------------------- runtime env files
 # Order (later wins): injected by infra < repo .deploy/env/* < server secrets.
@@ -295,18 +209,7 @@ for comp in "${COMPONENTS[@]}"; do
       echo "IMAGE_TAG=$TAG"
       echo "GIT_BRANCH=$BRANCH"
       echo "GIT_COMMIT=$COMMIT"
-      if [[ -n $DATABASE_URL && $comp != web ]]; then
-        echo "DATABASE_URL=$DATABASE_URL"
-        echo "PGHOST=$DB_HOST"
-        echo "PGPORT=$DB_PORT"
-        echo "PGDATABASE=$DB_NAME"
-        echo "PGUSER=$DB_USER"
-        echo "PGPASSWORD=$DB_PASSWORD"
-      fi
-      # Optional auto-wiring (manifest BACKEND_APP): fills the variable the frontend actually reads
-      # (API_URL_VAR, e.g. VITE_API_URL). A value set in the console for the same key still wins.
-      if [[ $comp != api && -n $UPSTREAM_API_URL ]]; then echo "${API_URL_VAR:-API_URL}=$UPSTREAM_API_URL"; fi
-      if [[ $TYPE == split && $comp == api ]]; then echo "FRONTEND_URL=https://${HOST[web]}$URL_PORT_SUFFIX"; fi
+      # Nothing else is injected: no DATABASE_URL, no API URLs. Connections are variables DevOps sets.
       cat_existing \
         "$DEPLOY_DIR/env/common.env" "$DEPLOY_DIR/env/$CLASS.env" "$DEPLOY_DIR/env/$CLASS.$comp.env" \
         "$SECRETS_ROOT/$APP/common.env" "$SECRETS_ROOT/$APP/$CLASS.env" "$SECRETS_ROOT/$APP/$CLASS.$comp.env"
@@ -365,7 +268,8 @@ STACK_NETWORK=$(stack_network "$APP" "$ENV_NAME")
 write_kv "$tmp" STACK_NETWORK "$STACK_NETWORK"
 # Postgres joins this environment's network only if it actually uses the platform DB.
 USES_PG=false
-if [[ $DB_MODE == share || ( $DB_MODE == own && -n $DB_NAME ) ]]; then USES_PG=true; fi
+# Postgres joins this environment's network only if it has its own DB or a variable points at Postgres.
+if [[ $OWN_DB == true ]] || grep -qs "@$PG_CONTAINER[:/]" "$STACK_DIR"/runtime/*.env; then USES_PG=true; fi
 for comp in "${COMPONENTS[@]}"; do
   C=${comp^^}
   write_kv "$tmp" "${C}_IMAGE" "${IMAGE[$comp]}"
@@ -447,7 +351,7 @@ policy_violations() {
 
 discard_if_new() { # a refused FIRST deploy leaves nothing behind (DB, network, state)
   if [[ ! -f $STACK_DIR/meta.env ]]; then
-    if [[ $DB_MODE == own && -n $DB_NAME ]]; then db_drop "$DB_NAME" "$DB_NAME"; fi
+    db_drop "$DB_NAME" "$DB_NAME"            # only exists if this very deploy provisioned it
     rm -rf "$STACK_DIR"; rmdir "$DEPLOY_ROOT/$APP" 2>/dev/null || true
   fi
 }
@@ -479,9 +383,22 @@ if (( PULL )); then
   fi
 fi
 
-if [[ -n ${MIGRATE_CMD:-} && $DB_MODE != own && ${OV_DB_MIGRATE:-false} != true ]]; then
-  warn "skipping migrations: database is $DB_SOURCE (not owned by this environment). Use 'infra attach-db ... --migrate' to allow."
-  MIGRATE_CMD=""
+# Migrations need a database the service is actually told about — and must not alter someone
+# else's: they run only against THIS environment's own DB, unless DevOps sets the variable
+# MIGRATE_ON_SHARED_DB=true for the service.
+db_of_url() { sed -nE 's#^[a-z]+://[^@]*@([^:/]+)(:[0-9]+)?/([^?]+).*#\1 \3#p' <<<"$1"; }   # → "host db"
+if [[ -n ${MIGRATE_CMD:-} ]]; then
+  msvc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
+  murl=$(sed -nE 's/^DATABASE_URL=(.+)$/\1/p' "$STACK_DIR/runtime/$msvc.env" | tail -1)
+  read -r mhost mdb <<<"$(db_of_url "$murl")"
+  if [[ -z $murl ]]; then
+    log "migrations skipped: '$msvc' has no DATABASE_URL yet (set it in the console → Manage → Database)"
+    MIGRATE_CMD=""
+  elif [[ ! ( $mhost == "$PG_CONTAINER" && $mdb == "$DB_NAME" ) ]] \
+       && ! grep -qE '^MIGRATE_ON_SHARED_DB=true$' "$STACK_DIR/runtime/$msvc.env"; then
+    warn "migrations skipped: DATABASE_URL points to '$mdb' on '$mhost', not this environment's own DB (set MIGRATE_ON_SHARED_DB=true to allow)"
+    MIGRATE_CMD=""
+  fi
 fi
 if [[ -n ${MIGRATE_CMD:-} ]]; then
   svc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
@@ -529,12 +446,18 @@ write_kv "$tmp" BRANCH "$BRANCH"
 write_kv "$tmp" COMMIT "$COMMIT"
 write_kv "$tmp" URL "$URL"
 write_kv "$tmp" API_URL "$SELF_API_URL"
-write_kv "$tmp" UPSTREAM_API_URL "$UPSTREAM_API_URL"
-write_kv "$tmp" UPSTREAM_SOURCE "$UPSTREAM_SOURCE"
-write_kv "$tmp" BACKEND_APP "${BACKEND_APP:-}"
-write_kv "$tmp" DB_NAME "$DB_NAME"
-write_kv "$tmp" DB_MODE "$DB_MODE"
-write_kv "$tmp" DB_SOURCE "$DB_SOURCE"
+# What the service is actually connected to (for the console) — read from its env, not assumed.
+DB_CONNECTED=none
+for comp in "${COMPONENTS[@]}"; do
+  u=$(sed -nE 's/^DATABASE_URL=(.+)$/\1/p' "$STACK_DIR/runtime/$comp.env" | tail -1)
+  [[ -n $u ]] || continue
+  read -r h d <<<"$(db_of_url "$u")"
+  if [[ $h == "$PG_CONTAINER" && $d == "$DB_NAME" ]]; then DB_CONNECTED=own
+  elif [[ $h == "$PG_CONTAINER" ]]; then DB_CONNECTED="platform:$d"
+  else DB_CONNECTED="external:$h"; fi
+done
+write_kv "$tmp" DB_NAME "$([[ $OWN_DB == true ]] && echo "$DB_NAME")"
+write_kv "$tmp" DB_CONNECTED "$DB_CONNECTED"
 write_kv "$tmp" STACK_NETWORK "$STACK_NETWORK"
 write_kv "$tmp" USES_PG "$USES_PG"
 write_kv "$tmp" REPO "${GITHUB_REPOSITORY:-$(meta_get "$STACK_DIR/meta.env" REPO 2>/dev/null || true)}"
@@ -542,16 +465,11 @@ write_kv "$tmp" DEPLOYED_AT "$(date +%s)"
 write_kv "$tmp" DEPLOYED_BY "${GITHUB_ACTOR:-${SUDO_USER:-${USER:-unknown}}}"
 mv "$tmp" "$STACK_DIR/meta.env"
 
-if [[ $PREVIEW == true && -n $BRANCH && -n $SELF_API_URL ]]; then
-  relink_frontends "$APP" "$BRANCH" "$SELF_API_URL"
-fi
-
 log "OK  $STACK is live at $URL"
 if [[ -n ${GITHUB_OUTPUT:-} ]]; then
   {
     echo "url=$URL"
     echo "api_url=$SELF_API_URL"
-    echo "upstream_api_url=$UPSTREAM_API_URL"
   } >> "$GITHUB_OUTPUT"
 fi
 echo "$URL"

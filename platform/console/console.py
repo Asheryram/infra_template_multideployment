@@ -102,12 +102,6 @@ def running_counts():
     for line in p.stdout.splitlines():
         counts[line] = counts.get(line, 0) + 1
     return counts
-
-
-def overrides(s, app, scope):
-    ov = read_env(f"{s['state_dir']}/overrides/{app}/{scope}.env")
-    if "DB_URL" in ov:
-        ov["DB_URL"] = mask_url(ov["DB_URL"])
     return ov
 
 
@@ -175,9 +169,8 @@ def deployments(s):
         m["RUNNING"] = counts.get(f"{s['prefix']}-{app}-{env}", 0)
         m["STATE"] = "blocked" if status.get("STATUS") == "blocked" else ("up" if m["RUNNING"] else "down")
         m["MISSING"] = status.get("MISSING", "").split() if status else required_missing(s, app, env)
-        m["OVERRIDES"] = {**overrides(s, app, "preview"), **overrides(s, app, env)} if env.startswith("pr-") \
-            else overrides(s, app, env)
-        m["HAS_OWN_DB"] = os.path.exists(f"{d}.db_password")
+        m["HAS_OWN_DB"] = os.path.exists(f"{d}.db_password") and not os.path.exists(f"{d}.db_wiped")
+        m["DB_WIPED"] = os.path.exists(f"{d}.db_wiped")
         comps = components(m.get("TYPE", ""))
         m["UPCOMING_MISSING"] = sorted(
             f"{c}:{k}" for c, k in required.get(app, set())
@@ -553,6 +546,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "bad app/env"})
                 ok, out = infra("tail", app, env, str(min(int(q.get("n", 200)), 2000)), timeout=60)
                 return self.send(200, {"ok": ok, "output": out})
+            if u.path == "/api/database":
+                app, env = q.get("app", ""), q.get("env", "")
+                if not (NAME.match(app) and NAME.match(env)):
+                    return self.send(400, {"error": "bad app/env"})
+                ok, out = infra("db", "info", app, env, "--json", timeout=30)
+                try:
+                    info = json.loads(out.strip().splitlines()[-1])
+                except (ValueError, IndexError):
+                    return self.send(200, {"error": out[-500:]})
+                info["url_masked"] = mask_url(info.get("url", ""))
+                info.pop("url", None)          # the full URL only ever goes into a variable, server-side
+                return self.send(200, info)
             if u.path == "/api/vars":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
@@ -659,32 +664,27 @@ class Handler(BaseHTTPRequestHandler):
                 self.audit(s, f"{action}:{'ok' if ok else 'FAILED'}", f"{app}/{env}")
                 return self.send(200, {"ok": ok, "output": out})
 
-            if u == "/api/link":
-                scope, mode = body.get("scope", ""), body.get("mode", "")
-                if not NAME.match(scope):
-                    return self.send(400, {"error": "bad scope"})
-                args = {"auto": ["--auto"], "api": ["--api", body.get("target", "")],
-                        "url": ["--api-url", body.get("url", "")]}.get(mode)
-                if not args:
-                    return self.send(400, {"error": "bad mode"})
-                self.audit(s, "link", f"{app}/{scope} {mode} {body.get('target') or body.get('url') or ''}")
-                ok, out = infra("link", app, scope, *args)
-                return self.send(200, {"ok": ok, "output": out})
-
-            if u == "/api/db":
-                scope, mode = body.get("scope", ""), body.get("mode", "")
-                if not NAME.match(scope):
-                    return self.send(400, {"error": "bad scope"})
-                args = {"own": ["--own"], "share": ["--share", body.get("target", "")],
-                        "url": ["--url", body.get("url", "")]}.get(mode)
-                if not args:
-                    return self.send(400, {"error": "bad mode"})
-                if body.get("allow_prod"):
-                    args.append("--allow-prod")
-                if body.get("migrate"):
-                    args.append("--migrate")
-                self.audit(s, "attach-db", f"{app}/{scope} {mode} {body.get('target') or mask_url(body.get('url', ''))}")
-                ok, out = infra("attach-db", app, scope, *args)
+            if u == "/api/dbop":
+                env, op = body.get("env", ""), body.get("op", "")
+                if not NAME.match(env):
+                    return self.send(400, {"error": "bad env"})
+                if op == "create":
+                    args = ["db", "create", app, env]
+                elif op == "wipe":
+                    if body.get("confirm") != f"{app}/{env}":
+                        return self.send(400, {"error": f"type {app}/{env} to confirm"})
+                    args = ["db", "wipe", app, env] + (["--i-really-mean-prod"] if env == "prod" else [])
+                elif op == "use":
+                    src, key, scope = body.get("from", f"{app}/{env}"), body.get("key", "DATABASE_URL"), body.get("scope", env)
+                    if not (re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", src) and KEY.match(key) and SCOPE.match(scope)):
+                        return self.send(400, {"error": "bad source, key or scope"})
+                    args = ["db", "use", app, env, "--from", src, "--key", key, "--scope", scope]
+                    if body.get("allow_prod"):
+                        args.append("--allow-prod")
+                else:
+                    return self.send(400, {"error": "unknown op"})
+                self.audit(s, f"db:{op}", f"{app}/{env} {body.get('from', '')} {body.get('key', '')}".strip())
+                ok, out = infra(*args, timeout=120, actor=self.user())
                 return self.send(200, {"ok": ok, "output": mask_url(out)})
 
             return self.send(404, {"error": "not found"})

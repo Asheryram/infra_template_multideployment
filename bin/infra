@@ -29,12 +29,8 @@ Projects (which repos may deploy here via signed webhooks)
   infra project add <app> --repo owner/repo [--envs preview,develop,staging,prod] [--registry-user U --registry-token T]
   infra project list | show <app> | set <app> … | rotate-secret <app> | remove <app>
 
-DevOps overrides (survive CI redeploys; <scope> = env name or "preview" for all PRs)
-  infra link      <app> <scope> --api <backend>/<env> | --api-url <url> | --auto
-  infra attach-db <app> <scope> --share <app>/<env> | --url <postgres-url> | --own  [--allow-prod] [--migrate]
-  infra overrides [app]
-
 Data
+  infra db info | create | wipe | url | use <app> <env>   per-environment database (never auto-wired)
   infra db list | psql | dump | restore | template | drop-template   (infra db --help)
   infra backup
 
@@ -56,9 +52,6 @@ case $cmd in
   destroy)  exec bash "$S/destroy.sh" "$@" ;;
   list|ls)  exec bash "$S/list.sh" "$@" ;;
   logs|tail|ps|restart|exec|config|env) exec bash "$S/stack.sh" "$cmd" "$@" ;;
-  link)      exec bash "$S/override.sh" link "$@" ;;
-  attach-db) exec bash "$S/override.sh" attach-db "$@" ;;
-  overrides) exec bash "$S/override.sh" list "$@" ;;
   db)       exec bash "$S/db.sh" "$@" ;;
   backup)   exec bash "$S/backup.sh" "$@" ;;
   cleanup)  exec bash "$S/cleanup.sh" "$@" ;;
