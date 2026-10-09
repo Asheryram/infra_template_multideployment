@@ -611,9 +611,6 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self.send(400, {"error": "bad json"})
         u = urlparse(self.path).path
-        app = body.get("app", "")
-        if not NAME.match(app):
-            return self.send(400, {"error": "bad app"})
         try:
             if u == "/api/gitops":
                 op = body.get("op", "")
@@ -648,6 +645,10 @@ class Handler(BaseHTTPRequestHandler):
                     lines = tail("/tmp/infra-gitops.log", 100)
                     return self.send(200, {"ok": True, "output": "".join(lines)})
                 return self.send(400, {"error": "op must be start, stop or logs"})
+
+            app = body.get("app", "")
+            if not NAME.match(app):
+                return self.send(400, {"error": "bad app"})
 
             if u == "/api/project":
                 op = body.get("op", "")
