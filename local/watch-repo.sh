@@ -86,8 +86,9 @@ components_for() {
 build_component() {  # token repo branch component context dockerfile image
   local token=$1 repo=$2 branch=$3 comp=$4 ctx=$5 df=$6 image=$7
   local clone_dir; clone_dir=$(mktemp -d)
+  local clone_error; clone_error=$(mktemp)
   # shellcheck disable=SC2064
-  trap "rm -rf '$clone_dir'" RETURN
+  trap "rm -rf '$clone_dir' '$clone_error'" RETURN
 
   local clone_url
   if [[ -n $token ]]; then
@@ -97,8 +98,15 @@ build_component() {  # token repo branch component context dockerfile image
   fi
 
   log "  clone $repo ($branch) for $comp"
-  git clone -q --depth 1 --branch "$branch" "$clone_url" "$clone_dir" 2>/dev/null \
-    || { err "  clone failed: $repo @ $branch"; return 1; }
+  if ! git clone -q --depth 1 --branch "$branch" "$clone_url" "$clone_dir" 2>"$clone_error"; then
+    err "  clone failed: $repo @ $branch"
+    while IFS= read -r line; do
+      [[ -n $token ]] && line=${line//"$token"/[REDACTED]}
+      line=${line//"$clone_url"/"https://github.com/$repo.git"}
+      err "    $line"
+    done < "$clone_error"
+    return 1
+  fi
 
   log "  build $image"
   docker build -q -t "$image" -f "$clone_dir/$df" "$clone_dir/$ctx" >/dev/null \

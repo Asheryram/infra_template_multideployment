@@ -394,8 +394,12 @@ db_of_url() { sed -nE 's#^[a-z]+://[^@]*@([^:/]+)(:[0-9]+)?/([^?]+).*#\1 \3#p' <
 if [[ -n ${MIGRATE_CMD:-} ]]; then
   msvc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
   # Find the first env var whose value looks like a postgres URL pointing at the platform DB.
-  murl=$(grep -E "^[A-Za-z_][A-Za-z0-9_]*=postgres(ql)?://" "$STACK_DIR/runtime/$msvc.env" \
-         | grep "@$PG_CONTAINER[:/]" | head -1 | cut -d= -f2-)
+  murl=$(awk -F= -v pg_container="$PG_CONTAINER" '
+    $1 ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && $2 ~ /^postgres(ql)?:\/\// && index($0, "@" pg_container) {
+      sub(/^[^=]*=/, "")
+      print
+      exit
+    }' "$STACK_DIR/runtime/$msvc.env")
   read -r mhost mdb <<<"$(db_of_url "$murl")"
   if [[ -z $murl ]]; then
     log "migrations skipped: no variable in '$msvc' points at the platform DB yet — set one in the console then redeploy"
