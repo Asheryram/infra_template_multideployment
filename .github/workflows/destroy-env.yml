@@ -28,7 +28,8 @@ jobs:
       - env:
           ENV_NAME: ${{ inputs.env-name }}
         run: |
-          app=$(bash -c 'set -a; . .deploy/manifest.env; echo "$APP_NAME"')
+          # parse, never source: this runs ON the server and the manifest is repo-controlled
+          app=$(sed -nE "s/^[[:space:]]*APP_NAME=['\"]?([a-z0-9-]+).*/\1/p" .deploy/manifest.env | head -1)
           infra destroy --app "$app" --env "$ENV_NAME"
 
       - if: github.event_name == 'pull_request'

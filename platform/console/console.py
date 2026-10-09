@@ -5,12 +5,20 @@ Runs as the platform container `infra-console`, behind Traefik's ops-auth. Every
 through bin/infra (the same code CI and the CLI use), so the three can never disagree.
 Python stdlib only.
 """
+import base64
 import glob
+import hashlib
+import hmac
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
+import tarfile
+import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -217,6 +225,161 @@ def tail(path, n=150):
         return []
 
 
+# --------------------------------------------------------------------------- signed webhooks
+# A registered project (infra project add) deploys by POSTing a signed request to
+# https://hooks.<domain>/webhook. Protocol:
+#   X-Infra-Project:   <app>                    (APP_NAME, must be registered)
+#   X-Infra-Timestamp: <unix seconds>           (±300 s, replay window)
+#   X-Infra-Signature: sha256=<hex HMAC-SHA256(secret, "<timestamp>." + raw body)>
+#   body: {"action": "deploy"|"destroy", "repo": "owner/repo", "env": "pr-12", "tag": "sha-…",
+#          "branch": "…", "commit": "…", "bundle": "<base64 tar.gz of the .deploy directory>"}
+# → 202 {"job": id}. Poll GET /webhook/jobs/<id>, signed the same way over "<timestamp>.<id>".
+
+WEBHOOK_MAX = 512 * 1024
+BUNDLE_MAX = 256 * 1024
+TAG_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{0,200}$")
+COMMIT_RE = re.compile(r"^[0-9a-fA-F]{0,64}$")
+NONCES, JOBS = {}, {}
+LOCK = threading.Lock()
+WORKERS = threading.Semaphore(3)           # at most 3 deploys at once (same stack: serialized by flock)
+
+
+def audit_line(s, user, action, detail):
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [console] user={user} {action} {detail}\n"
+    try:
+        with open(f"{s['log_dir']}/console.log", "a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+def project(s, app):
+    return read_env(f"{s['state_dir']}/projects/{app}.env") if NAME.match(app or "") else {}
+
+
+def verify_signature(s, headers, payload):
+    """→ project dict, or raises PermissionError(reason). Order: project, signature, freshness, replay."""
+    app = headers.get("X-Infra-Project", "")
+    ts = headers.get("X-Infra-Timestamp", "")
+    sig = headers.get("X-Infra-Signature", "")
+    p = project(s, app)
+    if not p.get("SECRET"):
+        raise PermissionError("unknown project")
+    expected = "sha256=" + hmac.new(p["SECRET"].encode(), ts.encode() + b"." + payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        raise PermissionError("bad signature")
+    if not ts.isdigit() or abs(time.time() - int(ts)) > 300:
+        raise PermissionError("stale timestamp")
+    with LOCK:
+        now = time.time()
+        for k in [k for k, t in NONCES.items() if now - t > 600]:
+            del NONCES[k]
+        if sig in NONCES:
+            raise PermissionError("replayed request")
+        NONCES[sig] = now
+    return p
+
+
+def extract_bundle(s, b64, job_id):
+    raw = base64.b64decode(b64 or "", validate=True)
+    if not raw or len(raw) > BUNDLE_MAX:
+        raise ValueError(f"bundle missing or larger than {BUNDLE_MAX // 1024} KB")
+    d = os.path.join(s["state_dir"], "incoming", job_id)
+    os.makedirs(d, mode=0o700)
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as t:
+        members = t.getmembers()
+        if len(members) > 200 or sum(m.size for m in members) > 2 * 1024 * 1024:
+            raise ValueError("bundle has too many or too large files")
+        t.extractall(d, filter="data")     # rejects absolute paths, '..', links out, devices
+    if not os.path.isfile(os.path.join(d, "manifest.env")):
+        raise ValueError("bundle has no manifest.env at its root (tar the .deploy directory itself)")
+    return d
+
+
+def run_job(s, job_id, args, workdir, app, env):
+    with WORKERS:
+        JOBS[job_id]["status"] = "running"
+        ok, out = infra(*args)
+    meta = read_env(f"{s['deploy_root']}/{app}/{env}/meta.env") if ok and args[0] == "deploy" else {}
+    JOBS[job_id].update(status="succeeded" if ok else "failed", ok=ok, output=out[-6000:], finished=time.time(),
+                        url=meta.get("URL", ""), api_url=meta.get("API_URL", ""),
+                        upstream_api_url=meta.get("UPSTREAM_API_URL", ""))
+    if workdir:
+        shutil.rmtree(workdir, ignore_errors=True)
+    audit_line(s, f"webhook:{app}", f"{args[0]}:{'ok' if ok else 'FAILED'}", f"{app}/{env} job={job_id}")
+
+
+def webhook(s, headers, payload):
+    """→ (http code, body)."""
+    try:
+        p = verify_signature(s, headers, payload)
+    except PermissionError as e:
+        audit_line(s, f"webhook:{headers.get('X-Infra-Project', '?')}", "webhook:REJECTED", str(e))
+        return 401, {"error": "unauthorized"}          # same answer for every auth failure
+    app = p["APP"]
+    try:
+        body = json.loads(payload)
+    except json.JSONDecodeError:
+        return 400, {"error": "bad json"}
+
+    def deny(reason):
+        audit_line(s, f"webhook:{app}", "webhook:REJECTED", reason)
+        return 403, {"error": reason}
+
+    action, env = body.get("action"), body.get("env", "")
+    if str(body.get("repo", "")).lower() != p.get("REPO", "").lower():
+        return deny(f"repo {body.get('repo')!r} is not registered for {app}")
+    if not NAME.match(env):
+        return 400, {"error": "bad env"}
+    allowed = [e.strip() for e in p.get("ENVS", "").split(",") if e.strip()]
+    if env_class(env) not in allowed:
+        return deny(f"environment {env} is not allowed for {app} (allowed: {', '.join(allowed)})")
+    branch, tag, commit = body.get("branch", ""), body.get("tag", ""), body.get("commit", "")
+    if not (BRANCH_RE.match(branch) and COMMIT_RE.match(commit)):
+        return 400, {"error": "bad branch or commit"}
+
+    with LOCK:  # forget finished jobs after a day
+        for k in [k for k, j in JOBS.items() if time.time() - j["created"] > 86400]:
+            del JOBS[k]
+    job_id = uuid.uuid4().hex[:16]
+    if action == "deploy":
+        if env == "prod" and branch != p.get("PROD_BRANCH", "main"):
+            return deny(f"prod deploys only from branch {p.get('PROD_BRANCH', 'main')}")
+        if not TAG_RE.match(tag):
+            return 400, {"error": "bad tag"}
+        try:
+            workdir = extract_bundle(s, body.get("bundle"), job_id)
+        except (ValueError, tarfile.TarError, base64.binascii.Error) as e:
+            return 400, {"error": f"bundle: {e}"}
+        if read_env(os.path.join(workdir, "manifest.env")).get("APP_NAME") != app:
+            shutil.rmtree(workdir, ignore_errors=True)
+            return deny(f"bundle APP_NAME is not {app}")
+        args = ["deploy", "--manifest", workdir, "--env", env, "--tag", tag, "--branch", branch, "--commit", commit]
+    elif action == "destroy":
+        if not env.startswith("pr-"):
+            return deny("only preview environments can be destroyed by webhook")
+        workdir, args = None, ["destroy", "--app", app, "--env", env]
+    else:
+        return 400, {"error": "action must be deploy or destroy"}
+
+    JOBS[job_id] = {"app": app, "env": env, "action": action, "status": "queued", "created": time.time()}
+    audit_line(s, f"webhook:{app}", f"webhook:{action}", f"{app}/{env} tag={tag} branch={branch} job={job_id}")
+    threading.Thread(target=run_job, args=(s, job_id, args, workdir, app, env), daemon=True).start()
+    return 202, {"job": job_id}
+
+
+def webhook_job(s, headers, job_id):
+    try:
+        p = verify_signature(s, headers, job_id.encode())
+    except PermissionError:
+        return 401, {"error": "unauthorized"}
+    j = JOBS.get(job_id)
+    if not j or j["app"] != p["APP"]:
+        return 404, {"error": "no such job"}
+    return 200, {k: v for k, v in j.items() if k != "created"}
+
+
 # --------------------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
@@ -238,15 +401,38 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def audit(self, s, action, detail):
-        line = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} [console] user={self.user()} {action} {detail}\n"
-        try:
-            with open(f"{s['log_dir']}/console.log", "a") as f:
-                f.write(line)
-        except OSError:
-            pass
+        audit_line(s, self.user(), action, detail)
+
+    def via_hooks_host(self):
+        """Requests arriving on hooks.<domain> (no ops login) may ONLY reach /webhook."""
+        return self.headers.get("Host", "").split(":")[0].startswith("hooks.")
+
+    def route_webhook(self, method):
+        """Handle /webhook*; returns True if the request was handled here."""
+        path = urlparse(self.path).path
+        if not path.startswith("/webhook"):
+            if self.via_hooks_host():
+                self.send(404, {"error": "not found"})
+                return True
+            return False
+        s = settings()
+        if method == "POST" and path == "/webhook":
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length > WEBHOOK_MAX:
+                self.send(413, {"error": "payload too large"})
+                return True
+            code, body = webhook(s, self.headers, self.rfile.read(length))
+        elif method == "GET" and re.fullmatch(r"/webhook/jobs/[0-9a-f]{16}", path):
+            code, body = webhook_job(s, self.headers, path.rsplit("/", 1)[1])
+        else:
+            code, body = 404, {"error": "not found"}
+        self.send(code, body)
+        return True
 
     # ---- GET
     def do_GET(self):
+        if self.route_webhook("GET"):
+            return
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         s = settings()
@@ -290,6 +476,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- POST
     def do_POST(self):
+        if self.route_webhook("POST"):
+            return
         # CSRF guard: browsers can't send this header cross-site without a CORS preflight we never allow.
         if self.headers.get("X-Infra-Console") != "1":
             return self.send(403, {"error": "missing console header"})

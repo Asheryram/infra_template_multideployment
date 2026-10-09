@@ -28,6 +28,13 @@ http:
         average: 50
         burst: 100
 
+    # Public webhook endpoint (hooks.<domain>): generous for CI, hostile to floods.
+    hook-limit:
+      rateLimit:
+        average: 5
+        period: 1s
+        burst: 20
+
     # Ops tools (Traefik dashboard, Dozzle).
     ops-auth:
       basicAuth:

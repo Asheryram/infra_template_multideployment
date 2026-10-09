@@ -7,7 +7,9 @@
 #   push to staging             → staging
 #   push to main                → prod   (add required reviewers on the "prod" GitHub Environment)
 #
-# One-time: replace YOUR_ORG/infra below with the infra repo, and make sure that repo
+# One-time: DevOps registers the project (`infra project add <APP_NAME> --repo <owner/repo>`) and
+# gives you INFRA_WEBHOOK_URL + INFRA_WEBHOOK_SECRET → add both as repo Actions secrets.
+# Replace YOUR_ORG/infra below with the infra repo, and make sure that repo
 # allows access from org repos (Settings → Actions → General → Access).
 name: deploy
 
@@ -117,9 +119,51 @@ jobs:
       dockerfile: ${{ matrix.dockerfile }}
       tag: ${{ needs.plan.outputs.tag }}
 
+  # ── How deploys reach the server ────────────────────────────────────────────────
+  # Default: signed webhook (needs repo secrets INFRA_WEBHOOK_URL + INFRA_WEBHOOK_SECRET, which
+  #          DevOps gets from `infra project add`). Nothing is installed per repo.
+  # Option:  self-hosted runner on the server — set the repo variable INFRA_TRIGGER=runner.
+
   deploy:
     needs: [plan, build]
     if: >-
+      vars.INFRA_TRIGGER != 'runner' &&
+      always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: YOUR_ORG/infra/.github/workflows/deploy-webhook.yml@main
+    with:
+      action: deploy
+      env-name: ${{ needs.plan.outputs.env-name }}
+      github-environment: ${{ needs.plan.outputs.gh-env }}
+      tag: ${{ needs.plan.outputs.tag }}
+      branch: ${{ needs.plan.outputs.branch }}
+    secrets:
+      INFRA_WEBHOOK_URL: ${{ secrets.INFRA_WEBHOOK_URL }}
+      INFRA_WEBHOOK_SECRET: ${{ secrets.INFRA_WEBHOOK_SECRET }}
+
+  destroy:
+    if: >-
+      vars.INFRA_TRIGGER != 'runner' &&
+      github.event_name == 'pull_request' && github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: YOUR_ORG/infra/.github/workflows/deploy-webhook.yml@main
+    with:
+      action: destroy
+      env-name: pr-${{ github.event.pull_request.number }}
+    secrets:
+      INFRA_WEBHOOK_URL: ${{ secrets.INFRA_WEBHOOK_URL }}
+      INFRA_WEBHOOK_SECRET: ${{ secrets.INFRA_WEBHOOK_SECRET }}
+
+  deploy-runner:
+    needs: [plan, build]
+    if: >-
+      vars.INFRA_TRIGGER == 'runner' &&
       always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped')
     permissions:
@@ -132,8 +176,9 @@ jobs:
       tag: ${{ needs.plan.outputs.tag }}
       branch: ${{ needs.plan.outputs.branch }}
 
-  destroy:
+  destroy-runner:
     if: >-
+      vars.INFRA_TRIGGER == 'runner' &&
       github.event_name == 'pull_request' && github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository
     permissions:

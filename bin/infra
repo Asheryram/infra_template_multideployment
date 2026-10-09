@@ -25,6 +25,10 @@ Inspect
   infra config  <app> <env>
   infra env     <app> <env> [component]
 
+Projects (which repos may deploy here via signed webhooks)
+  infra project add <app> --repo owner/repo [--envs preview,develop,staging,prod] [--registry-user U --registry-token T]
+  infra project list | show <app> | set <app> … | rotate-secret <app> | remove <app>
+
 DevOps overrides (survive CI redeploys; <scope> = env name or "preview" for all PRs)
   infra link      <app> <scope> --api <backend>/<env> | --api-url <url> | --auto
   infra attach-db <app> <scope> --share <app>/<env> | --url <postgres-url> | --own  [--allow-prod] [--migrate]
@@ -62,6 +66,7 @@ case $cmd in
   secrets)  exec bash "$S/secrets.sh" "$@" ;;
   platform) exec bash "$INFRA_ROOT/platform/platform.sh" "$@" ;;
   networks) exec bash "$S/networks.sh" "$@" ;;
+  project|projects) exec bash "$S/project.sh" "$@" ;;
   help|-h|--help) help ;;
   *) echo "unknown command: $cmd" >&2; help; exit 1 ;;
 esac

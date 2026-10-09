@@ -75,6 +75,43 @@ write_kv() {
   printf "%s='%s'\n" "$key" "$val" >> "$file"
 }
 
+# Parse a repo's manifest.env WITHOUT executing it. The manifest comes from the app repo — on a
+# multi-tenant host it is untrusted input, so it's never `source`d. Only known keys are accepted,
+# values are taken literally (no $(), no ${}, no backticks), and every value is format-checked.
+MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|NEEDS_DB|DB_PREVIEW_SOURCE|MIGRATE_CMD|MIGRATE_SERVICE|BACKEND_APP|BACKEND_FALLBACK_ENV|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|WATCH_PATHS|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+|API_URL_[A-Z0-9_]+)$'
+load_manifest() {
+  local file=$1 line key val n=0
+  [[ -f $file ]] || die "manifest not found: $file"
+  while IFS= read -r line || [[ -n $line ]]; do
+    n=$((n + 1))
+    line=${line%$'\r'}
+    [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
+    [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] \
+      || die "manifest line $n: not KEY=value: $line"
+    key=${BASH_REMATCH[2]}; val=${BASH_REMATCH[3]}
+    if [[ $val =~ ^\'([^\']*)\'[[:space:]]*(#.*)?$ ]]; then val=${BASH_REMATCH[1]}
+    elif [[ $val =~ ^\"([^\"\$\`\\]*)\"[[:space:]]*(#.*)?$ ]]; then val=${BASH_REMATCH[1]}
+    else
+      val=${val%%[[:space:]]#*}; val=${val%"${val##*[![:space:]]}"}
+      [[ $val != *[\$\`\"\'\\]* ]] || die "manifest line $n ($key): quote values containing special characters with '…'"
+    fi
+    if [[ ! $key =~ $MANIFEST_KEYS ]]; then warn "manifest: ignoring unknown key $key"; continue; fi
+    case $key in
+      APP_NAME|BACKEND_APP|BACKEND_FALLBACK_ENV) [[ -z $val || $val =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] ;;
+      TYPE)                    [[ $val =~ ^(monolith|frontend|backend|split)$ ]] ;;
+      *_PORT)                  [[ $val =~ ^[0-9]{1,5}$ ]] ;;
+      *_MEM_LIMIT)             [[ $val =~ ^[0-9]+[kmgKMG]?$ ]] ;;
+      *_CPUS)                  [[ $val =~ ^[0-9]+(\.[0-9]+)?$ ]] ;;
+      *_HOST_*)                [[ $val =~ ^[a-z0-9.-]+$ ]] ;;
+      IMAGE_REPO|*_IMAGE)      [[ -z $val || $val =~ ^[a-zA-Z0-9._/:@{}-]+$ ]] ;;
+      EXTRA_MIDDLEWARES)       [[ -z $val || $val =~ ^[a-zA-Z0-9@,_-]+$ ]] ;;
+      NEEDS_DB|PREVIEW_AUTH|API_PREVIEW_AUTH) [[ $val =~ ^(true|false)$ ]] ;;
+      *)                       true ;;
+    esac || die "manifest line $n: invalid value for $key: $val"
+    printf -v "$key" '%s' "$val"
+  done < "$file"
+}
+
 # Read one key from an env file without leaking anything into the caller.
 meta_get() { ( set +u; . "$1"; printf '%s' "${!2-}" ); }
 
@@ -138,7 +175,7 @@ load_stack() {
   STACK_DIR=$(stack_dir "$1" "$2")
   [[ -f $STACK_DIR/stack.env && -f $STACK_DIR/compose-files ]] \
     || die "no deployment found for $1/$2 (looked in $STACK_DIR)"
-  COMPOSE=(env -i "PATH=$PATH" "HOME=${HOME:-/root}" docker compose
+  COMPOSE=(env -i "PATH=$PATH" "HOME=${HOME:-/root}" "DOCKER_CONFIG=${DOCKER_CONFIG:-${HOME:-/root}/.docker}" docker compose
            -p "$STACK" --project-directory "$STACK_DIR" --env-file "$STACK_DIR/stack.env")
   local line
   while IFS= read -r line; do
@@ -274,9 +311,16 @@ override_dependents() {
 }
 
 registry_login() {
-  [[ -n ${REGISTRY_USER:-} && -n ${REGISTRY_TOKEN:-} ]] || return 0
-  printf '%s' "$REGISTRY_TOKEN" \
-    | docker login "${REGISTRY:-ghcr.io}" -u "$REGISTRY_USER" --password-stdin >/dev/null
+  # A registered project can bring its own pull token (private images in its own org).
+  # It gets a separate Docker config so projects never share or overwrite credentials.
+  local user=${REGISTRY_USER:-} token=${REGISTRY_TOKEN:-} pf="$STATE_DIR/projects/${APP:-none}.env"
+  if [[ -f $pf && -n $(meta_get "$pf" REGISTRY_TOKEN) ]]; then
+    user=$(meta_get "$pf" REGISTRY_USER); token=$(meta_get "$pf" REGISTRY_TOKEN)
+    export DOCKER_CONFIG="$STATE_DIR/docker/$APP"
+    mkdir -p "$DOCKER_CONFIG"; chmod 700 "$DOCKER_CONFIG"
+  fi
+  [[ -n $user && -n $token ]] || return 0
+  printf '%s' "$token" | docker login "${REGISTRY:-ghcr.io}" -u "$user" --password-stdin >/dev/null
 }
 
 # --------------------------------------------------------------------------- alerts

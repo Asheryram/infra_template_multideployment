@@ -62,12 +62,13 @@ fi
 MANIFEST_DIR=$(cd "$MANIFEST_DIR" && pwd)
 BRANCH=${BRANCH//\'/_}
 
-source_env "$MANIFEST_DIR/manifest.env"
+load_manifest "$MANIFEST_DIR/manifest.env"     # parsed, never executed (untrusted repo input)
 : "${APP_NAME:?APP_NAME is missing from manifest.env}"
 : "${TYPE:?TYPE is missing from manifest.env}"
 validate_name app "$APP_NAME"
 [[ -z $APP || $APP == "$APP_NAME" ]] || die "--app '$APP' does not match APP_NAME '$APP_NAME' in the manifest"
 APP=$APP_NAME
+case $APP in console|traefik|logs|status|hooks|grafana|www|api) die "APP_NAME '$APP' is reserved by the platform" ;; esac
 comps=$(components_for "$TYPE")
 read -r -a COMPONENTS <<<"$comps"
 
@@ -143,6 +144,23 @@ for comp in "${COMPONENTS[@]}"; do
   fi
   if [[ -n ${EXTRA_MIDDLEWARES:-} ]]; then mw+=",$EXTRA_MIDDLEWARES"; fi
   MW[$comp]=$mw
+done
+
+# Hostname ownership (multi-tenant): an app may only use hosts in its own namespace on the platform
+# domain, and never a host another environment already serves — no traffic hijacking.
+for comp in "${COMPONENTS[@]}"; do
+  h=${HOST[$comp]}
+  if [[ $h == *".$DOMAIN" ]]; then
+    sub=${h%".$DOMAIN"}
+    [[ $sub == "$APP" || $sub == "$APP-"* || $sub == "api-$APP" || $sub == "api-$APP-"* ]] \
+      || die "host $h is outside $APP's namespace (allowed on $DOMAIN: $APP[-…] and api-$APP[-…])"
+  fi
+  for f in "$DEPLOY_ROOT"/*/*/stack.env; do
+    [[ $f == "$STACK_DIR/stack.env" ]] && continue
+    if grep -qF "_HOST='$h'" "$f"; then
+      die "host $h is already served by $(dirname "${f#"$DEPLOY_ROOT/"}") — refusing to take it over"
+    fi
+  done
 done
 
 URL="https://${HOST[${COMPONENTS[0]}]}$URL_PORT_SUFFIX"
@@ -378,10 +396,77 @@ load_stack "$APP" "$ENV_NAME"
 
 # ----------------------------------------------------------------------------- roll out
 
+# ----------------------------------------------------------------------------- policy
+# The repo controls its .deploy/ folder (incl. compose.extra.yml). On a multi-tenant host that
+# must never become a way into the host or into another project, so the fully merged stack is
+# checked BEFORE anything starts. Violations block the deploy.
+
+compose_without_extra() { # BASE = the COMPOSE command with only the platform templates
+  local i; BASE=()
+  for (( i = 0; i < ${#COMPOSE[@]}; i++ )); do
+    if [[ ${COMPOSE[i]} == -f && ( ${COMPOSE[i+1]:-} == "$STACK_DIR/deploy/compose.extra.yml" \
+          || ${COMPOSE[i+1]:-} == "$STACK_DIR/managed.yml" ) ]]; then i=$((i + 1)); continue; fi
+    BASE+=("${COMPOSE[i]}")
+  done
+}
+
+policy_violations() {
+  local full raw base
+  full=$("${COMPOSE[@]}" config --format json)
+  raw=$("${COMPOSE[@]}" config --no-normalize --no-interpolate --no-consistency --format json)
+  compose_without_extra
+  base=$("${BASE[@]}" config --format json)
+  jq -rn --argjson c "$full" --argjson r "$raw" --argjson b "$base" --arg runtime "$STACK_DIR/runtime/" '
+    def tlabels: (. // {}) | with_entries(select(.key | startswith("traefik.")));
+    def service_checks($s; $v):
+      (if $v.privileged then "privileged" else empty end),
+      (if (($v.cap_add // []) | length) > 0 then "cap_add" else empty end),
+      (if (($v.devices // []) | length) > 0 then "devices" else empty end),
+      ("network_mode", "pid", "ipc", "uts", "userns_mode", "cgroup_parent", "container_name"
+         | select($v[.] != null)),
+      (if (($v.ports // []) | length) > 0 then "ports (publish through Traefik instead)" else empty end),
+      (if $v.build != null then "build (images are built in CI)" else empty end),
+      (if (($v.volumes_from // []) | length) > 0 then "volumes_from" else empty end),
+      (($v.volumes // [])[] | select(.type != "volume" and .type != "tmpfs") | "\(.type) mount \(.source // "")"),
+      (($v.security_opt // [])[] | select(. != "no-new-privileges:true" and . != "no-new-privileges") | "security_opt \(.)"),
+      (($v.networks // {}) | keys[] | select(. != "default") | "extra network \(.)"),
+      (if (($v.sysctls // {}) | length) > 0 then "sysctls" else empty end),
+      (if ($v.mem_limit // $v.deploy.resources.limits.memory) == null then "no mem_limit" else empty end),
+      ((($r.services[$s].env_file) // [])[] | .path | select(startswith($runtime) | not) | "env_file \(.)"),
+      (if ($v.labels | tlabels) != ($b.services[$s].labels | tlabels)
+         then "traefik labels differ from the platform template (custom routing is not allowed)" else empty end);
+    ($c.services | to_entries[] | .key as $s | service_checks($s; .value) | "\($s): \(.)"),
+    (($c.volumes // {}) | to_entries[] | select(.value.external == true or ((.value.driver_opts // {}) | length) > 0)
+       | "volume \(.key): external volumes and driver_opts are not allowed"),
+    (($c.networks // {}) | keys[] | select(. != "default") | "top-level network \(.)"),
+    (($c.configs // {}) | keys[] | "top-level configs: \(.)"),
+    (($c.secrets // {}) | keys[] | "top-level secrets: \(.)")'
+}
+
+discard_if_new() { # a refused FIRST deploy leaves nothing behind (DB, network, state)
+  if [[ ! -f $STACK_DIR/meta.env ]]; then
+    if [[ $DB_MODE == own && -n $DB_NAME ]]; then db_drop "$DB_NAME" "$DB_NAME"; fi
+    rm -rf "$STACK_DIR"; rmdir "$DEPLOY_ROOT/$APP" 2>/dev/null || true
+  fi
+}
+if ! violations=$(policy_violations); then
+  discard_if_new
+  die "could not evaluate the stack policy (is compose.extra.yml valid?)"
+fi
+if [[ -n $violations ]]; then
+  discard_if_new
+  alert "deploy REFUSED for $STACK: stack violates the platform policy"
+  die "the stack violates the platform policy (nothing was started):
+$(sed 's/^/         - /' <<<"$violations")
+       Sidecars in compose.extra.yml may only use images, env (runtime/*.env), named volumes,
+       tmpfs and mem_limit. Ports, host mounts, privileges and custom routing are not allowed."
+fi
+
 # Before migrations: `compose run` already needs the network (and Postgres on it).
 ensure_stack_network "$STACK_NETWORK" "$APP" "$ENV_NAME" "$USES_PG"
 
 registry_login
+load_stack "$APP" "$ENV_NAME"     # rebuild COMPOSE so pulls use the project's DOCKER_CONFIG
 if (( PULL )); then
   mapfile -t stack_images < <("${COMPOSE[@]}" config --images)
   record_owned_images "${stack_images[@]}"

@@ -156,6 +156,14 @@ services:
       - traefik.http.routers.console.entrypoints=websecure
       - traefik.http.routers.console.tls=${ROUTER_TLS:-true}
       - traefik.http.routers.console.middlewares=ops-auth@file,secure-headers@file
+      - traefik.http.routers.console.service=console
+      # Signed webhooks from registered projects: no ops login (the HMAC signature is the auth),
+      # ONLY /webhook paths, rate limited. The console also refuses anything else on this host.
+      - traefik.http.routers.hooks.rule=Host(`hooks.${DOMAIN}`) && PathPrefix(`/webhook`)
+      - traefik.http.routers.hooks.entrypoints=websecure
+      - traefik.http.routers.hooks.tls=${ROUTER_TLS:-true}
+      - traefik.http.routers.hooks.middlewares=hook-limit@file,secure-headers@file
+      - traefik.http.routers.hooks.service=console
       - traefik.http.services.console.loadbalancer.server.port=8000
 
   # --------------------------------------------------------------- profile: metrics

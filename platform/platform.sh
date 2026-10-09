@@ -184,6 +184,7 @@ case $action in
     fi
     log "platform is up:"
     log "  $scheme://console.$DOMAIN$URL_PORT_SUFFIX   (DevOps console, ops-auth)"
+    log "  $scheme://hooks.$DOMAIN$URL_PORT_SUFFIX/webhook   (signed deploy webhooks for registered projects)"
     log "  $scheme://traefik.$DOMAIN$URL_PORT_SUFFIX   (dashboard, ops-auth)"
     log "  $scheme://logs.$DOMAIN$URL_PORT_SUFFIX      (dozzle, ops-auth — shows only infra-managed containers)"
     log "  $scheme://status.$DOMAIN$URL_PORT_SUFFIX    (uptime-kuma)"

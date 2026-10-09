@@ -1,0 +1,130 @@
+# Reusable: deploy or destroy one environment through the platform's SIGNED WEBHOOK.
+# Runs on GitHub-hosted runners — nothing to install on the server per repo. The project must be
+# registered on the server (`infra project add <app> --repo <owner/repo>`), which gives the two
+# secrets below. Protocol: see platform/console/console.py ("signed webhooks").
+name: deploy-webhook
+
+on:
+  workflow_call:
+    inputs:
+      action:
+        description: deploy | destroy
+        type: string
+        default: deploy
+      env-name:
+        type: string
+        required: true
+      tag:
+        type: string
+        default: ""
+      branch:
+        type: string
+        default: ""
+      manifest-dir:
+        type: string
+        default: .deploy
+      github-environment:
+        type: string
+        default: ""
+    secrets:
+      INFRA_WEBHOOK_URL:
+        required: true
+      INFRA_WEBHOOK_SECRET:
+        required: true
+    outputs:
+      url:
+        value: ${{ jobs.webhook.outputs.url }}
+
+jobs:
+  webhook:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.github-environment || inputs.env-name }}
+      url: ${{ steps.send.outputs.url }}
+    concurrency:
+      group: infra-${{ github.repository }}-${{ inputs.manifest-dir }}-${{ inputs.env-name }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      url: ${{ steps.send.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: ${{ inputs.manifest-dir }}
+
+      - id: send
+        env:
+          URL: ${{ secrets.INFRA_WEBHOOK_URL }}
+          SECRET: ${{ secrets.INFRA_WEBHOOK_SECRET }}
+          ACTION: ${{ inputs.action }}
+          ENV_NAME: ${{ inputs.env-name }}
+          TAG: ${{ inputs.tag }}
+          BRANCH: ${{ inputs.branch }}
+          DIR: ${{ inputs.manifest-dir }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          URL=${URL%/}; [[ $URL == */webhook ]] || URL="$URL/webhook"
+          app=$(sed -nE "s/^[[:space:]]*APP_NAME=['\"]?([a-z0-9-]+).*/\1/p" "$DIR/manifest.env" | head -1)
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          sign() { { printf '%s.' "$1"; cat "$2"; } | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1; }
+
+          bundle=""
+          if [[ $ACTION == deploy ]]; then bundle=$(tar -C "$DIR" -czf - . | base64 -w0); fi
+          jq -cn --arg action "$ACTION" --arg repo "$GITHUB_REPOSITORY" --arg env "$ENV_NAME" --arg tag "$TAG" \
+            --arg branch "$BRANCH" --arg commit "$COMMIT" --arg bundle "$bundle" \
+            '{action:$action, repo:$repo, env:$env, tag:$tag, branch:$branch, commit:$commit}
+             + (if $bundle == "" then {} else {bundle:$bundle} end)' > body.json
+
+          ts=$(date +%s)
+          code=$(curl -sS -o resp.json -w '%{http_code}' -X POST "$URL" -H 'Content-Type: application/json' \
+            -H "X-Infra-Project: $app" -H "X-Infra-Timestamp: $ts" -H "X-Infra-Signature: sha256=$(sign "$ts" body.json)" \
+            --data-binary @body.json)
+          if [[ $code != 202 ]]; then echo "::error::platform rejected the request: HTTP $code $(cat resp.json)"; exit 1; fi
+          job=$(jq -r .job resp.json); echo "accepted as job $job"
+
+          for _ in $(seq 1 300); do
+            sleep 3
+            ts=$(date +%s); printf '%s' "$job" > jobid
+            curl -sS -o status.json "$URL/jobs/$job" -H "X-Infra-Project: $app" \
+              -H "X-Infra-Timestamp: $ts" -H "X-Infra-Signature: sha256=$(sign "$ts" jobid)" || continue
+            case $(jq -r '.status // empty' status.json) in
+              succeeded)
+                jq -r '.output' status.json | tail -n 20
+                for k in url api_url upstream_api_url; do echo "$k=$(jq -r ".$k // empty" status.json)" >> "$GITHUB_OUTPUT"; done
+                exit 0 ;;
+              failed)
+                jq -r '.output' status.json
+                echo "::error::$ACTION of $app/$ENV_NAME failed on the server (see output above)"; exit 1 ;;
+            esac
+          done
+          echo "::error::timed out waiting for job $job"; exit 1
+
+      - name: Comment on the PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          ACTION: ${{ inputs.action }}
+          APP: ${{ steps.send.outputs.app }}
+          URL: ${{ steps.send.outputs.url }}
+          API_URL: ${{ steps.send.outputs.api_url }}
+          UPSTREAM: ${{ steps.send.outputs.upstream_api_url }}
+          TAG: ${{ inputs.tag }}
+        with:
+          script: |
+            const { ACTION, APP, URL, API_URL, UPSTREAM, TAG } = process.env;
+            const marker = `<!-- infra-preview:${APP} -->`;
+            const body = ACTION === 'destroy'
+              ? `${marker}\n### Preview removed: \`${APP}\`\n_The environment, its database and its PR-only variables were deleted._`
+              : [marker, `### Preview ready: \`${APP}\``, '| | |', '|---|---|', `| App | ${URL} |`,
+                 API_URL && API_URL !== URL ? `| API | ${API_URL} |` : '', UPSTREAM ? `| Uses API | ${UPSTREAM} |` : '',
+                 `| Image tag | \`${TAG}\` |`, '', '_Updated on every push. Removed automatically when the PR closes._']
+                .filter(Boolean).join('\n');
+            const { owner, repo } = context.repo, issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const mine = comments.find(c => c.body && c.body.includes(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else if (ACTION !== 'destroy') await github.rest.issues.createComment({ owner, repo, issue_number, body });

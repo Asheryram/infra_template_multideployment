@@ -49,6 +49,13 @@ cleanup() {
   rm -rf "${STATE_DIR:-/var/lib/infra}"/overrides/demo-api "${STATE_DIR:-/var/lib/infra}"/overrides/demo-web
   for e in pr-11 develop staging prod; do D infra destroy --app demo-web --env "$e" --i-really-mean-prod >/dev/null 2>&1; done
   for e in pr-7 develop staging prod; do D infra destroy --app demo-api --env "$e" --i-really-mean-prod >/dev/null 2>&1; done
+  # webhook chapter + leftovers of older test versions
+  for a in hook-demo demo-split demo-mono-web demo-mono-api; do
+    for d in "${DEPLOY_ROOT:-/srv/deployments}/$a"/*/; do
+      [[ -d $d ]] && D infra destroy --app "$a" --env "$(basename "$d")" --i-really-mean-prod >/dev/null 2>&1
+    done
+  done
+  D infra project remove hook-demo >/dev/null 2>&1
   rm -rf "${SECRETS_ROOT:-/etc/infra/secrets}"/demo-api "${SECRETS_ROOT:-/etc/infra/secrets}"/demo-web \
          "${STATE_DIR:-/var/lib/infra}"/overrides/demo-api "${STATE_DIR:-/var/lib/infra}"/overrides/demo-web "$E2E_WORK"
   docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^local/demo-(api|web)/' | xargs -r docker rmi >/dev/null 2>&1
@@ -184,6 +191,50 @@ title "10. Frontend PR #11 closed without merging"
 sim pr-close demo-web 11
 check "web pr-11 is gone"                              "$(code -u "$PREVIEW" "$(url demo-web pr-11)/")" 404
 check "web develop unaffected"                         "$(code "$(url demo-web develop)/")" 200
+
+title "10b. Untrusted repos: registered projects, signed webhooks, stack policy"
+HOOK="https://hooks.$DOMAIN$S/webhook"; HD=/var/tmp/e2e-hook-demo
+rm -rf "$HD" "$HD-evil" "$HD-inject"; mkdir -p "$HD"
+cp -r "$HERE/../examples/monolith/." "$HD/"; sed -i 's/APP_NAME=smoke-mono/APP_NAME=hook-demo/' "$HD/manifest.env"
+D infra project remove hook-demo >/dev/null 2>&1
+HSECRET=$(D infra project add hook-demo --repo acme/hook-demo --envs preview,develop 2>/dev/null | awk '/INFRA_WEBHOOK_SECRET/ {print $2}')
+check "project registered (secret issued)"            "${#HSECRET}" 64
+hsend() { INFRA_WEBHOOK_URL=$HOOK INFRA_WEBHOOK_SECRET=${HS:-$HSECRET} bash "$HERE/../../scripts/webhook-send.sh" --insecure \
+            --app "${HAPP:-hook-demo}" --repo "${HREPO:-acme/hook-demo}" --manifest-dir "${HDIR:-$HD}" --tag t1 --branch feature/h "$@" 2>/dev/null; }
+check "signed deploy → preview live"                  "$(hsend --action deploy --env pr-41 | jq -r .status)" succeeded
+check "  …and serving"                                "$(code -u "$PREVIEW" "$(url hook-demo pr-41)/")" 200
+check "tampered signature → 401"                      "$(hsend --action deploy --env pr-42 --tamper | grep -o 'HTTP [0-9]*')" "HTTP 401"
+check "10-minute-old request → 401"                   "$(hsend --action deploy --env pr-42 --timestamp $(( $(date +%s) - 600 )) | grep -o 'HTTP [0-9]*')" "HTTP 401"
+check "unregistered project → 401"                    "$(HAPP=nobody hsend --action deploy --env pr-42 | grep -o 'HTTP [0-9]*')" "HTTP 401"
+check "another repo using the secret → 403"           "$(HREPO=evil/fork hsend --action deploy --env pr-42 | grep -o 'HTTP [0-9]*')" "HTTP 403"
+check "environment not allowed (prod) → 403"          "$(hsend --action deploy --env prod | grep -o 'HTTP [0-9]*')" "HTTP 403"
+body='{"action":"destroy","repo":"acme/hook-demo","env":"pr-49"}'; ts=$(date +%s)
+sig=$(printf '%s.%s' "$ts" "$body" | openssl dgst -sha256 -hmac "$HSECRET" -r | cut -d' ' -f1)
+rq() { curl -sk -o /dev/null -w '%{http_code}' -X POST "$HOOK" -H "X-Infra-Project: hook-demo" -H "X-Infra-Timestamp: $ts" \
+         -H "X-Infra-Signature: sha256=$sig" -H 'Content-Type: application/json' --data-binary "$body"; }
+check "replayed request → refused"                    "$(rq)/$(rq)" 202/401
+check "hooks host can't reach the console"            "$(code "https://hooks.$DOMAIN$S/api/state")/$(code "https://hooks.$DOMAIN$S/")" 404/404
+cp -r "$HD" "$HD-inject"; echo 'APP_PORT=80; touch /tmp/E2E_PWNED' >> "$HD-inject/manifest.env"
+rm -f /tmp/E2E_PWNED
+check "manifest with shell code → refused"            "$(HDIR=$HD-inject hsend --action deploy --env pr-43 | jq -r .status)" failed
+check "  …and nothing was executed"                    "$(ls /tmp/E2E_PWNED 2>/dev/null | wc -l)" 0
+cp -r "$HD" "$HD-evil"; cat > "$HD-evil/compose.extra.yml" <<'Y'
+services:
+  app:
+    labels: [ "traefik.http.routers.steal.rule=Host(`demo-web.example`)" ]
+  miner:
+    image: traefik/whoami:v1.10
+    privileged: true
+    network_mode: host
+    volumes: ["/:/host"]
+    env_file: [/etc/infra/platform.secrets.env]
+Y
+out=$(HDIR=$HD-evil hsend --action deploy --env pr-44 | jq -r .output)
+check "privileged / host mount / secrets / hijack → refused" "$(grep -c -E 'privileged|bind mount /|env_file /etc|traefik labels differ|network_mode' <<<"$out")" 5
+check "  …nothing started for pr-44"                   "$(docker ps -aq --filter label=com.docker.compose.project=infra-hook-demo-pr-44 | wc -l)" 0
+check "hostname of another app → refused"             "$(echo 'APP_HOST_PREVIEW=demo-web-develop.'"$DOMAIN" >> "$HD/manifest.env"; hsend --action deploy --env pr-45 | jq -r .status)" failed
+check "signed destroy → preview gone"                 "$(hsend --action destroy --env pr-41 | jq -r .status)/$(code -u "$PREVIEW" "$(url hook-demo pr-41)/")" succeeded/404
+D infra project remove hook-demo >/dev/null; rm -rf "$HD" "$HD-evil" "$HD-inject"
 
 title "11. Your other containers were never touched"
 if [[ -d /var/lib/isolation-baseline ]]; then
