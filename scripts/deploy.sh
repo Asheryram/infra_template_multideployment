@@ -144,7 +144,7 @@ for comp in "${COMPONENTS[@]}"; do
   resource_validate_value "${MEM[$comp]}" "${CPUS[$comp]}"
   component_mem_kib=$(resource_mem_kib "${MEM[$comp]}")
   stack_mem_kib=$((stack_mem_kib + component_mem_kib))
-  stack_cpus=$(awk -v total="$stack_cpus" -v next="${CPUS[$comp]}" 'BEGIN { printf "%.3f", total + next }')
+  stack_cpus=$(awk -v total="$stack_cpus" -v addend="${CPUS[$comp]}" 'BEGIN { printf "%.3f", total + addend }')
 
   mw="secure-headers@file,compress@file"
   if [[ $PREVIEW == true ]]; then
