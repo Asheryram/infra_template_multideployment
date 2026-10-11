@@ -4,10 +4,13 @@ All commands run on the server. `infra` works for any user in the `deploy` group
 
 ## Add a new app
 1. The team copies `app-kit/` into their repo and sets `APP_NAME` (unique on the server).
-2. Add runtime secrets (if any) for each class:
+2. Register the app and repo for signed webhook deploys (the app-kit default):
+   `sudo -u deploy infra project add <app> --repo <owner/repo>`
+   Save the one-time `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET` output as repository Actions secrets. For the legacy runner workflow, set repository variable `INFRA_TRIGGER=runner` instead.
+3. Add runtime secrets (if any) for each class:
    `sudo infra secrets edit <app> preview` / `develop` / `staging` / `prod` (or `prod.api` for one component)
-3. Optional: seed previews with `infra db template <app> sanitised.dump`
-4. The team opens a PR. The preview URL appears as a comment.
+4. Optional: seed previews with `infra db template <app> sanitised.dump`
+5. The team opens a PR. The preview URL appears as a comment.
 
 ## Change secrets or env config
 ```bash
@@ -18,15 +21,27 @@ Repo-side non-secret config (`.deploy/env/*.env`) takes effect on the next CI de
 
 ## The console (web UI)
 
-`https://console.<domain>` (ops login, the `DASHBOARD_AUTH_*` credentials). It has three tabs:
+`https://console.<domain>` (ops login, using the `DASHBOARD_AUTH_*` credentials). It has four tabs:
 
 | Tab | What you do there |
 |---|---|
 | **Environments** | Every app and environment with open-links, status, branch/tag, which API it calls, which DB it uses, missing variables. **Manage** opens: API wiring, DB wiring, redeploy / restart / rollback / destroy, effective variables (masked), last 200 log lines |
-| **Variables** | Server-side variables per app and scope: *all environments* (`common`), a class (`preview`, `develop`, `staging`, `prod`), or one environment (`pr-12`), optionally limited to one component (`.api` / `.web` / `.app`). Saving shows which environments to redeploy |
+| **Projects** | Register repositories, configure allowed environments, issue or rotate webhook secrets, and remove project access. The webhook secret is shown once; save it as the repo's `INFRA_WEBHOOK_SECRET` Actions secret. |
+| **Variables** | Server-side variables per app and scope: *all environments* (`common`), a class (`preview`, `develop`, `staging`, `prod`), or one environment (`pr-12`), optionally limited to one component (`.api` / `.web` / `.app`). Platform-managed metadata is read-only. App override changes apply on the next deploy; save and redeploy when they should take effect immediately. |
 | **Activity** | Who did what (console audit log) interleaved with deploy logs |
 
 Everything the console does goes through the same `infra` CLI that CI uses, and it shares the deploy locks, so console, CLI and CI never fight. It runs as the deploy user, but it controls Docker, so treat the ops login like a root password: use a long password, and ideally allow it only from your VPN or IP.
+
+### Register a repository for signed webhook deploys
+
+Register each app name used by `.deploy/manifest.env` and copy the one-time secret output into the repository's Actions secrets:
+
+```bash
+sudo -u deploy infra project add shop-api --repo your-org/shop-api --envs preview,develop,staging,prod
+sudo -u deploy infra project list
+```
+
+The command prints `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET`; the secret is not shown again. Use `infra project rotate-secret <app>` to revoke the old secret and issue a replacement. Webhook deployments are the app-kit default. To use the legacy self-hosted-runner workflow instead, set the repository variable `INFRA_TRIGGER=runner`.
 
 ## A feature needs new variables
 
@@ -101,8 +116,8 @@ Lower `MAX_PREVIEWS` / `PREVIEW_TTL_DAYS`, or set `PREVIEW_MEM_LIMIT` in noisy m
 
 ## Restore a database
 ```bash
-ls /srv/backups/                                   # or: restic snapshots
-infra db restore shop prod /srv/backups/2026-10-07/shop_prod.dump
+ls "${BACKUP_DIR:-/srv/backups}/"                   # or: restic snapshots
+infra db restore shop prod "${BACKUP_DIR:-/srv/backups}/2026-10-07/shop_prod.dump"
 infra restart shop prod
 ```
 

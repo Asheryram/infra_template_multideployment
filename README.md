@@ -1,6 +1,6 @@
 # infra — Amplify-style environments on a single server
 
-Every repo gets **prod, staging, develop and a preview per pull request**, each with its own URL and its own database, on one VPS. App teams add two files to their repo; this repo runs everything else.
+Every repo gets **prod, staging, develop and a preview per pull request**, each with its own URL and, when enabled, its own isolated database, on one VPS. App teams add the app-kit configuration to their repo; this repo runs everything else.
 
 **It's safe on a server that already runs other apps.** By default (`HOST_MODE=shared`) it never changes host-wide settings and never touches containers, images, volumes or databases it didn't create. See [docs/shared-host.md](docs/shared-host.md).
 
@@ -76,7 +76,7 @@ sudo bash /opt/infra/local/verify-isolation.sh          # proves the "existing" 
 ```
 Open `https://traefik.<vm-ip-dashed>.sslip.io` (self-signed cert, accept the warning; login `admin/admin`).
 
-**The full lifecycle story test** has two real apps (`demo-api` + `demo-web`) and a GitHub simulator using real git branches. It walks develop → prod → frontend PR → backend PR on the same branch → a feature that needs a new secret (blocked, then fixed in the console) → bad release and rollback → DevOps rewiring → merge → release → close, with **47 assertions**:
+**The full lifecycle story test** has two real apps (`demo-api` + `demo-web`) and a GitHub simulator using real git branches. It exercises develop → prod → frontend and backend PRs → a feature that needs a new secret → release and rollback → DevOps rewiring → merge and close. The script reports the current assertion totals when it runs:
 ```bash
 sudo bash /opt/infra/local/e2e/run.sh            # ~5 min, cleans up after itself
 sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with URLs to open in the browser
@@ -98,7 +98,7 @@ sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with
    sudo nano /etc/infra/platform.secrets.env     # registry token, restic, GH_TOKEN
    sudo -u infradeploy infra platform up      # your DEPLOY_USER
    ```
-4. Self-hosted runner, so CI can deploy without SSH. Get a token under Org → Settings → Actions → Runners → New:
+4. By default, app-kit deploys use signed webhooks; no self-hosted runner is required. Register each app with `infra project add <app> --repo <org/repo>` and add the printed `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET` values as repository Actions secrets. If you explicitly configure `INFRA_TRIGGER=runner`, install a self-hosted runner using a token under Org → Settings → Actions → Runners → New:
    ```bash
    sudo GH_RUNNER_URL=https://github.com/your-org GH_RUNNER_TOKEN=XXXX \
         bash /opt/infra/bootstrap/install.sh /opt/infra/inventory/vps-1.env 60

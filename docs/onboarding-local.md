@@ -163,7 +163,7 @@ $CI "$P/shop-web" pr 2
 
 ## Part 5: 🛠 DevOps controls in the console
 
-**5.0 Environment variables: add, change, override.** Go to Environments → `shop-web` / `pr-2` → **Manage** → *Environment variables*.
+**5.0 Environment variables: add or edit app overrides.** Go to Environments → `shop-web` / `pr-2` → **Manage** → *Environment variables*.
 
 This shows every variable the container has, and where it came from:
 - *set by the platform*
@@ -171,13 +171,13 @@ This shows every variable the container has, and where it came from:
 - *set in the console*, with its scope
 
 To change one:
-1. Click **Override** next to `API_URL`.
+1. Click **Add override** next to `API_URL`.
 2. Type `https://shop-api.127-0-0-1.sslip.io:8443` (prod's API).
 3. Keep "only pr-2" and click **Save & redeploy**.
 4. Reload pr-2: the backend is now `prod`.
-5. Click **✕** on your override, then **Redeploy now**. It's back to the automatic value.
+5. Click **Remove** on your override, then **Redeploy now**. It's back to the automatic value.
 
-To add a new one, type a key and value at the bottom, and choose the scope: *only this env*, *all previews*, or *all environments*. Sensitive keys (`…KEY`, `…SECRET`, `…TOKEN`, `…PASSWORD`) are masked. Use **show** to reveal one; reveals are logged.
+To add or change an app variable, use **Add an app override** (or **Add override** beside a repository value), enter the key and value, and choose the scope: *only this env*, *all previews*, or *all environments*. Platform-managed metadata such as `APP_ENV`, `PUBLIC_URL`, `IMAGE_TAG`, and `GIT_COMMIT` is read-only. Sensitive keys (`…KEY`, `…SECRET`, `…TOKEN`, `…PASSWORD`) are masked. Use **Show** to reveal one; reveals are logged. Use **Save & redeploy** when the change should apply immediately.
 - [ ] done
 
 > `shop-web` opted into *auto-wiring* (`BACKEND_APP` in its manifest), so `API_URL` starts out filled by the platform. Without `BACKEND_APP` nothing is automatic. You'd just set the frontend's API variable here per environment, which is the usual way teams pass it (e.g. `VITE_API_URL`).
