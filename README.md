@@ -1,6 +1,6 @@
 # infra — Amplify-style environments on a single server
 
-Every repo gets **prod, staging, develop and a preview per pull request**, each with its own URL and, when enabled, its own isolated database, on one VPS. App teams add the app-kit configuration to their repo; this repo runs everything else.
+Every repo can get **prod, staging, develop and a preview per pull request**, each with its own URL. Apps that opt into the platform database (`NEEDS_DB=true`) get an isolated database per environment; preview databases can be cloned from a sanitised seed template. App teams add the app-kit configuration to their repo; this repo runs everything else.
 
 **It's safe on a server that already runs other apps.** By default (`HOST_MODE=shared`) it never changes host-wide settings and never touches containers, images, volumes or databases it didn't create. See [docs/shared-host.md](docs/shared-host.md).
 
@@ -49,7 +49,7 @@ Anything else (Redis, workers, cron containers, Mongo) goes in the app's optiona
 
 | Trigger | Env | Notes |
 |---|---|---|
-| PR opened/updated | `pr-<n>` | basic-auth, `noindex`, own DB (cloned from a seed template), auto-removed |
+| PR opened/updated | `pr-<n>` | basic-auth, `noindex`, isolated DB when `NEEDS_DB=true` (optionally cloned from a seed template), auto-removed |
 | push `develop` | `develop` | |
 | push `staging` | `staging` | |
 | push `main` | `prod` | gate it with required reviewers on the `prod` GitHub Environment |
@@ -60,7 +60,9 @@ Anything else (Redis, workers, cron containers, Mongo) goes in the app's optiona
 
 ## Quick start A: test on your laptop (no VPS)
 
-Requires Multipass. **If Multipass/Hyper-V networking fails** (the VM shows `IPv4: N/A`, which is common on managed laptops), use the WSL2 variant instead: `.\local\wsl-up.ps1`. It creates a separate `fake-vps` distro. Then run `wsl -d fake-vps` and the same commands below (you're root, so `sudo` is optional). `wsl-reset.ps1` / `wsl-down.ps1` reset or remove it.
+**Prerequisites:** Windows with PowerShell and either Multipass or WSL2. The WSL2 path also requires WSL to be available. No existing VPS or globally installed `infra` CLI is needed; the VM bootstrap installs the platform.
+
+If Multipass/Hyper-V networking fails (the VM shows `IPv4: N/A`, which is common on managed laptops), use the WSL2 variant instead: `.\local\wsl-up.ps1`. It creates a separate `fake-vps` distro. Then run `wsl -d fake-vps` and the same commands below (you're root, so `sudo` is optional). `wsl-reset.ps1` / `wsl-down.ps1` reset or remove it.
 
 ```powershell
 .\local\up.ps1                       # creates VM "fake-vps", mounts repo at /opt/infra, writes inventory/local.env
@@ -71,6 +73,7 @@ Inside the VM:
 sudo bash /opt/infra/local/simulate-existing.sh          # make the VM look like the live server: other apps, DB, firewall
 sudo bash /opt/infra/bootstrap/install.sh /opt/infra/inventory/local.env
 sudo -u deploy infra platform up
+sudo -u deploy infra platform ps                 # platform containers should be running/healthy
 sudo -u deploy bash /opt/infra/local/smoke-test.sh      # deploys every project type, checks routing/auth/DB/relinking
 sudo bash /opt/infra/local/verify-isolation.sh          # proves the "existing" apps were never touched
 ```
@@ -87,7 +90,9 @@ sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with
 
 ## Quick start B: real VPS
 
-1. DNS: `A apps.example.com` and `A *.apps.example.com` → server IP.
+**Prerequisites:** an Ubuntu VPS with sudo access, a domain whose DNS you can manage, and credentials for the selected DNS challenge provider if using Let's Encrypt wildcard TLS. The bootstrap configures the host and installs Docker; do not run it against a shared host until you have reviewed [docs/shared-host.md](docs/shared-host.md).
+
+1. DNS: `A apps.example.com` and `A *.apps.example.com` → server IP. Ensure the configured HTTP/HTTPS ports are reachable from clients.
 2. `cp inventory/prod.env.example inventory/vps-1.env` and fill it in (domain, ACME email, DNS provider, htpasswd lines).
 3. On the server:
    ```bash
@@ -98,6 +103,7 @@ sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with
    sudo nano /etc/infra/platform.secrets.env     # registry token, restic, GH_TOKEN
    sudo -u infradeploy infra platform up      # your DEPLOY_USER
    ```
+   Verify with `sudo -u infradeploy infra platform ps` and `sudo -u infradeploy infra host-check`; then open the console URL for the configured domain.
 4. By default, app-kit deploys use signed webhooks; no self-hosted runner is required. Register each app with `infra project add <app> --repo <org/repo>` and add the printed `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET` values as repository Actions secrets. If you explicitly configure `INFRA_TRIGGER=runner`, install a self-hosted runner using a token under Org → Settings → Actions → Runners → New:
    ```bash
    sudo GH_RUNNER_URL=https://github.com/your-org GH_RUNNER_TOKEN=XXXX \
@@ -107,7 +113,7 @@ sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with
 
 ## Onboarding an app (what teams do)
 
-See [app-kit/README.md](app-kit/README.md). In short: copy `app-kit/.deploy/` and `app-kit/.github/` into the repo, set `APP_NAME` / `TYPE` / ports in `.deploy/manifest.env`, and open a PR.
+See [app-kit/README.md](app-kit/README.md) for the full app requirements. In short: copy `app-kit/.deploy/` and `app-kit/.github/` into the repo, set `APP_NAME` / `TYPE` / ports in `.deploy/manifest.env`, register the repo with `infra project add <app> --repo <org/repo>`, add its printed `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET` as GitHub Actions secrets, then open a PR. A preview gets a database only when configured with `NEEDS_DB=true`.
 
 ## Day-to-day
 
@@ -130,11 +136,11 @@ More in the [runbook](docs/runbook.md).
 ## Built-in server hygiene
 
 - **Logs**: Docker json-file 3×10 MB per container, journald capped at 500 MB, `/var/log/infra` rotated daily for 14 days
-- **Disk**: nightly removal of images *we* pulled that are no longer used (never a global prune). Alert at 80%
+- **Disk**: nightly removal of images *we* pulled that are no longer used (never a global prune). The alert threshold is `DISK_ALERT_PCT` (80% in the production example).
 - **Previews**: capped at `MAX_PREVIEWS`, removed on PR close (via CI, and nightly via the GitHub API), expire after `PREVIEW_TTL_DAYS`
-- **Isolation**: memory/CPU/pid limits on every container. Postgres is on an internal network. Traefik reads Docker through a read-only socket proxy
+- **Runtime isolation**: memory/CPU/pid limits on every container. Postgres is on private per-environment networks. Traefik reads Docker through a read-only socket proxy
 - **Security**: `no-new-privileges` on every container, a read-only Docker socket proxy, and basic-auth on previews and ops tools. On `HOST_MODE=dedicated` servers it also sets SSH keys only, no root login, ufw (22/80/443 only), fail2ban and unattended security upgrades
-- **Isolation**: everything is labelled `infra.managed=true` and prefixed `infra-`. Preflight checks refuse on any port, name or user collision
+- **Resource ownership**: managed resources are labelled `infra.managed=true` and prefixed `infra-`. Preflight checks refuse on port, name or user collisions
 - **Backups**: nightly `pg_dump` of every non-preview DB plus `/etc/infra`, pushed off-server with restic
 - **Alerts**: disk, memory, crash-looping or unhealthy containers, platform down, and failed deploys/migrations/backups go to your Slack/Discord/Teams webhook
 - **Audit**: every deploy is logged to `/var/log/infra/deploy.log` with who, what tag and which branch

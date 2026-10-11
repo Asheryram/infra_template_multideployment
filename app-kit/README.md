@@ -1,6 +1,6 @@
 # App kit: get preview environments for your repo
 
-Copy two things into your repo, fill in one file, and every PR gets its own URL and database.
+Copy the app-kit files into your repo and fill in the manifest to get per-environment URLs. Environments get an isolated platform database only when `NEEDS_DB=true`; preview databases can optionally be cloned from a sanitised seed template.
 
 ## 1. Copy
 
