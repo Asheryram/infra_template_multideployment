@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /platform
+    schedule:
+      interval: weekly
+    groups:
+      platform-images:
+        patterns:
+          - "*"
+  - package-ecosystem: docker
+    directory: /platform/console
+    schedule:
+      interval: weekly
+    groups:
+      console-base-images:
+        patterns:
+          - "*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -280,6 +280,10 @@ pre {
       <svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M8 2v4l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/></svg>
       Activity
     </button>
+    <button data-tab="access" hidden>
+      <svg width="16" height="16" fill="none" viewBox="0 0 16 16"><circle cx="6" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M1.5 14v-1.5A3.5 3.5 0 015 9h2a3.5 3.5 0 013.5 3.5V14M11 3.5a2 2 0 010 4M12 9.5a3 3 0 012.5 3V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      Access
+    </button>
   </nav>
   <div class="sidebar-footer">
     <div id="sidebarUser" style="margin-bottom:6px;color:#64748b"></div>
@@ -298,6 +302,7 @@ pre {
     <div id="tab-projects" hidden></div>
     <div id="tab-vars" hidden></div>
     <div id="tab-activity" hidden></div>
+    <div id="tab-access" hidden></div>
   </div>
 </div>
 
@@ -345,7 +350,7 @@ const ORDER = { prod: 0, staging: 1, develop: 2 };
 const sortEnvs = list => list.sort((a, b) => (ORDER[a.ENV_NAME] ?? 3) - (ORDER[b.ENV_NAME] ?? 3) || a.ENV_NAME.localeCompare(b.ENV_NAME, undefined, { numeric: true }));
 const CONNECTED_LABEL = c => c === 'own' ? 'its own database' : c?.startsWith('platform:') ? `platform DB ${c.slice(9)}` : c?.startsWith('external:') ? `external on ${c.slice(9)}` : 'none';
 
-const TAB_TITLES = { envs: 'Environments', projects: 'Projects', vars: 'Variables', activity: 'Activity' };
+const TAB_TITLES = { envs: 'Environments', projects: 'Projects', vars: 'Variables', activity: 'Activity', access: 'Organizations & access' };
 
 async function load() {
   STATE = await api('/api/state');
@@ -353,10 +358,23 @@ async function load() {
   const base = d => `https://${d}.${s.domain}${s.suffix}`;
   $('#sidebarDomain').textContent = s.domain || s.server;
   $('#sidebarUser').textContent = '👤 ' + (STATE.user || 'unknown');
-  $('#sidebarLinks').innerHTML = [['Traefik', base('traefik')], ['Logs', base('logs')], ['Status', base('status')]]
+  const platformAdmin = STATE.access?.platform_admin;
+  const orgAdmin = STATE.access?.organizations?.some(org => org.role === 'org_admin');
+  const canManageVars = platformAdmin || Object.values(STATE.access?.project_roles || {}).includes('maintainer');
+  document.querySelector('#sidebar nav button[data-tab=projects]').hidden = !platformAdmin;
+  document.querySelector('#sidebar nav button[data-tab=activity]').hidden = !platformAdmin;
+  document.querySelector('#sidebar nav button[data-tab=access]').hidden =
+    STATE.access?.auth_mode !== 'authentik' || (!platformAdmin && !orgAdmin);
+  document.querySelector('#sidebar nav button[data-tab=vars]').hidden = !canManageVars;
+  const links = platformAdmin
+    ? [['Traefik', base('traefik')], ['Logs', base('logs')], ['Status', base('status')]]
+    : [['Status', base('status')]];
+  $('#sidebarLinks').innerHTML = links
     .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener">${n} ↗</a>`).join('');
   $('#topMeta').textContent = s.server;
-  $('#topLinks').innerHTML = [['Traefik', base('traefik')], ['Container logs', base('logs')], ['Uptime', base('status')]]
+  $('#topLinks').innerHTML = (platformAdmin
+    ? [['Traefik', base('traefik')], ['Container logs', base('logs')], ['Uptime', base('status')]]
+    : [['Uptime', base('status')]])
     .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener"><svg width="12" height="12" fill="none" viewBox="0 0 12 12"><path d="M2 10L10 2M10 2H5M10 2v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>${n}</a>`).join('');
   renderEnvs();
   if (!$('#tab-vars').hidden) renderVars();
@@ -372,7 +390,11 @@ function renderEnvs() {
   const blocked = STATE.deployments.filter(d => d.STATE === 'blocked').length;
 
   if (!names.length) {
-    $('#tab-envs').innerHTML = '<div class="card"><div class="empty">Nothing deployed yet. Open a PR in an app repo, or run <span class="mono">infra deploy</span>.</div></div>';
+    const hasTenantIdentity = STATE.access?.auth_mode === 'authentik' && !STATE.access?.platform_admin;
+    const message = hasTenantIdentity
+      ? 'No projects are assigned to your account yet. Ask your organization administrator to grant you a project role.'
+      : 'Nothing deployed yet. Open a PR in an app repo, or run <span class="mono">infra deploy</span>.';
+    $('#tab-envs').innerHTML = `<div class="card"><div class="empty">${message}</div></div>`;
     return;
   }
 
@@ -423,11 +445,12 @@ document.addEventListener('click', e => {
   const t = e.target.closest('#sidebar nav button');
   if (t) {
     document.querySelectorAll('#sidebar nav button').forEach(b => b.classList.toggle('on', b === t));
-    for (const id of ['envs', 'projects', 'vars', 'activity']) $('#tab-' + id).hidden = id !== t.dataset.tab;
+    for (const id of ['envs', 'projects', 'vars', 'activity', 'access']) $('#tab-' + id).hidden = id !== t.dataset.tab;
     $('#topTitle').textContent = TAB_TITLES[t.dataset.tab] || '';
     if (t.dataset.tab === 'vars') renderVars();
     if (t.dataset.tab === 'activity') renderActivity();
     if (t.dataset.tab === 'projects') renderProjects();
+    if (t.dataset.tab === 'access') renderAccess();
   }
 });
 
@@ -437,18 +460,21 @@ async function openDrawer(app, env, refresh) {
   const d = STATE.deployments.find(x => x.APP === app && x.ENV_NAME === env);
   if (!d) { closeDrawer(); return; }
   const dr = $('#drawer'), isPreview = env.startsWith('pr-');
+  const platformAdmin = STATE.access?.platform_admin;
+  const canOperate = platformAdmin || ['operator', 'maintainer'].includes(d.ROLE);
   const dbSources = STATE.deployments.filter(x => x.HAS_OWN_DB);
 
   dr.innerHTML = `
   <div class="drawer-header">
     <h2>${esc(app)}</h2>${envBadge(env)}
     <span class="muted" style="font-size:13px">${esc(d.TYPE || '')}</span>
+    <span class="badge">${esc(d.ROLE || 'platform admin')}</span>
     <button class="btn close-btn" id="drawerClose">✕ Close</button>
   </div>
   ${d.MISSING?.length ? `<section><div class="banner"><b>${d.STATE === 'blocked' ? 'Deploy blocked' : 'Required variables missing'}:</b>
     <span class="mono"> ${d.MISSING.map(esc).join(', ')}</span><br>
     Add them under <a href="#" id="goVars">Variables → ${esc(app)}</a>, then
-    <button class="btn primary" data-act="redeploy" style="margin-top:6px">Retry deploy</button></div></section>` : ''}
+    ${canOperate ? '<button class="btn primary" data-act="redeploy" style="margin-top:6px">Retry deploy</button>' : ''}</div></section>` : ''}
   <section>
     <h3>Open</h3>
     <div style="margin-bottom:6px">App: ${hostLink(d.URL)}</div>
@@ -462,10 +488,10 @@ async function openDrawer(app, env, refresh) {
   <section>
     <h3>Actions</h3>
     <div class="row">
-      <button class="btn primary" data-act="redeploy">↺ Redeploy</button>
-      <button class="btn" data-act="restart">⟳ Restart</button>
-      ${d.PREV_TAG ? `<button class="btn" data-act="rollback">⬅ Roll back to ${esc(d.PREV_TAG)}</button>` : ''}
-      <button class="btn danger" data-act="destroy">✕ Destroy…</button>
+      ${canOperate ? '<button class="btn primary" data-act="redeploy">↺ Redeploy</button><button class="btn" data-act="restart">⟳ Restart</button>' : ''}
+      ${canOperate && d.PREV_TAG ? `<button class="btn" data-act="rollback">⬅ Roll back to ${esc(d.PREV_TAG)}</button>` : ''}
+      ${platformAdmin ? '<button class="btn danger" data-act="destroy">✕ Destroy…</button>' : ''}
+      ${!canOperate && !platformAdmin ? '<span class="muted">Read-only project access</span>' : ''}
     </div>
   </section>
   <section>
@@ -512,30 +538,31 @@ async function renderResources(dr, app, env) {
   box.classList.remove('muted');
   box.innerHTML = `
     <p class="env-vars-help">Infra-owned CPU and memory caps; app manifests cannot set these. Use memory units such as <span class="mono">256m</span> or <span class="mono">1g</span> and CPU values such as <span class="mono">0.5</span>. Changes apply on the next deploy; per-container and per-stack ceilings are enforced.</p>
-    <div class="row">
+    ${data.can_manage ? `<div class="row">
       <label for="resourceScope">Override scope</label>
       <select id="resourceScope">${scopes.map(s => `<option value="${esc(s)}" ${scope === s ? 'selected' : ''}>${s === 'common' ? 'All environments' : s === 'preview' ? 'All previews' : `Only ${esc(s)}`}</option>`).join('')}</select>
       <span class="muted" style="font-size:12px">Container ceiling: ${esc(defaults.max_container_mem_limit)} / ${esc(defaults.max_container_cpus)} CPU · stack ceiling: ${esc(defaults.max_stack_mem_limit)} / ${esc(defaults.max_stack_cpus)} CPU</span>
-    </div>
+    </div>` : `<p class="muted">Resource allocations are managed by the platform administrator.</p>`}
     <div class="resource-grid">${data.components.map(item => {
       const override = item.overrides[scope] || {};
       const mem = override.mem_limit || item.effective.mem_limit;
       const cpus = override.cpus || item.effective.cpus;
       return `<div class="resource-card" data-resource="${esc(item.component)}">
         <h4>${esc(item.component)}</h4>
-        <div class="resource-fields">
+        ${data.can_manage ? `<div class="resource-fields">
           <label>Memory limit<input data-resource-mem value="${esc(mem)}" aria-label="${esc(item.component)} memory limit"></label>
           <label>CPU limit<input data-resource-cpus value="${esc(cpus)}" inputmode="decimal" aria-label="${esc(item.component)} CPU limit"></label>
-        </div>
+        </div>` : ''}
         <div class="resource-effective">Currently effective: <span class="mono">${esc(item.effective.mem_limit)} · ${esc(item.effective.cpus)} CPU</span></div>
-        <div class="row">
+        ${data.can_manage ? `<div class="row">
           <button class="btn primary" data-resource-save>Save override</button>
           <button class="btn" data-resource-reset ${override.mem_limit || override.cpus ? '' : 'disabled'}>Reset scope</button>
-        </div>
+        </div>` : ''}
         <div data-resource-output></div>
       </div>`;
     }).join('')}</div>`;
 
+  if (!data.can_manage) return;
   $('#resourceScope', box).onchange = () => renderResources(dr, app, env);
   box.querySelectorAll('[data-resource]').forEach(card => {
     const component = card.dataset.resource;
@@ -574,13 +601,13 @@ async function renderDatabase(dr, app, env, dbSources) {
     </table>
     <p class="muted" style="font-size:12.5px;margin:10px 0">The database is only <b>provisioned</b> — the app uses it only if you set its connection variable (whatever the app calls it) to this URL. Wiping removes it; the app keeps running until you recreate it.</p>
     <div class="row">
-      ${i.exists ? '' : `<button class="btn primary" id="dbCreate">${i.wiped ? 'Recreate (empty)' : 'Create database'}</button>`}
-      ${i.exists ? `<button class="btn danger" id="dbWipe">Wipe…</button>` : ''}
+      ${i.can_manage && !i.exists ? `<button class="btn primary" id="dbCreate">${i.wiped ? 'Recreate (empty)' : 'Create database'}</button>` : ''}
+      ${i.can_wipe && i.exists ? `<button class="btn danger" id="dbWipe">Wipe…</button>` : ''}
     </div>
-    ${i.exists ? `<div class="row" style="margin-top:4px">
+    ${i.exists && i.can_manage ? `<div class="row" style="margin-top:4px">
       Copy URL into variable <input id="dbKey" placeholder="e.g. DB_URL, PG_DSN, DATABASE_URL" class="mono" style="flex:1;min-width:220px">
       <button class="btn primary" id="dbUseOwn">Set variable → this DB</button></div>` : ''}
-    ${others.length ? `<div class="row" style="margin-top:4px">or point at another env's DB
+    ${others.length && i.can_manage ? `<div class="row" style="margin-top:4px">or point at another env's DB
       <select id="dbFrom">${others.map(x => `<option value="${esc(x.APP)}/${esc(x.ENV_NAME)}">${esc(x.APP)} / ${esc(x.ENV_NAME)}</option>`).join('')}</select>
       as <input id="dbKey2" placeholder="variable name" class="mono" style="width:180px">
       <button class="btn" id="dbUseOther">Set variable</button></div>` : ''}
@@ -645,12 +672,12 @@ async function renderEnvVars(dr, app, env) {
           return `<div class="env-var-row${v.pending ? ' pending' : ''}" role="listitem">
             <div class="env-var-key">${esc(v.key)}</div>
             <div class="env-var-value"><span data-val="${esc(c)}|${esc(v.key)}">${esc(v.value)}</span>
-              ${v.sensitive ? `<button class="btn" data-reveal="${esc(c)}|${esc(v.key)}" aria-label="Reveal ${esc(v.key)}">Show</button>` : ''}</div>
+              ${v.sensitive && STATE.access?.platform_admin ? `<button class="btn" data-reveal="${esc(c)}|${esc(v.key)}" aria-label="Reveal ${esc(v.key)}">Show</button>` : ''}</div>
             <div class="env-var-source"><span class="source-badge ${esc(v.origin)}">${esc(source)}</span>
               ${scope ? `<span class="env-var-scope">${esc(scope)}</span>` : ''}
               ${v.pending ? '<span class="pending-badge">Pending deploy</span>' : ''}</div>
             <div class="env-var-actions">
-              ${platformManaged
+              ${!v.editable ? '<span class="muted">Read only</span>' : platformManaged
                 ? `<span class="managed-badge">Platform managed</span>
                    ${v.origin === 'console' ? `<button class="btn danger" data-vdel="${esc(v.scope)}|${esc(v.key)}">Remove override</button>` : ''}`
                 : `<button class="btn" data-vedit="${esc(c)}|${esc(v.key)}|${esc(v.origin === 'console' ? v.scope : '')}">${v.origin === 'console' ? 'Edit override' : 'Add override'}</button>
@@ -743,7 +770,8 @@ async function act(btn, app, env, action) {
 <script>
 // ── Variables tab ─────────────────────────────────────────────────────────────
 function renderVars() {
-  const apps = Object.keys(byApp()).sort();
+  const apps = Object.keys(byApp()).filter(app => STATE.access?.platform_admin
+    || STATE.access?.project_roles?.[app] === 'maintainer').sort();
   const el = $('#tab-vars');
   if (!el.dataset.ready) {
     el.innerHTML = `<div class="card">
@@ -779,7 +807,7 @@ async function renderVarsFor(app) {
   $('#varBody').innerHTML = `
     ${missing.length ? `<div style="padding:0 18px 12px"><div class="banner"><b>Missing required variables</b><br>${missing.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
     ${upcoming.length ? `<div style="padding:0 18px 12px"><div class="banner"><b>Will be missing once newer code reaches them</b><br>${upcoming.map(d => `${envBadge(d.ENV_NAME)} <span class="mono">${d.UPCOMING_MISSING.map(esc).join(', ')}</span>`).join('<br>')}</div></div>` : ''}
-    <div style="padding:12px 18px;border-bottom:1px solid var(--line)">
+    ${j.can_manage ? `<div style="padding:12px 18px;border-bottom:1px solid var(--line)">
       <div class="row">
         <select id="nScope">${[...scopes].map(s => `<option value="${esc(s)}">${esc(label(s))}</option>`).join('')}</select>
         <select id="nComp"><option value="">all components</option><option value=".api">api only</option><option value=".web">web only</option><option value=".app">app only</option></select>
@@ -788,17 +816,18 @@ async function renderVarsFor(app) {
         <button class="btn primary" id="nSave">Save</button>
       </div>
       <div class="row muted" style="font-size:12.5px">Redeploy affected: <span id="affected"></span></div>
-    </div>
+    </div>` : '<p class="muted" style="padding:12px 18px">Read-only access. Ask a project maintainer to change runtime variables.</p>'}
     ${!Object.keys(j.files).length ? '<div class="empty">No server-side variables for this app yet.</div>' : ''}
     ${Object.entries(j.files).map(([scope, kv]) => `
       <div style="padding:12px 18px;border-bottom:1px solid var(--line)">
         <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:8px">${esc(label(scope))} <span class="mono" style="text-transform:none">(${esc(scope)}.env)</span></div>
         <table class="kv">${kv.map(x => `<tr><td>${esc(x.key)}</td><td class="mono">${esc(x.value)}</td>
-          <td style="text-align:right;white-space:nowrap">
+          ${j.can_manage ? `<td style="text-align:right;white-space:nowrap">
             <button class="btn" data-edit="${esc(scope)}|${esc(x.key)}" style="font-size:12px">Edit</button>
             <button class="btn danger" data-del="${esc(scope)}|${esc(x.key)}" style="font-size:12px;margin-left:4px">Delete</button>
-          </td></tr>`).join('') || '<tr><td class="muted">empty</td></tr>'}</table>
+          </td>` : ''}</tr>`).join('') || '<tr><td class="muted">empty</td></tr>'}</table>
       </div>`).join('')}`;
+  if (!j.can_manage) return;
 
   const affectedFor = scope => {
     const base = scope.split('.')[0];
@@ -832,6 +861,87 @@ async function renderVarsFor(app) {
     $('#nScope').value = base; $('#nComp').value = comp ? '.' + comp : ''; $('#nKey').value = key;
     $('#nVal').value = ''; $('#nVal').placeholder = 'new value (current is hidden)'; $('#nVal').focus(); showAffected();
   });
+}
+
+async function renderAccess() {
+  const response = await api('/api/access');
+  const access = response.access, platformAdmin = access.platform_admin;
+  const organizations = access.organizations;
+  const identities = access.identities;
+  const projects = access.projects;
+  const el = $('#tab-access');
+  const orgOptions = '<option value="">Select organization</option>' + organizations.map(org =>
+    `<option value="${esc(org.slug)}">${esc(org.name)} (${esc(org.slug)})</option>`).join('');
+  const linkedProjects = new Set(projects.map(project => project.app));
+  const projectOptions = '<option value="">Select project</option>' + [...new Map(projects.map(project =>
+    [project.app, project])).values()].map(project =>
+      `<option value="${esc(project.app)}">${esc(project.app)} · ${esc(project.organization)}</option>`).join('');
+  const identityOptions = '<option value="">Select user</option>' + identities.map(identity =>
+    `<option value="${esc(identity.uid)}">${esc(identity.display_name)} · ${esc(identity.email)}</option>`).join('');
+  const unlinkedProjects = response.registered_projects.filter(project => !linkedProjects.has(project.app));
+  el.innerHTML = `
+    ${platformAdmin ? `<div class="card">
+      <div class="card-header"><h2>Organizations</h2></div>
+      <div style="padding:16px 18px">
+        <p class="muted">Organizations are tenant boundaries. A registered project belongs to one organization; user access still requires an explicit project grant.</p>
+        <div class="row"><input id="orgName" aria-label="Organization name" placeholder="Organization name" style="min-width:220px">
+          <input id="orgSlug" aria-label="Organization slug" placeholder="sage-org" class="mono" style="width:180px">
+          <button class="btn primary" id="orgCreate">Create organization</button></div>
+        <div class="row"><select id="orgLinkOrg" aria-label="Organization">${orgOptions}</select>
+          <select id="orgLinkProject" aria-label="Unassigned registered project"><option value="">Select unassigned project</option>${unlinkedProjects.map(project =>
+            `<option value="${esc(project.app)}">${esc(project.app)} · ${esc(project.repo)}</option>`).join('')}</select>
+          <button class="btn" id="orgLink" ${!organizations.length || !unlinkedProjects.length ? 'disabled' : ''}>Assign registered project</button></div>
+        <div id="accessOut"></div>
+      </div>
+    </div>` : ''}
+    <div class="card">
+      <div class="card-header"><h2>Organization membership</h2></div>
+      <div style="padding:16px 18px">
+        <p class="muted">Create or invite accounts in Authentik first. A user must sign in once before they can be assigned here. Organization admins can add existing identities to their organization; only the platform admin can appoint another organization admin.</p>
+        <div class="row"><select id="memberOrg" aria-label="Organization">${orgOptions}</select>
+          <input id="memberEmail" type="email" aria-label="User email" placeholder="user@example.org" style="min-width:220px">
+          <select id="memberRole">${platformAdmin ? '<option value="member">Member</option><option value="org_admin">Organization admin</option>' : '<option value="member">Member</option>'}<option value="none">Remove membership</option></select>
+          <button class="btn primary" id="memberAdd" ${!organizations.length ? 'disabled' : ''}>Add to organization</button></div>
+        <div class="scroll"><table><tr><th>Organization</th><th>User</th><th>Role</th></tr>
+          ${access.members.map(member => `<tr><td>${esc(member.organization)}</td><td>${esc(member.email)}</td><td>${esc(member.role)}</td></tr>`).join('') ||
+            '<tr><td colspan="3" class="empty">No members assigned.</td></tr>'}</table></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h2>Project access</h2></div>
+      <div style="padding:16px 18px">
+        <p class="muted">Project grants are explicit and do not inherit across an organization. Viewer is read-only; Operator can deploy, restart and roll back; Maintainer can also edit runtime variables. Resource limits, project registration, database wipes and secret reveal remain platform-admin-only.</p>
+        <div class="row"><select id="grantProject" aria-label="Project">${projectOptions}</select><select id="grantUser" aria-label="User">${identityOptions}</select>
+          <select id="grantRole"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="maintainer">Maintainer</option><option value="none">Remove access</option></select>
+          <button class="btn primary" id="grantSave" ${!projects.length || !identities.length ? 'disabled' : ''}>Save project access</button></div>
+        <div class="scroll"><table><tr><th>Organization</th><th>Project</th><th>User</th><th>Role</th></tr>
+          ${projects.filter(project => project.uid).map(project =>
+            `<tr><td>${esc(project.organization)}</td><td>${esc(project.app)}</td><td>${esc(project.email)}</td><td>${esc(project.role)}</td></tr>`).join('') ||
+            '<tr><td colspan="4" class="empty">No project grants assigned.</td></tr>'}</table></div>
+      </div>
+    </div>
+    ${platformAdmin ? `<div class="card"><div class="card-header"><h2>Known Authentik identities</h2><span class="card-meta">users who have signed in at least once</span></div>
+      <div class="scroll"><table><tr><th>Name</th><th>Email</th><th>Authentik user ID</th><th>Last seen</th></tr>
+        ${identities.map(identity => `<tr><td>${esc(identity.display_name)}</td><td>${esc(identity.email)}</td><td class="mono">${esc(identity.uid)}</td><td>${ago(identity.last_seen)}</td></tr>`).join('') ||
+          '<tr><td colspan="4" class="empty">No users have signed in yet.</td></tr>'}</table></div></div>` : ''}`;
+
+  const postAccess = async body => {
+    const output = $('#accessOut', el);
+    try { await api('/api/access', body); toast('Access updated'); await renderAccess(); await load(); }
+    catch (e) { if (output) output.textContent = e.message; else toast(e.message); }
+  };
+  $('#orgCreate', el)?.addEventListener('click', () =>
+    postAccess({ op: 'organization-create', name: $('#orgName', el).value.trim(),
+      slug: $('#orgSlug', el).value.trim().toLowerCase() }));
+  $('#orgLink', el)?.addEventListener('click', () =>
+    postAccess({ op: 'project-link', organization: $('#orgLinkOrg', el).value,
+      app: $('#orgLinkProject', el).value }));
+  $('#memberAdd', el)?.addEventListener('click', () =>
+    postAccess({ op: 'member', organization: $('#memberOrg', el).value,
+      email: $('#memberEmail', el).value.trim(), role: $('#memberRole', el).value }));
+  $('#grantSave', el)?.addEventListener('click', () =>
+    postAccess({ op: 'project-grant', app: $('#grantProject', el).value,
+      uid: $('#grantUser', el).value, role: $('#grantRole', el).value }));
 }
 
 // ── Projects tab ──────────────────────────────────────────────────────────────

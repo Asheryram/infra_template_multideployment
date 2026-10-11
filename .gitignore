@@ -11,3 +11,5 @@ secrets/
 Thumbs.db
 .vscode/
 .idea/
+__pycache__/
+*.py[cod]

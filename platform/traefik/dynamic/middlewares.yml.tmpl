@@ -41,6 +41,22 @@ http:
         users: ["${DASHBOARD_AUTH_USERS}"]
         headerField: X-Infra-User          # the console records who did what
 
+    authentik-auth:
+      forwardAuth:
+        address: http://authentik-server:9000/outpost.goauthentik.io/auth/traefik
+        trustForwardHeader: true
+        authResponseHeaders:
+          - X-authentik-uid
+          - X-authentik-username
+          - X-authentik-email
+          - X-authentik-name
+          - X-authentik-groups
+
+    authentik-vpn:
+      ipAllowList:
+        sourceRange:
+${AUTHENTIK_VPN_CIDRS_YAML}
+
     # Preview environments (web/app components).
     preview-auth:
       basicAuth:

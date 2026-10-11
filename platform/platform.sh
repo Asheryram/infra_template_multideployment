@@ -29,6 +29,32 @@ T="$STATE_DIR/traefik"
 MANAGED="$STATE_DIR/platform-managed.yml"
 export TRAEFIK_STATE_DIR="$T"
 export COMPOSE_PROFILES="${PLATFORM_PROFILES:-}"
+CONSOLE_AUTH_MODE=${CONSOLE_AUTH_MODE:-basic}
+if [[ $CONSOLE_AUTH_MODE != basic && $CONSOLE_AUTH_MODE != authentik ]]; then
+  die "CONSOLE_AUTH_MODE must be basic or authentik"
+fi
+if [[ ,$COMPOSE_PROFILES, == *,authentik,* ]]; then
+  [[ -n ${AUTHENTIK_VPN_CIDRS:-} ]] || die "set AUTHENTIK_VPN_CIDRS to the trusted VPN subnet before enabling Authentik"
+  [[ -n ${AUTHENTIK_SECRET_KEY:-} ]] || die "set AUTHENTIK_SECRET_KEY in /etc/infra/platform.secrets.env"
+  [[ ${AUTHENTIK_POSTGRES_PASSWORD:-} =~ ^[a-fA-F0-9]{32,128}$ ]] \
+    || die "set AUTHENTIK_POSTGRES_PASSWORD to a 32–128 character hex secret"
+  AUTHENTIK_VPN_CIDRS_YAML=""
+  IFS=',' read -r -a AUTHENTIK_CIDR_LIST <<<"$AUTHENTIK_VPN_CIDRS"
+  for cidr in "${AUTHENTIK_CIDR_LIST[@]}"; do
+    [[ $cidr =~ ^[0-9A-Fa-f:.]+/[0-9]{1,3}$ ]] \
+      || die "invalid AUTHENTIK_VPN_CIDRS entry: $cidr"
+    AUTHENTIK_VPN_CIDRS_YAML+="          - \"$cidr\""$'\n'
+  done
+  if [[ $CONSOLE_AUTH_MODE == authentik ]]; then CONSOLE_AUTH_MIDDLEWARE=authentik-auth@file
+  else CONSOLE_AUTH_MIDDLEWARE=ops-auth@file
+  fi
+else
+  [[ $CONSOLE_AUTH_MODE != authentik ]] \
+    || die "CONSOLE_AUTH_MODE=authentik requires PLATFORM_PROFILES to include authentik"
+  AUTHENTIK_VPN_CIDRS_YAML='          - "127.0.0.1/32"'
+  CONSOLE_AUTH_MIDDLEWARE=ops-auth@file
+fi
+export CONSOLE_AUTH_MODE CONSOLE_AUTH_MIDDLEWARE AUTHENTIK_VPN_CIDRS_YAML
 # The console container runs as the deploy user so its files match the CLI's ownership.
 DEPLOY_UID=$(id -u "$DEPLOY_USER"); DEPLOY_GID=$(id -g "$DEPLOY_USER")
 DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 0)
@@ -45,6 +71,7 @@ dc() {
 # Refuse to start if anything we'd create already exists and belongs to someone else.
 
 PLATFORM_CONTAINERS=(infra-socket-proxy infra-traefik infra-postgres infra-uptime-kuma infra-dozzle infra-console
+                     infra-authentik-server infra-authentik-worker infra-authentik-redis
                      infra-prometheus infra-node-exporter infra-cadvisor infra-grafana infra-registry)
 PLATFORM_NETWORKS=(infra_proxy infra_data infra_socket infra_metrics)
 
@@ -133,7 +160,7 @@ render() {
     *) die "TLS_MODE must be selfsigned, letsencrypt or external (got '$TLS_MODE')" ;;
   esac
 
-  VARS='${DOMAIN} ${ACME_EMAIL} ${DNS_PROVIDER} ${ACME_CA_SERVER} ${HSTS_SECONDS} ${DASHBOARD_AUTH_USERS} ${PREVIEW_AUTH_USERS}'
+  VARS='${DOMAIN} ${ACME_EMAIL} ${DNS_PROVIDER} ${ACME_CA_SERVER} ${HSTS_SECONDS} ${DASHBOARD_AUTH_USERS} ${PREVIEW_AUTH_USERS} ${AUTHENTIK_VPN_CIDRS_YAML}'
   render_file "$P/traefik/static.$TLS_MODE.yml.tmpl" "$T/traefik.yml"
   local f
   for f in "$P"/traefik/dynamic/*.yml.tmpl; do
@@ -169,6 +196,19 @@ case $action in
     preflight
     render
     write_managed_override
+    if [[ ,$COMPOSE_PROFILES, == *,authentik,* ]]; then
+      dc up -d --wait postgres
+      docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" infra-postgres \
+        psql -v ON_ERROR_STOP=1 -v authentik_password="$AUTHENTIK_POSTGRES_PASSWORD" \
+        -U postgres -d postgres <<'SQL'
+SELECT format('CREATE ROLE authentik LOGIN PASSWORD %L', :'authentik_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authentik') \gexec
+ALTER ROLE authentik LOGIN PASSWORD :'authentik_password';
+SELECT format('CREATE DATABASE authentik OWNER authentik')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='authentik') \gexec
+ALTER DATABASE authentik OWNER TO authentik;
+SQL
+    fi
     new=$(sha256sum "$T/traefik.yml" | cut -d' ' -f1)
     old=$(cat "$T/.static.sha" 2>/dev/null || true)
     dc up -d --build --remove-orphans --wait

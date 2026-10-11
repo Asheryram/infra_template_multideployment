@@ -21,7 +21,20 @@ Repo-side non-secret config (`.deploy/env/*.env`) takes effect on the next CI de
 
 ## The console (web UI)
 
-`https://console.<domain>` (ops login, using the `DASHBOARD_AUTH_*` credentials). It has four tabs:
+`https://console.<domain>` is protected by the configured console authentication mode. Basic mode is transitional and operator-only; for organization/project access, use Authentik as described in [Access control](./access-control.md). Do not give app teams the shared dashboard Basic Auth credentials.
+
+In Authentik mode, the console has an **Access** tab for platform administrators and organization admins in addition to the operational tabs:
+
+| Access task | Who can do it |
+|---|---|
+| Create an organization and link registered projects to it | Platform admin |
+| Add or remove organization members | Platform admin or that organization's admin |
+| Grant or revoke a project role | Platform admin or that organization's admin |
+| Assign or change an organization-admin role | Platform admin only |
+
+Every user must sign in through Authentik at least once before they can be assigned by email. Organization membership alone does not expose deployments; grant a role for each project the user needs.
+
+Operational tabs:
 
 | Tab | What you do there |
 |---|---|
@@ -30,7 +43,7 @@ Repo-side non-secret config (`.deploy/env/*.env`) takes effect on the next CI de
 | **Variables** | Server-side variables per app and scope: *all environments* (`common`), a class (`preview`, `develop`, `staging`, `prod`), or one environment (`pr-12`), optionally limited to one component (`.api` / `.web` / `.app`). Platform-managed metadata is read-only. App override changes apply on the next deploy; save and redeploy when they should take effect immediately. |
 | **Activity** | Who did what (console audit log) interleaved with deploy logs |
 
-Everything the console does goes through the same `infra` CLI that CI uses, and it shares the deploy locks, so console, CLI and CI never fight. It runs as the deploy user, but it controls Docker, so treat the ops login like a root password: use a long password, and ideally allow it only from your VPN or IP.
+Everything the console does goes through the same `infra` CLI that CI uses, and it shares the deploy locks, so console, CLI and CI never fight. The console process controls Docker and is a high-trust boundary; follow the VPN-only access and recovery guidance in [access-control.md](./access-control.md).
 
 ### Register a repository for signed webhook deploys
 

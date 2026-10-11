@@ -15,9 +15,24 @@ install -m 640 -o root -g "$G" "$INVENTORY_FILE" /etc/infra/infra.env
 printf "\nINFRA_ROOT='%s'\n" "$INFRA_ROOT" >> /etc/infra/infra.env
 
 if [[ ! -f /etc/infra/platform.secrets.env ]]; then
-  sed "s/@GENERATED@/$(openssl rand -hex 24)/" "$INFRA_ROOT/inventory/platform.secrets.env.example" \
+  sed -e "s/@GENERATED@/$(openssl rand -hex 24)/g" \
+      -e "s/@AUTHENTIK_DB_PASSWORD@/$(openssl rand -hex 32)/g" \
+      -e "s/@AUTHENTIK_SECRET_KEY@/$(openssl rand -hex 50)/g" \
+      "$INFRA_ROOT/inventory/platform.secrets.env.example" \
     > /etc/infra/platform.secrets.env
   echo "created /etc/infra/platform.secrets.env with a generated POSTGRES_PASSWORD"
+fi
+if ! grep -q '^AUTHENTIK_POSTGRES_PASSWORD=' /etc/infra/platform.secrets.env; then
+  printf 'AUTHENTIK_POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)" >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^AUTHENTIK_SECRET_KEY=' /etc/infra/platform.secrets.env; then
+  printf 'AUTHENTIK_SECRET_KEY=%s\n' "$(openssl rand -hex 50)" >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^AUTHENTIK_BOOTSTRAP_EMAIL=' /etc/infra/platform.secrets.env; then
+  printf 'AUTHENTIK_BOOTSTRAP_EMAIL=\n' >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^AUTHENTIK_BOOTSTRAP_PASSWORD=' /etc/infra/platform.secrets.env; then
+  printf 'AUTHENTIK_BOOTSTRAP_PASSWORD=\n' >> /etc/infra/platform.secrets.env
 fi
 chown root:"$G" /etc/infra/platform.secrets.env
 chmod 640 /etc/infra/platform.secrets.env

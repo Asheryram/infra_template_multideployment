@@ -62,7 +62,7 @@ Each deployment environment has its own `<stack>_net`. Traefik joins networks fo
 - [x] Per-project preview cap: `MAX_PREVIEWS_PER_APP` in `.deploy/manifest.env`, in addition to the global inventory cap.
 - [ ] Per-project aggregate resource budget across environments. Per-container and per-deployment-stack ceilings are enforced; this broader budget is still needed to prevent many individually capped environments from exceeding a project's allocation.
 - [ ] `infra project report`: which projects, owners, envs, last deploy, disk/RAM. Print in the CLI and show in the console.
-- [ ] Optional: per-project console access (team leads see only their project). That needs real users instead of a single ops basic-auth, e.g. Traefik forward-auth + GitHub OAuth.
+- [ ] Validate the in-progress Authentik tenant-access implementation end-to-end: role isolation, account lifecycle, recovery, backup/restore, and VPN-only Authentik routing. See `docs/access-control.md`.
 
 ### 5. Optional: `devops.yaml` manifest format
 
@@ -83,9 +83,10 @@ Each deployment environment has its own `<stack>_net`. Traefik joins networks fo
 
 ### 7. Hardening / honest limits (decide, don't necessarily build)
 
-- The Docker/root-equivalent access trade-off is documented in `docs/architecture.md`; true per-tenant least privilege would require a larger rootless-Docker-per-tenant design.
-- [ ] **The console login is basic auth.** Add an IP allowlist middleware (`ipAllowList`) option for `console.` / `logs.` / `traefik.`.
-- [ ] Pin platform image versions/digests in the inventory (currently `:latest` / major tags).
+- The console process can control Docker and remains a host-level trust boundary; tenant API authorization does not contain a compromised console process. A constrained deployment executor remains future hardening.
+- Authentik, project-scoped roles, VPN allow-listing, core image digest pins, Dependabot, and Trivy scanning are implemented and have focused local/unit and Compose validation. They are not yet runtime/VPN validated or deployed; complete those checks before onboarding tenants.
+- [ ] Pin remaining optional-profile image tags by digest and verify image provenance.
+- [ ] Review container scanning results and establish a documented vulnerability exception/update cadence.
 - [ ] Run shellcheck locally or in CI (the `lint.yml` workflow exists, but it hasn't been confirmed green on GitHub).
 
 ---

@@ -90,6 +90,24 @@ Frontends must read their API URL **at runtime** (see `app-kit/dockerfiles/spa/`
 | Previews | Basic-auth plus `noindex`. Fork PRs never deploy |
 | CI | The runner is org-level and private-repo only, and runs the deploy job only (builds happen on GitHub-hosted runners) |
 
+### Console identities and tenant access
+
+The console supports a transitional `basic` mode for existing operator-only installs and an `authentik` mode for tenant access. Authentik mode uses a self-hosted Authentik instance on the `authentik` Compose profile; Traefik restricts its login host to the configured VPN client CIDRs and applies forward authentication to the console. Configure the actual CIDRs and verify the source addresses Traefik sees before enabling this mode.
+
+The console persists Authentik UIDs and access grants in `$STATE_DIR/console-access.sqlite3`. Organizations group projects, but organization membership does not implicitly grant project visibility: each user needs an explicit project role. A user may belong to multiple organizations. The platform-admin group (`AUTHENTIK_PLATFORM_ADMIN_GROUP`) is global authority; organization admins can manage membership and project grants only inside their own organization, but cannot appoint or change organization admins.
+
+| Role | Access |
+|---|---|
+| Viewer | View assigned project deployments and read-only project information |
+| Operator | Viewer access plus deploy, restart, and rollback actions |
+| Maintainer | Operator access plus project runtime-variable management |
+| Organization admin | Manage membership and explicit project grants in their organization; no implicit project access |
+| Platform admin | Global console and organization administration; privileged platform operations |
+
+The web console still runs as the Docker-capable `deploy` user and mounts the Docker socket for CLI operations. Application-level authorization is not a sandbox against a compromised console process; only trusted platform administrators should control the host, and isolating the deployment executor from the web process remains a hardening requirement.
+
+See [access-control.md](./access-control.md) for Authentik setup, user lifecycle, role assignment, recovery, backups, and image-update practices.
+
 ## Capacity planning (rule of thumb)
 
 | Item | RAM |
