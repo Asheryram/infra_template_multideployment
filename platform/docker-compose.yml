@@ -145,6 +145,7 @@ services:
       - /etc/infra:/etc/infra:ro
       - ${SECRETS_ROOT}:${SECRETS_ROOT}
       - ${DEPLOY_ROOT}:${DEPLOY_ROOT}
+      - ${BACKUP_DIR}:${BACKUP_DIR}
       - ${STATE_DIR}:${STATE_DIR}
       - ${LOG_DIR}:${LOG_DIR}
       - ${LOCK_DIR}:${LOCK_DIR}                 # shares deploy locks with CLI + CI runner

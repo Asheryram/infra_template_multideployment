@@ -32,7 +32,7 @@ export COMPOSE_PROFILES="${PLATFORM_PROFILES:-}"
 # The console container runs as the deploy user so its files match the CLI's ownership.
 DEPLOY_UID=$(id -u "$DEPLOY_USER"); DEPLOY_GID=$(id -g "$DEPLOY_USER")
 DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 0)
-export DEPLOY_UID DEPLOY_GID DOCKER_SOCKET_GID INFRA_ROOT SECRETS_ROOT DEPLOY_ROOT STATE_DIR LOG_DIR LOCK_DIR
+export DEPLOY_UID DEPLOY_GID DOCKER_SOCKET_GID INFRA_ROOT SECRETS_ROOT DEPLOY_ROOT BACKUP_DIR STATE_DIR LOG_DIR LOCK_DIR
 mkdir -p "$LOCK_DIR" "$STATE_DIR/overrides"
 
 dc() {
