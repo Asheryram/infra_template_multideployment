@@ -178,11 +178,31 @@ poll_project() {
   [[ -n $app && -n $repo && -n $secret ]] || return 0
   [[ -z $FILTER_APP || $FILTER_APP == "$app" ]] || return 0
 
-  # read TYPE and IMAGE_REPO from the manifest on the prod branch (or develop as fallback)
-  local manifest_ref; manifest_ref=$(gh_branch_sha "$token" "$repo" "$prod_branch" 2>/dev/null || true)
-  [[ -n $manifest_ref ]] || manifest_ref=$(gh_branch_sha "$token" "$repo" develop 2>/dev/null || true)
-  if [[ -z $manifest_ref ]]; then warn "$app: can't reach $repo — skipping"; return 0; fi
-  local base_manifest; base_manifest=$(gh_file "$token" "$repo" "$manifest_ref" ".deploy/manifest.env")
+  # read TYPE and IMAGE_REPO from the manifest — try prod branch, then develop, then staging,
+  # then any open PR branch. This lets projects onboard via a PR before anything lands on main.
+  local base_manifest="" ref
+  for ref in "$prod_branch" develop staging; do
+    local sha; sha=$(gh_branch_sha "$token" "$repo" "$ref" 2>/dev/null || true)
+    [[ -n $sha ]] || continue
+    local m; m=$(gh_file "$token" "$repo" "$sha" ".deploy/manifest.env")
+    if [[ -n $(mval TYPE "$m") && -n $(mval IMAGE_REPO "$m") ]]; then
+      base_manifest=$m; break
+    fi
+  done
+  # still empty — try open PR branches
+  if [[ -z $base_manifest ]]; then
+    local prs; prs=$(gh_open_prs "$token" "$repo" 2>/dev/null || true)
+    while IFS= read -r pr; do
+      local pr_sha pr_branch
+      pr_sha=$(echo "$pr" | jq -r '.sha')
+      pr_branch=$(echo "$pr" | jq -r '.branch')
+      local m; m=$(gh_file "$token" "$repo" "$pr_sha" ".deploy/manifest.env")
+      if [[ -n $(mval TYPE "$m") && -n $(mval IMAGE_REPO "$m") ]]; then
+        base_manifest=$m; break
+      fi
+    done < <(echo "$prs" | jq -c '.[]' 2>/dev/null || true)
+  fi
+  if [[ -z $base_manifest ]]; then warn "$app: can't reach $repo — skipping"; return 0; fi
   type=$(mval TYPE "$base_manifest")
   img_repo=$(mval IMAGE_REPO "$base_manifest")
   [[ -n $type && -n $img_repo ]] || { warn "$app: missing TYPE or IMAGE_REPO in manifest"; return 0; }
