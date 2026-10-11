@@ -31,6 +31,8 @@ jobs:
           - amir20/dozzle:latest@sha256:a7d69d20891d3dcc82636e24afa4c1c162b41d0673ef798b14f09e6b69accc5a
           - ghcr.io/goauthentik/server:2026.8.3
           - redis:7.4.2-alpine
+          - quay.io/keycloak/keycloak:26.8.0
+          - quay.io/oauth2-proxy/oauth2-proxy:v7.15.5
           - prom/prometheus:v3.5.0
           - prom/node-exporter:v1.9.1
           - gcr.io/cadvisor/cadvisor:v0.55.1

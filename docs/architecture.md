@@ -92,9 +92,9 @@ Frontends must read their API URL **at runtime** (see `app-kit/dockerfiles/spa/`
 
 ### Console identities and tenant access
 
-The console supports a transitional `basic` mode for existing operator-only installs and an `authentik` mode for tenant access. Authentik mode uses a self-hosted Authentik instance on the `authentik` Compose profile; Traefik restricts its login host to the configured VPN client CIDRs and applies forward authentication to the console. Configure the actual CIDRs and verify the source addresses Traefik sees before enabling this mode.
+The console supports a transitional `basic` mode for existing operator-only installs and `authentik` or `keycloak` identity-provider modes for tenant access. Keycloak runs on the `keycloak` Compose profile with oauth2-proxy handling OIDC and proxying authenticated requests to the console; its browser/admin host is restricted to configured VPN client CIDRs. oauth2-proxy reaches Keycloak through an internal TLS endpoint on the Docker network. Authentik is available as an alternative and uses the `authentik` Compose profile. Verify the actual client source addresses Traefik sees before enabling either provider.
 
-The console persists Authentik UIDs and access grants in `$STATE_DIR/console-access.sqlite3`. Organizations group projects, but organization membership does not implicitly grant project visibility: each user needs an explicit project role. A user may belong to multiple organizations. The platform-admin group (`AUTHENTIK_PLATFORM_ADMIN_GROUP`) is global authority; organization admins can manage membership and project grants only inside their own organization, but cannot appoint or change organization admins.
+The console persists provider-scoped user IDs and access grants in `$STATE_DIR/console-access.sqlite3`. Organizations group projects, but organization membership does not implicitly grant project visibility: each user needs an explicit project role. A user may belong to multiple organizations. The provider's configured platform-admin group is global authority; organization admins can manage membership and project grants only inside their own organization, but cannot appoint or change organization admins.
 
 | Role | Access |
 |---|---|
@@ -106,7 +106,7 @@ The console persists Authentik UIDs and access grants in `$STATE_DIR/console-acc
 
 The web console still runs as the Docker-capable `deploy` user and mounts the Docker socket for CLI operations. Application-level authorization is not a sandbox against a compromised console process; only trusted platform administrators should control the host, and isolating the deployment executor from the web process remains a hardening requirement.
 
-See [access-control.md](./access-control.md) for Authentik setup, user lifecycle, role assignment, recovery, backups, and image-update practices.
+See [access-control.md](./access-control.md) for Keycloak and Authentik setup, user lifecycle, role assignment, recovery, backups, and image-update practices.
 
 ## Capacity planning (rule of thumb)
 

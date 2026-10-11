@@ -81,6 +81,7 @@ def settings():
         "max_previews": get("MAX_PREVIEWS", "8"),
         "console_auth_mode": get("CONSOLE_AUTH_MODE", "basic"),
         "authentik_platform_admin_group": get("AUTHENTIK_PLATFORM_ADMIN_GROUP", "infra-platform-admins"),
+        "keycloak_platform_admin_group": get("KEYCLOAK_PLATFORM_ADMIN_GROUP", "infra-platform-admins"),
     }
 
 
@@ -640,24 +641,44 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             return {"uid": "basic:" + username, "username": username, "email": "",
                     "display_name": username, "platform_admin": True}
-        if mode != "authentik":
-            raise ValueError("CONSOLE_AUTH_MODE must be basic or authentik")
-        uid = self.headers.get("X-authentik-uid", "").strip()
-        email = self.headers.get("X-authentik-email", "").strip()
+        if mode == "authentik":
+            uid = self.headers.get("X-authentik-uid", "").strip()
+            email = self.headers.get("X-authentik-email", "").strip()
+            username = self.headers.get("X-authentik-username", "").strip()[:200]
+            display_name = self.headers.get("X-authentik-name", "").strip()[:200]
+            groups_header = self.headers.get("X-authentik-groups", "")
+            admin_group = s["authentik_platform_admin_group"]
+            uid_prefix = ""
+        elif mode == "keycloak":
+            uid = (self.headers.get("X-Forwarded-User") or
+                   self.headers.get("X-Auth-Request-User", "")).strip()
+            email = (self.headers.get("X-Forwarded-Email") or
+                     self.headers.get("X-Auth-Request-Email", "")).strip()
+            username = (self.headers.get("X-Forwarded-Preferred-Username") or
+                        self.headers.get("X-Auth-Request-Preferred-Username", "")).strip()[:200]
+            display_name = username or email
+            groups_header = (self.headers.get("X-Forwarded-Groups") or
+                             self.headers.get("X-Auth-Request-Groups", ""))
+            admin_group = s["keycloak_platform_admin_group"]
+            uid_prefix = "keycloak:"
+        else:
+            raise ValueError("CONSOLE_AUTH_MODE must be basic, authentik or keycloak")
         if not uid or not email or len(uid) > 200 or len(email) > 320:
             return None
-        username = self.headers.get("X-authentik-username", "").strip()[:200]
-        display_name = self.headers.get("X-authentik-name", "").strip()[:200]
-        groups = {group.strip() for group in re.split(r"[,;]", self.headers.get("X-authentik-groups", ""))
+        groups = {group.strip().strip("/") for group in re.split(r"[,;]", groups_header)
                   if group.strip()}
         store = access_store(s)
-        identity = store.observe_identity(uid, username, email, display_name)
-        identity["platform_admin"] = s["authentik_platform_admin_group"] in groups
+        identity = store.observe_identity(uid_prefix + uid, username, email, display_name)
+        identity["platform_admin"] = admin_group in groups
         return identity
 
     def user(self):
-        return (self.headers.get("X-authentik-email") if
-                self.headers.get("X-authentik-uid") else self.headers.get("X-Infra-User")) or "unknown"
+        if self.headers.get("X-authentik-uid"):
+            return self.headers.get("X-authentik-email") or "unknown"
+        if self.headers.get("X-Forwarded-User") or self.headers.get("X-Auth-Request-User"):
+            return (self.headers.get("X-Forwarded-Email") or
+                    self.headers.get("X-Auth-Request-Email") or "unknown")
+        return self.headers.get("X-Infra-User") or "unknown"
 
     def send(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -707,6 +728,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/healthz":
                 return self.send(200, {"ok": True})
+            if u.path == "/signed-out" and s["console_auth_mode"] == "keycloak":
+                page = (
+                    "<!doctype html><html lang='en'><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    "<title>Signed out - Infra Console</title>"
+                    "<body style='font:16px system-ui,sans-serif;max-width:36rem;margin:15vh auto;padding:1rem'>"
+                    "<h1>You are signed out</h1>"
+                    "<p>Your Infra Console session has ended. Your Keycloak session may still be active.</p>"
+                    "<p><a href='/'>Sign in again</a></p></body></html>"
+                )
+                return self.send(200, page, "text/html; charset=utf-8")
             actor = self.actor(s)
             if actor is None:
                 return self.send(401, {"error": "authentication required"})
@@ -729,8 +761,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"settings": s, "user": actor["display_name"],
                                        "access": access, "deployments": rows})
             if u.path == "/api/access":
-                if s["console_auth_mode"] != "authentik":
-                    return self.send(409, {"error": "tenant access management requires Authentik mode"})
+                if s["console_auth_mode"] not in ("authentik", "keycloak"):
+                    return self.send(409, {"error": "tenant access management requires an identity-provider mode"})
                 memberships = store.list_access(actor["uid"])["organizations"]
                 if not (is_platform_admin(actor) or
                         any(org["role"] == "org_admin" for org in memberships)):
@@ -855,8 +887,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path).path
         try:
             if u == "/api/access":
-                if s["console_auth_mode"] != "authentik":
-                    return self.send(409, {"error": "tenant access management requires Authentik mode"})
+                if s["console_auth_mode"] not in ("authentik", "keycloak"):
+                    return self.send(409, {"error": "tenant access management requires an identity-provider mode"})
                 operation = body.get("op", "")
                 if operation == "organization-create":
                     if not is_platform_admin(actor):

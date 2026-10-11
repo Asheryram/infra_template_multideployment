@@ -18,6 +18,10 @@ if [[ ! -f /etc/infra/platform.secrets.env ]]; then
   sed -e "s/@GENERATED@/$(openssl rand -hex 24)/g" \
       -e "s/@AUTHENTIK_DB_PASSWORD@/$(openssl rand -hex 32)/g" \
       -e "s/@AUTHENTIK_SECRET_KEY@/$(openssl rand -hex 50)/g" \
+      -e "s/@KEYCLOAK_DB_PASSWORD@/$(openssl rand -hex 32)/g" \
+      -e "s/@KEYCLOAK_ADMIN_PASSWORD@/$(openssl rand -hex 32)/g" \
+      -e "s/@OAUTH2_PROXY_CLIENT_SECRET@/$(openssl rand -hex 32)/g" \
+      -e "s|@OAUTH2_PROXY_COOKIE_SECRET@|$(openssl rand -base64 24 | tr -d '\n')|g" \
       "$INFRA_ROOT/inventory/platform.secrets.env.example" \
     > /etc/infra/platform.secrets.env
   echo "created /etc/infra/platform.secrets.env with a generated POSTGRES_PASSWORD"
@@ -33,6 +37,18 @@ if ! grep -q '^AUTHENTIK_BOOTSTRAP_EMAIL=' /etc/infra/platform.secrets.env; then
 fi
 if ! grep -q '^AUTHENTIK_BOOTSTRAP_PASSWORD=' /etc/infra/platform.secrets.env; then
   printf 'AUTHENTIK_BOOTSTRAP_PASSWORD=\n' >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^KEYCLOAK_POSTGRES_PASSWORD=' /etc/infra/platform.secrets.env; then
+  printf 'KEYCLOAK_POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)" >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^KEYCLOAK_ADMIN_PASSWORD=' /etc/infra/platform.secrets.env; then
+  printf 'KEYCLOAK_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 32)" >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^OAUTH2_PROXY_CLIENT_SECRET=' /etc/infra/platform.secrets.env; then
+  printf 'OAUTH2_PROXY_CLIENT_SECRET=%s\n' "$(openssl rand -hex 32)" >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^OAUTH2_PROXY_COOKIE_SECRET=' /etc/infra/platform.secrets.env; then
+  printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(openssl rand -base64 24 | tr -d '\n')" >> /etc/infra/platform.secrets.env
 fi
 chown root:"$G" /etc/infra/platform.secrets.env
 chmod 640 /etc/infra/platform.secrets.env

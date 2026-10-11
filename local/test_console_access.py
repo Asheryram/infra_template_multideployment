@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.join(ROOT, "platform", "console"))
 os.environ.setdefault("INFRA_ROOT", ROOT)
 
 from access import AccessStore  # noqa: E402
-from console import may_change_org_member_role, require_project_role  # noqa: E402
+from console import Handler, may_change_org_member_role, require_project_role  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 
 class AccessStoreTests(unittest.TestCase):
@@ -68,9 +69,9 @@ class AccessStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.role_for_project(self.sage_user["uid"], "shop-web"))
         self.assertEqual(self.store.visible_apps(self.sage_user["uid"]), [])
 
-    def test_email_assignment_requires_a_known_unique_authentik_identity(self):
+    def test_email_assignment_requires_a_known_unique_identity_provider_user(self):
         self.assertEqual(self.store.identity_uid("SAGE@example.test"), self.sage_user["uid"])
-        with self.assertRaisesRegex(ValueError, "sign in through Authentik"):
+        with self.assertRaisesRegex(ValueError, "sign in through the console"):
             self.store.identity_uid("unknown@example.test")
 
     def test_role_hierarchy_is_enforced_by_shared_policy(self):
@@ -84,6 +85,25 @@ class AccessStoreTests(unittest.TestCase):
         admin = {"uid": "admin", "platform_admin": True}
         self.assertEqual(require_project_role(admin, self.store, "income-api", "maintainer"),
                          "platform_admin")
+
+    def test_keycloak_identity_uses_stable_provider_scoped_uid_and_admin_group(self):
+        handler = type("FakeHandler", (), {})()
+        handler.headers = {
+            "X-Forwarded-User": "keycloak-subject-1",
+            "X-Forwarded-Email": "admin@example.test",
+            "X-Forwarded-Preferred-Username": "admin",
+            "X-Forwarded-Groups": "/infra-platform-admins,/developers",
+        }
+        settings = {
+            "console_auth_mode": "keycloak",
+            "state_dir": self.temp.name,
+            "keycloak_platform_admin_group": "infra-platform-admins",
+        }
+        with patch("console.access_store", return_value=self.store):
+            actor = Handler.actor(handler, settings)
+        self.assertEqual(actor["uid"], "keycloak:keycloak-subject-1")
+        self.assertEqual(actor["email"], "admin@example.test")
+        self.assertTrue(actor["platform_admin"])
 
 
 if __name__ == "__main__":

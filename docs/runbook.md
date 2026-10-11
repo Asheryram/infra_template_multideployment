@@ -21,9 +21,9 @@ Repo-side non-secret config (`.deploy/env/*.env`) takes effect on the next CI de
 
 ## The console (web UI)
 
-`https://console.<domain>` is protected by the configured console authentication mode. Basic mode is transitional and operator-only; for organization/project access, use Authentik as described in [Access control](./access-control.md). Do not give app teams the shared dashboard Basic Auth credentials.
+`https://console.<domain>` is protected by the configured console authentication mode. Basic mode is transitional and operator-only; for organization/project access, use Keycloak or Authentik as described in [Access control](./access-control.md). Do not give app teams the shared dashboard Basic Auth credentials.
 
-In Authentik mode, the console has an **Access** tab for platform administrators and organization admins in addition to the operational tabs:
+In identity-provider mode, the console has an **Access** tab for platform administrators and organization admins in addition to the operational tabs:
 
 | Access task | Who can do it |
 |---|---|
@@ -32,7 +32,7 @@ In Authentik mode, the console has an **Access** tab for platform administrators
 | Grant or revoke a project role | Platform admin or that organization's admin |
 | Assign or change an organization-admin role | Platform admin only |
 
-Every user must sign in through Authentik at least once before they can be assigned by email. Organization membership alone does not expose deployments; grant a role for each project the user needs.
+Every user must sign in through the configured identity provider at least once before they can be assigned by email. Organization membership alone does not expose deployments; grant a role for each project the user needs.
 
 Operational tabs:
 

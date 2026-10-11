@@ -19,7 +19,8 @@ accessLog:
 api:
   dashboard: true
 
-ping: {}
+ping:
+  entryPoint: traefik
 
 metrics:
   prometheus:
@@ -30,10 +31,16 @@ metrics:
 entryPoints:
   traefik:
     address: ":8080"
+    http:
+      aliasHeadersStrategy: reject
   web:
     address: ":80"
+    http:
+      aliasHeadersStrategy: reject
   websecure:
     address: ":443"           # plain HTTP from the outer proxy, despite the name
+    http:
+      aliasHeadersStrategy: reject
     forwardedHeaders:
       insecure: true
     transport:
@@ -43,6 +50,8 @@ entryPoints:
         idleTimeout: 180s
   metrics:
     address: ":8082"
+    http:
+      aliasHeadersStrategy: reject
 
 providers:
   docker:

@@ -364,7 +364,7 @@ async function load() {
   document.querySelector('#sidebar nav button[data-tab=projects]').hidden = !platformAdmin;
   document.querySelector('#sidebar nav button[data-tab=activity]').hidden = !platformAdmin;
   document.querySelector('#sidebar nav button[data-tab=access]').hidden =
-    STATE.access?.auth_mode !== 'authentik' || (!platformAdmin && !orgAdmin);
+    !['authentik', 'keycloak'].includes(STATE.access?.auth_mode) || (!platformAdmin && !orgAdmin);
   document.querySelector('#sidebar nav button[data-tab=vars]').hidden = !canManageVars;
   const links = platformAdmin
     ? [['Traefik', base('traefik')], ['Logs', base('logs')], ['Status', base('status')]]
@@ -376,6 +376,9 @@ async function load() {
     ? [['Traefik', base('traefik')], ['Container logs', base('logs')], ['Uptime', base('status')]]
     : [['Uptime', base('status')]])
     .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener"><svg width="12" height="12" fill="none" viewBox="0 0 12 12"><path d="M2 10L10 2M10 2H5M10 2v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>${n}</a>`).join('');
+  if (STATE.access?.auth_mode === 'keycloak') {
+    $('#topLinks').innerHTML += '<a href="/oauth2/sign_out?rd=%2Fsigned-out">Sign out</a>';
+  }
   renderEnvs();
   if (!$('#tab-vars').hidden) renderVars();
   if (current) openDrawer(current.app, current.env, true);
@@ -390,7 +393,7 @@ function renderEnvs() {
   const blocked = STATE.deployments.filter(d => d.STATE === 'blocked').length;
 
   if (!names.length) {
-    const hasTenantIdentity = STATE.access?.auth_mode === 'authentik' && !STATE.access?.platform_admin;
+    const hasTenantIdentity = ['authentik', 'keycloak'].includes(STATE.access?.auth_mode) && !STATE.access?.platform_admin;
     const message = hasTenantIdentity
       ? 'No projects are assigned to your account yet. Ask your organization administrator to grant you a project role.'
       : 'Nothing deployed yet. Open a PR in an app repo, or run <span class="mono">infra deploy</span>.';
@@ -866,6 +869,7 @@ async function renderVarsFor(app) {
 async function renderAccess() {
   const response = await api('/api/access');
   const access = response.access, platformAdmin = access.platform_admin;
+  const identityProvider = STATE.access?.auth_mode === 'keycloak' ? 'Keycloak' : 'Authentik';
   const organizations = access.organizations;
   const identities = access.identities;
   const projects = access.projects;
@@ -897,7 +901,7 @@ async function renderAccess() {
     <div class="card">
       <div class="card-header"><h2>Organization membership</h2></div>
       <div style="padding:16px 18px">
-        <p class="muted">Create or invite accounts in Authentik first. A user must sign in once before they can be assigned here. Organization admins can add existing identities to their organization; only the platform admin can appoint another organization admin.</p>
+        <p class="muted">Create or invite accounts in ${identityProvider} first. The console manages organization membership and project access; users must sign in once before they appear here. Organization admins can add existing identities to their organization; only the platform admin can appoint another organization admin.</p>
         <div class="row"><select id="memberOrg" aria-label="Organization">${orgOptions}</select>
           <input id="memberEmail" type="email" aria-label="User email" placeholder="user@example.org" style="min-width:220px">
           <select id="memberRole">${platformAdmin ? '<option value="member">Member</option><option value="org_admin">Organization admin</option>' : '<option value="member">Member</option>'}<option value="none">Remove membership</option></select>
@@ -920,8 +924,8 @@ async function renderAccess() {
             '<tr><td colspan="4" class="empty">No project grants assigned.</td></tr>'}</table></div>
       </div>
     </div>
-    ${platformAdmin ? `<div class="card"><div class="card-header"><h2>Known Authentik identities</h2><span class="card-meta">users who have signed in at least once</span></div>
-      <div class="scroll"><table><tr><th>Name</th><th>Email</th><th>Authentik user ID</th><th>Last seen</th></tr>
+    ${platformAdmin ? `<div class="card"><div class="card-header"><h2>Known ${identityProvider} identities</h2><span class="card-meta">users who have signed in at least once</span></div>
+      <div class="scroll"><table><tr><th>Name</th><th>Email</th><th>Identity ID</th><th>Last seen</th></tr>
         ${identities.map(identity => `<tr><td>${esc(identity.display_name)}</td><td>${esc(identity.email)}</td><td class="mono">${esc(identity.uid)}</td><td>${ago(identity.last_seen)}</td></tr>`).join('') ||
           '<tr><td colspan="4" class="empty">No users have signed in yet.</td></tr>'}</table></div></div>` : ''}`;
 

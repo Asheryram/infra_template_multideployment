@@ -97,7 +97,7 @@ class AccessStore:
             rows = db.execute("SELECT uid FROM identities WHERE lower(email)=lower(?)",
                               (email.strip(),)).fetchall()
         if len(rows) != 1:
-            raise ValueError("user must sign in through Authentik once before access can be assigned")
+            raise ValueError("user must sign in through the console once before access can be assigned")
         return rows[0]["uid"]
 
     def link_project(self, organization, app):

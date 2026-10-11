@@ -4,15 +4,53 @@ This guide covers tenant-facing access through the Infra Console. It does not gr
 
 ## Access model
 
-- **Platform administrators** belong to the Authentik group named by `AUTHENTIK_PLATFORM_ADMIN_GROUP` (default `infra-platform-admins`). They can create organizations, connect registered projects, assign any project role, and manage organization-admin roles.
+- **Platform administrators** belong to the configured identity-provider group (`AUTHENTIK_PLATFORM_ADMIN_GROUP` or `KEYCLOAK_PLATFORM_ADMIN_GROUP`, default `infra-platform-admins`). They can create organizations, connect registered projects, assign any project role, and manage organization-admin roles.
 - **Organization admins** can add/remove ordinary members and assign/revoke project roles only in organizations where they are admins. They cannot create organizations, link projects, appoint/change organization admins, or administer another organization.
 - **Project roles are explicit and per project.** Organization membership never grants project visibility by itself. A user may be a member of multiple organizations and may have different roles in each project's access list.
 - **Viewer** reads assigned project information. **Operator** can deploy, restart, and roll back. **Maintainer** can also manage project runtime variables. Platform-only operations such as resource policy changes, project destruction, database wipes, and secret reveal remain restricted to platform administrators.
 - Removing an organization member also removes their project grants for that organization's projects.
 
-## Enable Authentik
+## Enable Keycloak
 
-Do not enable Authentik mode until a real VPN subnet is known and the Authentik host can be reached from a VPN-connected client.
+Keycloak is the recommended self-hosted option in this deployment. oauth2-proxy handles the OIDC flow and proxies authenticated requests to the console, so browsers receive the normal redirect to Keycloak. The console continues to enforce organization and project grants. The Keycloak browser/admin host is VPN-restricted by Traefik. oauth2-proxy reaches Keycloak over the Docker network using an internal TLS certificate, so its OIDC backchannel does not have to bypass the VPN restriction.
+
+1. Back up `/etc/infra`, `$STATE_DIR`, and the Postgres data. Keep the console in Basic mode until Keycloak, the realm, and the OIDC client have been configured and tested.
+2. In `/etc/infra/infra.env`, set:
+
+   ```dotenv
+   PLATFORM_PROFILES=keycloak
+   CONSOLE_AUTH_MODE=basic
+   KEYCLOAK_REALM=infra
+   KEYCLOAK_VPN_CIDRS=<actual-vpn-client-cidr>
+   KEYCLOAK_PLATFORM_ADMIN_GROUP=infra-platform-admins
+   ```
+
+   Replace the example CIDR with the actual client source range Traefik sees. `KEYCLOAK_VPN_CIDRS` accepts comma-separated IPv4/IPv6 CIDRs.
+3. Ensure `/etc/infra/platform.secrets.env` contains generated values for `KEYCLOAK_POSTGRES_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `OAUTH2_PROXY_CLIENT_SECRET`, and `OAUTH2_PROXY_COOKIE_SECRET`. New bootstrap runs create these values. For an existing installation, generate missing values with `openssl rand -hex 32` for the first three and `openssl rand -base64 24` for the 32-character oauth2-proxy cookie secret. Keep them root-owned and private.
+4. Start Keycloak by itself while Basic Auth remains enabled. This keeps oauth2-proxy from trying to discover a realm before you create one:
+
+   ```bash
+   sudo -u deploy infra platform up
+   ```
+
+5. While connected to the VPN, open `https://auth.<domain>` and sign in to the Keycloak admin console using `KEYCLOAK_ADMIN_USERNAME` (default `admin`) and the password from the secrets file. Create the realm named by `KEYCLOAK_REALM` (default `infra`).
+6. In that realm, create an **OpenID Connect** client with ID `OAUTH2_PROXY_CLIENT_ID` (default `infra-console`), client authentication enabled, Standard Flow enabled, Direct Access Grants disabled, and the exact redirect URI `https://console.<domain><public-port-if-nonstandard>/oauth2/callback`. Set the client secret to the value in `OAUTH2_PROXY_CLIENT_SECRET`.
+7. Add a **Group Membership** mapper to the client that emits a `groups` claim in both the ID and access tokens. Add an **Audience** mapper that includes the `infra-console` client in the ID and access tokens; oauth2-proxy validates the audience. Create the `infra-platform-admins` group and add your operator account. User accounts must have a verified email address.
+8. Add `keycloak-auth` to `PLATFORM_PROFILES` (for example, `keycloak,keycloak-auth`) and set `CONSOLE_AUTH_MODE=keycloak`. Then apply:
+
+   ```bash
+   sudo -u deploy infra platform up
+   ```
+
+   Verify the console redirects to Keycloak, a platform administrator sees administrative functions, and an ordinary user sees no projects until explicit project grants are added. Create or invite users in Keycloak; after each user signs in to the console once, manage their organization memberships and project grants in the console's **Access** tab. The console does not create Keycloak accounts. **Sign out** ends the oauth2-proxy console session; Keycloak's own SSO session may remain active. Check `infra platform logs keycloak`, `infra platform logs oauth2-proxy`, and `infra platform logs traefik`.
+
+The `keycloak` Compose profile can run while `CONSOLE_AUTH_MODE=basic` during setup. Enable `keycloak-auth` only after creating the realm and OIDC client. Keycloak credentials are stored in the shared Postgres service; back up Postgres and `/etc/infra/platform.secrets.env` together.
+
+Keycloak user IDs are stored with a `keycloak:` prefix and are intentionally distinct from Authentik IDs. Switching from Authentik requires re-adding users to organizations and re-granting project roles; do not remove the old provider data until the new grants are verified.
+
+## Enable Authentik (alternative)
+
+Authentik remains available as an alternative. Do not enable its tenant-auth mode until a real VPN subnet is known and the Authentik host can be reached from a VPN-connected client.
 
 1. Back up `/etc/infra`, `$STATE_DIR`, the Postgres data, and the `authentik-media` Docker volume. Confirm the recovery path before changing the console authentication mode.
 2. In the server's `/etc/infra/infra.env`, set:
@@ -46,9 +84,9 @@ The `authentik` Compose profile can run while `CONSOLE_AUTH_MODE=basic` during s
 
 ## Create users and grant access
 
-1. A platform admin creates or invites a user in Authentik. Users sign in through the console once so their stable Authentik UID and email are recorded locally.
+1. A platform admin creates or invites a user in the configured identity provider. Users sign in through the console once so their stable provider ID and email are recorded locally.
 2. In the console's **Access** tab, a platform admin creates the organization and links each already-registered project/repository to it. An app can be linked to only one organization.
-3. A platform admin or that organization's admin adds the user by the email shown in Authentik. The email must match the user's first console sign-in. Org-admin roles can only be assigned by a platform admin.
+3. A platform admin or that organization's admin adds the user by the email shown in the identity provider. The email must match the user's first console sign-in. Org-admin roles can only be assigned by a platform admin.
 4. Assign the user a Viewer, Operator, or Maintainer role separately for each project they need. A user's organization-admin status does not grant access to deployments.
 5. Check the user's view by asking them to sign out and back in. They should see only explicitly granted projects and controls permitted by their role.
 
@@ -56,10 +94,10 @@ Treat `console-access.sqlite3` as security-critical state. Back it up with `$STA
 
 ## Recovery and account lifecycle
 
-- **Lost platform-admin access:** From a trusted server session, temporarily set `CONSOLE_AUTH_MODE=basic` and run `sudo -u deploy infra platform up`. Basic mode is global operator access; restrict network access to the console first, rotate the Basic Auth credential, restore the Authentik group/provider, then switch back immediately. Do not use Basic mode for tenant onboarding.
+- **Lost platform-admin access:** From a trusted server session, temporarily set `CONSOLE_AUTH_MODE=basic` and run `sudo -u deploy infra platform up`. Basic mode is global operator access; restrict network access to the console first, rotate the Basic Auth credential, restore the identity-provider group/provider, then switch back immediately. Do not use Basic mode for tenant onboarding.
 - **User departure:** Disable the account in Authentik, then remove its organization membership or project grants in the console. Removing membership revokes project grants in that organization. Keep any audit records according to your retention policy.
-- **Lost Authentik data:** Restore Postgres and the `authentik-media` volume from a consistent backup along with `/etc/infra/platform.secrets.env`. Rotating the Authentik signing secret without a recovery plan can invalidate sessions and integrations.
-- Keep Authentik, the console, and VPN access limited to trusted management paths. Do not distribute Basic Auth operator credentials to project teams.
+- **Lost identity-provider data:** Restore Postgres and any provider-specific state from a consistent backup along with `/etc/infra/platform.secrets.env`. Rotating signing or cookie secrets without a recovery plan can invalidate sessions and integrations.
+- Keep the console and identity-provider admin access limited to trusted management paths. Do not distribute Basic Auth operator credentials to project teams.
 
 ## Image pinning, scanning, and updates
 

@@ -29,32 +29,79 @@ T="$STATE_DIR/traefik"
 MANAGED="$STATE_DIR/platform-managed.yml"
 export TRAEFIK_STATE_DIR="$T"
 export COMPOSE_PROFILES="${PLATFORM_PROFILES:-}"
-CONSOLE_AUTH_MODE=${CONSOLE_AUTH_MODE:-basic}
-if [[ $CONSOLE_AUTH_MODE != basic && $CONSOLE_AUTH_MODE != authentik ]]; then
-  die "CONSOLE_AUTH_MODE must be basic or authentik"
+PUBLIC_HTTPS_PORT_SUFFIX=""
+KEYCLOAK_HTTPS_PORT=443
+if [[ $TLS_MODE != external && $TRAEFIK_HTTPS_PORT != 443 ]]; then
+  PUBLIC_HTTPS_PORT_SUFFIX=":$TRAEFIK_HTTPS_PORT"
+  KEYCLOAK_HTTPS_PORT=$TRAEFIK_HTTPS_PORT
 fi
-if [[ ,$COMPOSE_PROFILES, == *,authentik,* ]]; then
-  [[ -n ${AUTHENTIK_VPN_CIDRS:-} ]] || die "set AUTHENTIK_VPN_CIDRS to the trusted VPN subnet before enabling Authentik"
-  [[ -n ${AUTHENTIK_SECRET_KEY:-} ]] || die "set AUTHENTIK_SECRET_KEY in /etc/infra/platform.secrets.env"
-  [[ ${AUTHENTIK_POSTGRES_PASSWORD:-} =~ ^[a-fA-F0-9]{32,128}$ ]] \
-    || die "set AUTHENTIK_POSTGRES_PASSWORD to a 32–128 character hex secret"
-  AUTHENTIK_VPN_CIDRS_YAML=""
-  IFS=',' read -r -a AUTHENTIK_CIDR_LIST <<<"$AUTHENTIK_VPN_CIDRS"
-  for cidr in "${AUTHENTIK_CIDR_LIST[@]}"; do
+export PUBLIC_HTTPS_PORT_SUFFIX KEYCLOAK_HTTPS_PORT
+if [[ ,$COMPOSE_PROFILES, == *,authentik,* && ( ,$COMPOSE_PROFILES, == *,keycloak,* || ,$COMPOSE_PROFILES, == *,keycloak-auth,* ) ]]; then
+  die "PLATFORM_PROFILES cannot enable both authentik and keycloak because both use auth.${DOMAIN}"
+fi
+HAS_KEYCLOAK_PROFILE=false
+HAS_KEYCLOAK_AUTH_PROFILE=false
+CONSOLE_ROUTER_SERVICE=console
+CONSOLE_LOGOUT_MIDDLEWARE=ops-auth@file,secure-headers@file
+[[ ,$COMPOSE_PROFILES, == *,keycloak,* ]] && HAS_KEYCLOAK_PROFILE=true
+[[ ,$COMPOSE_PROFILES, == *,keycloak-auth,* ]] && HAS_KEYCLOAK_AUTH_PROFILE=true
+if $HAS_KEYCLOAK_AUTH_PROFILE && ! $HAS_KEYCLOAK_PROFILE; then
+  die "PLATFORM_PROFILES=keycloak-auth requires keycloak as well"
+fi
+CONSOLE_AUTH_MODE=${CONSOLE_AUTH_MODE:-basic}
+if [[ $CONSOLE_AUTH_MODE != basic && $CONSOLE_AUTH_MODE != authentik && $CONSOLE_AUTH_MODE != keycloak ]]; then
+  die "CONSOLE_AUTH_MODE must be basic, authentik or keycloak"
+fi
+if [[ ,$COMPOSE_PROFILES, == *,authentik,* || $HAS_KEYCLOAK_PROFILE == true ]]; then
+  AUTH_PROVIDER_VPN_CIDRS=${AUTHENTIK_VPN_CIDRS:-}
+  if [[ $HAS_KEYCLOAK_PROFILE == true ]]; then
+    AUTH_PROVIDER_VPN_CIDRS=${KEYCLOAK_VPN_CIDRS:-$AUTH_PROVIDER_VPN_CIDRS}
+  fi
+  [[ -n $AUTH_PROVIDER_VPN_CIDRS ]] \
+    || die "set AUTHENTIK_VPN_CIDRS or KEYCLOAK_VPN_CIDRS to the trusted VPN subnet before enabling an identity provider"
+  AUTH_PROVIDER_VPN_CIDRS_YAML=""
+  IFS=',' read -r -a AUTH_PROVIDER_CIDR_LIST <<<"$AUTH_PROVIDER_VPN_CIDRS"
+  for cidr in "${AUTH_PROVIDER_CIDR_LIST[@]}"; do
     [[ $cidr =~ ^[0-9A-Fa-f:.]+/[0-9]{1,3}$ ]] \
-      || die "invalid AUTHENTIK_VPN_CIDRS entry: $cidr"
-    AUTHENTIK_VPN_CIDRS_YAML+="          - \"$cidr\""$'\n'
+      || die "invalid identity-provider VPN CIDR entry: $cidr"
+    AUTH_PROVIDER_VPN_CIDRS_YAML+="          - \"$cidr\""$'\n'
   done
-  if [[ $CONSOLE_AUTH_MODE == authentik ]]; then CONSOLE_AUTH_MIDDLEWARE=authentik-auth@file
-  else CONSOLE_AUTH_MIDDLEWARE=ops-auth@file
+  AUTHENTIK_VPN_CIDRS_YAML=$AUTH_PROVIDER_VPN_CIDRS_YAML
+  KEYCLOAK_VPN_CIDRS_YAML=$AUTH_PROVIDER_VPN_CIDRS_YAML
+  if [[ $HAS_KEYCLOAK_PROFILE == true ]]; then
+    [[ ${KEYCLOAK_POSTGRES_PASSWORD:-} =~ ^[a-fA-F0-9]{32,128}$ ]] \
+      || die "set KEYCLOAK_POSTGRES_PASSWORD to a 32–128 character hex secret"
+    [[ -n ${KEYCLOAK_ADMIN_PASSWORD:-} ]] || die "set KEYCLOAK_ADMIN_PASSWORD in /etc/infra/platform.secrets.env"
+  fi
+  if [[ $HAS_KEYCLOAK_AUTH_PROFILE == true ]]; then
+    [[ -n ${OAUTH2_PROXY_CLIENT_SECRET:-} ]] || die "set OAUTH2_PROXY_CLIENT_SECRET in /etc/infra/platform.secrets.env"
+    [[ ${OAUTH2_PROXY_COOKIE_SECRET:-} =~ ^[A-Za-z0-9+/]{32}$ ]] \
+      || die "set OAUTH2_PROXY_COOKIE_SECRET to a 32-character base64 value"
+  fi
+  if [[ $CONSOLE_AUTH_MODE == authentik ]]; then
+    [[ ,$COMPOSE_PROFILES, == *,authentik,* ]] \
+      || die "CONSOLE_AUTH_MODE=authentik requires PLATFORM_PROFILES to include authentik"
+    [[ -n ${AUTHENTIK_SECRET_KEY:-} ]] || die "set AUTHENTIK_SECRET_KEY in /etc/infra/platform.secrets.env"
+    [[ ${AUTHENTIK_POSTGRES_PASSWORD:-} =~ ^[a-fA-F0-9]{32,128}$ ]] \
+      || die "set AUTHENTIK_POSTGRES_PASSWORD to a 32–128 character hex secret"
+    CONSOLE_AUTH_MIDDLEWARE=authentik-auth@file,secure-headers@file
+  elif [[ $CONSOLE_AUTH_MODE == keycloak ]]; then
+    [[ $HAS_KEYCLOAK_PROFILE == true && $HAS_KEYCLOAK_AUTH_PROFILE == true ]] \
+      || die "CONSOLE_AUTH_MODE=keycloak requires PLATFORM_PROFILES to include keycloak,keycloak-auth"
+    CONSOLE_AUTH_MIDDLEWARE=secure-headers@file
+    CONSOLE_ROUTER_SERVICE=oauth2-proxy@docker
+    CONSOLE_LOGOUT_MIDDLEWARE=secure-headers@file
+  else
+    CONSOLE_AUTH_MIDDLEWARE=ops-auth@file,secure-headers@file
   fi
 else
-  [[ $CONSOLE_AUTH_MODE != authentik ]] \
-    || die "CONSOLE_AUTH_MODE=authentik requires PLATFORM_PROFILES to include authentik"
+  [[ $CONSOLE_AUTH_MODE == basic ]] \
+    || die "CONSOLE_AUTH_MODE=$CONSOLE_AUTH_MODE requires its corresponding PLATFORM_PROFILES"
   AUTHENTIK_VPN_CIDRS_YAML='          - "127.0.0.1/32"'
-  CONSOLE_AUTH_MIDDLEWARE=ops-auth@file
+  KEYCLOAK_VPN_CIDRS_YAML='          - "127.0.0.1/32"'
+  CONSOLE_AUTH_MIDDLEWARE=ops-auth@file,secure-headers@file
 fi
-export CONSOLE_AUTH_MODE CONSOLE_AUTH_MIDDLEWARE AUTHENTIK_VPN_CIDRS_YAML
+export CONSOLE_AUTH_MODE CONSOLE_AUTH_MIDDLEWARE CONSOLE_ROUTER_SERVICE CONSOLE_LOGOUT_MIDDLEWARE AUTHENTIK_VPN_CIDRS_YAML KEYCLOAK_VPN_CIDRS_YAML
 # The console container runs as the deploy user so its files match the CLI's ownership.
 DEPLOY_UID=$(id -u "$DEPLOY_USER"); DEPLOY_GID=$(id -g "$DEPLOY_USER")
 DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 0)
@@ -71,7 +118,7 @@ dc() {
 # Refuse to start if anything we'd create already exists and belongs to someone else.
 
 PLATFORM_CONTAINERS=(infra-socket-proxy infra-traefik infra-postgres infra-uptime-kuma infra-dozzle infra-console
-                     infra-authentik-server infra-authentik-worker infra-authentik-redis
+                     infra-authentik-server infra-authentik-worker infra-authentik-redis infra-keycloak infra-oauth2-proxy
                      infra-prometheus infra-node-exporter infra-cadvisor infra-grafana infra-registry)
 PLATFORM_NETWORKS=(infra_proxy infra_data infra_socket infra_metrics)
 
@@ -131,6 +178,22 @@ ensure_selfsigned_cert() {
   chmod 600 "$key"
 }
 
+ensure_keycloak_cert() {
+  local cert_dir="$T/certs/keycloak"
+  local crt="$cert_dir/tls.crt" key="$cert_dir/tls.key"
+  install -d -m 750 "$cert_dir"
+  if [[ -f $crt && -f $key ]] \
+     && openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null \
+     && openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null | grep -qF "*.$DOMAIN"; then
+    return 0
+  fi
+  log "generating an internal Keycloak TLS certificate for *.${DOMAIN}"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 397 \
+    -keyout "$key" -out "$crt" -subj "/CN=*.$DOMAIN" \
+    -addext "subjectAltName=DNS:*.$DOMAIN,DNS:$DOMAIN" 2>/dev/null
+  chmod 640 "$key"
+}
+
 render_file() { # template → destination (atomic, so Traefik's watcher never sees half a file)
   envsubst "$VARS" < "$1" > "$2.tmp"
   mv "$2.tmp" "$2"
@@ -160,7 +223,9 @@ render() {
     *) die "TLS_MODE must be selfsigned, letsencrypt or external (got '$TLS_MODE')" ;;
   esac
 
-  VARS='${DOMAIN} ${ACME_EMAIL} ${DNS_PROVIDER} ${ACME_CA_SERVER} ${HSTS_SECONDS} ${DASHBOARD_AUTH_USERS} ${PREVIEW_AUTH_USERS} ${AUTHENTIK_VPN_CIDRS_YAML}'
+  if [[ $HAS_KEYCLOAK_PROFILE == true ]]; then ensure_keycloak_cert; fi
+
+  VARS='${DOMAIN} ${ACME_EMAIL} ${DNS_PROVIDER} ${ACME_CA_SERVER} ${HSTS_SECONDS} ${DASHBOARD_AUTH_USERS} ${PREVIEW_AUTH_USERS} ${AUTHENTIK_VPN_CIDRS_YAML} ${KEYCLOAK_VPN_CIDRS_YAML}'
   render_file "$P/traefik/static.$TLS_MODE.yml.tmpl" "$T/traefik.yml"
   local f
   for f in "$P"/traefik/dynamic/*.yml.tmpl; do
@@ -207,6 +272,19 @@ ALTER ROLE authentik LOGIN PASSWORD :'authentik_password';
 SELECT format('CREATE DATABASE authentik OWNER authentik')
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='authentik') \gexec
 ALTER DATABASE authentik OWNER TO authentik;
+SQL
+    fi
+    if [[ $HAS_KEYCLOAK_PROFILE == true ]]; then
+      dc up -d --wait postgres
+      docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" infra-postgres \
+        psql -v ON_ERROR_STOP=1 -v keycloak_password="$KEYCLOAK_POSTGRES_PASSWORD" \
+        -U postgres -d postgres <<'SQL'
+SELECT format('CREATE ROLE keycloak LOGIN PASSWORD %L', :'keycloak_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='keycloak') \gexec
+ALTER ROLE keycloak LOGIN PASSWORD :'keycloak_password';
+SELECT format('CREATE DATABASE keycloak OWNER keycloak')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='keycloak') \gexec
+ALTER DATABASE keycloak OWNER TO keycloak;
 SQL
     fi
     new=$(sha256sum "$T/traefik.yml" | cut -d' ' -f1)

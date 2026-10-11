@@ -57,6 +57,11 @@ http:
         sourceRange:
 ${AUTHENTIK_VPN_CIDRS_YAML}
 
+    keycloak-vpn:
+      ipAllowList:
+        sourceRange:
+${KEYCLOAK_VPN_CIDRS_YAML}
+
     # Preview environments (web/app components).
     preview-auth:
       basicAuth:
