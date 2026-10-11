@@ -29,6 +29,8 @@ metrics:
     addServicesLabels: true
 
 entryPoints:
+  traefik:
+    address: ":8080"
   web:
     address: ":80"
     http:
