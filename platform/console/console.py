@@ -30,6 +30,10 @@ NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$")
 SCOPE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?(\.(app|web|api))?$")
 KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SENSITIVE = re.compile(r"PASS|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATABASE_URL|DSN|AUTH", re.I)
+PLATFORM_MANAGED_KEYS = {
+    "APP_NAME", "APP_ENV", "ENV_CLASS", "IS_PREVIEW", "PORT", "PUBLIC_URL",
+    "INFRA_DOMAIN", "IMAGE_TAG", "GIT_BRANCH", "GIT_COMMIT",
+}
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -696,6 +700,8 @@ class Handler(BaseHTTPRequestHandler):
                 scope, key, value = body.get("scope", ""), body.get("key", ""), body.get("value")
                 if not SCOPE.match(scope) or not KEY.match(key):
                     return self.send(400, {"error": "bad scope or key"})
+                if value is not None and key in PLATFORM_MANAGED_KEYS:
+                    return self.send(400, {"error": f"{key} is managed by the platform and cannot be overridden"})
                 if value is not None and ("\n" in value or "\r" in value):
                     return self.send(400, {"error": "values can't contain newlines"})
                 set_secret(s, app, scope, key, value, actor=self.user())

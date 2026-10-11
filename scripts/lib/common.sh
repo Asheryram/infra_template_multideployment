@@ -117,9 +117,22 @@ load_manifest() {
 meta_get() { ( set +u; . "$1"; printf '%s' "${!2-}" ); }
 
 cat_existing() {
-  local f
+  local f line key
+  local platform_keys=' APP_NAME APP_ENV ENV_CLASS IS_PREVIEW PORT PUBLIC_URL INFRA_DOMAIN IMAGE_TAG GIT_BRANCH GIT_COMMIT '
   for f in "$@"; do
-    if [[ -f $f ]]; then printf '\n# --- from %s\n' "$f"; cat "$f"; printf '\n'; fi
+    if [[ -f $f ]]; then
+      printf '\n# --- from %s\n' "$f"
+      while IFS= read -r line || [[ -n $line ]]; do
+        key=${line%%=*}
+        key=${key#export }
+        if [[ $line == *=* && $platform_keys == *" $key "* ]]; then
+          warn "ignoring platform-managed variable $key in $f"
+          continue
+        fi
+        printf '%s\n' "$line"
+      done < "$f"
+      printf '\n'
+    fi
   done
 }
 

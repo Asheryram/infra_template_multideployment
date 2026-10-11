@@ -191,6 +191,44 @@ pre {
 .drawer section { padding: 18px 20px; border-bottom: 1px solid var(--line); }
 .drawer h3 { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 10px; }
 .kv td:first-child { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; color: var(--muted); width: 1%; padding-right: 20px; }
+.env-vars-help { color: var(--muted); font-size: 12.5px; margin-bottom: 12px; }
+.env-vars-list { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.env-vars-head, .env-var-row {
+  display: grid; grid-template-columns: minmax(105px, .8fr) minmax(145px, 1.5fr) minmax(130px, 1fr) auto;
+  align-items: center; gap: 12px; padding: 10px 12px;
+}
+.env-vars-head { background: var(--bg); color: var(--muted); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.env-var-row { border-top: 1px solid var(--line); min-width: 0; }
+.env-var-row.pending { background: var(--accent-soft); }
+.env-var-key { min-width: 0; font: 12px/1.45 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.env-var-value { display: flex; align-items: center; gap: 6px; min-width: 0; font: 12px/1.45 var(--mono); overflow-wrap: anywhere; }
+.env-var-value [data-val] { min-width: 0; overflow-wrap: anywhere; }
+.env-var-source { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.source-badge, .pending-badge, .managed-badge {
+  display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--line); color: var(--muted);
+  font-size: 10.5px; font-weight: 600; line-height: 1.4; white-space: nowrap;
+}
+.source-badge.repo { color: var(--develop); border-color: var(--develop); }
+.source-badge.console { color: var(--preview); border-color: var(--preview); }
+.source-badge.platform, .managed-badge { color: var(--muted); }
+.pending-badge { color: var(--warn); border-color: var(--warn); background: transparent; }
+.env-var-scope { width: 100%; color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
+.env-var-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
+.env-var-actions .btn { font-size: 11.5px; }
+.env-var-form { padding: 12px; margin-top: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+.env-var-form-title { font-size: 12px; font-weight: 650; margin-bottom: 8px; }
+.env-var-form .row { margin: 6px 0 0; }
+.env-var-form input { min-width: 0; }
+@media (max-width: 700px) {
+  .env-vars-head { display: none; }
+  .env-var-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; padding: 12px; }
+  .env-var-key { grid-column: 1; }
+  .env-var-value { grid-column: 2; }
+  .env-var-source { grid-column: 1; }
+  .env-var-actions { grid-column: 2; }
+  .env-var-form .row > * { flex: 1 1 100%; width: 100% !important; }
+}
 
 /* ── Toast ── */
 .toast {
@@ -451,7 +489,8 @@ async function openDrawer(app, env, refresh) {
   };
 }
 
-const ORIGIN_LABEL = { platform: 'platform', repo: 'repo', console: 'console', deleted: 'deleted — pending' };
+const PLATFORM_MANAGED_KEYS = new Set(['APP_NAME', 'APP_ENV', 'ENV_CLASS', 'IS_PREVIEW', 'PORT', 'PUBLIC_URL', 'INFRA_DOMAIN', 'IMAGE_TAG', 'GIT_BRANCH', 'GIT_COMMIT']);
+const ORIGIN_LABEL = { platform: 'Platform managed', repo: 'Repository', console: 'Console override', deleted: 'Removed' };
 
 async function renderDatabase(dr, app, env, dbSources) {
   const box = $('#dbBox', dr);
@@ -519,39 +558,59 @@ async function renderEnvVars(dr, app, env) {
     ['common', `all ${app} environments`],
   ];
   const pending = Object.values(j.components).flat().filter(v => v.pending).length;
-  const srcText = v => v.origin === 'console' ? `console · ${v.scope === 'common' ? 'all envs' : v.scope}` : v.origin === 'repo' ? `repo · ${v.scope}` : ORIGIN_LABEL[v.origin] || v.origin;
+  const sourceScope = v => v.origin === 'console'
+    ? (v.scope === 'common' ? 'All environments' : v.scope)
+    : v.origin === 'repo' ? v.scope : '';
 
   box.classList.remove('muted');
   box.innerHTML = `
-    <p class="muted" style="font-size:12.5px;margin-bottom:10px">Variables the containers receive. Override repo/platform values here. Changes apply on next deploy.</p>
+    <p class="env-vars-help">Values and sources for this deployment. Platform-managed settings are read-only. Add or edit app overrides below; changes apply on the next deploy.</p>
     ${pending ? `<div class="banner" style="margin-bottom:10px">${pending} change(s) pending. <button class="btn primary" id="varsRedeploy" style="margin-left:8px">Redeploy now</button></div>` : ''}
     ${comps.map(c => `
       ${comps.length > 1 ? `<div style="font-weight:600;font-size:13px;margin:12px 0 6px">${esc(c)}</div>` : ''}
-      <table class="kv">
-        ${j.components[c].map(v => `<tr style="${v.pending ? 'background:var(--accent-soft)' : ''}">
-          <td>${esc(v.key)}</td>
-          <td class="mono" style="word-break:break-all"><span data-val="${esc(c)}|${esc(v.key)}">${esc(v.value)}</span>
-            ${v.sensitive ? `<button class="btn" data-reveal="${esc(c)}|${esc(v.key)}" style="padding:1px 6px;font-size:11px;margin-left:4px">show</button>` : ''}</td>
-          <td class="muted" style="white-space:nowrap;font-size:12px">${esc(srcText(v))}${v.pending ? ' · <b>pending</b>' : ''}</td>
-          <td style="white-space:nowrap;text-align:right">
-            <button class="btn" data-vedit="${esc(c)}|${esc(v.key)}|${esc(v.origin === 'console' ? v.scope : '')}" style="font-size:12px">${v.origin === 'console' ? 'Edit' : 'Override'}</button>
-            ${v.origin === 'console' ? `<button class="btn danger" data-vdel="${esc(v.scope)}|${esc(v.key)}" style="font-size:12px;margin-left:4px">✕</button>` : ''}
-          </td></tr>`).join('')}
-      </table>`).join('')}
-    <div class="row" style="margin-top:14px">
-      <input id="vKey" placeholder="KEY" class="mono" style="width:170px">
-      <input id="vVal" placeholder="value" class="mono" style="flex:1;min-width:160px">
-    </div>
-    <div class="row">
-      for <select id="vScope">${scopeOpts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select>
-      ${comps.length > 1 ? `<select id="vComp"><option value="">all parts</option>${comps.map(c => `<option value=".${esc(c)}">${esc(c)} only</option>`).join('')}</select>` : ''}
-      <button class="btn" id="vSave">Save</button>
-      <button class="btn primary" id="vSaveDeploy">Save &amp; redeploy</button>
+      <div class="env-vars-list" role="list" aria-label="${esc(c)} environment variables">
+        <div class="env-vars-head" aria-hidden="true"><span>Variable</span><span>Configured value</span><span>Source</span><span>Actions</span></div>
+        ${j.components[c].map(v => {
+          const platformManaged = v.origin === 'platform' || PLATFORM_MANAGED_KEYS.has(v.key);
+          const source = ORIGIN_LABEL[v.origin] || v.origin;
+          const scope = sourceScope(v);
+          return `<div class="env-var-row${v.pending ? ' pending' : ''}" role="listitem">
+            <div class="env-var-key">${esc(v.key)}</div>
+            <div class="env-var-value"><span data-val="${esc(c)}|${esc(v.key)}">${esc(v.value)}</span>
+              ${v.sensitive ? `<button class="btn" data-reveal="${esc(c)}|${esc(v.key)}" aria-label="Reveal ${esc(v.key)}">Show</button>` : ''}</div>
+            <div class="env-var-source"><span class="source-badge ${esc(v.origin)}">${esc(source)}</span>
+              ${scope ? `<span class="env-var-scope">${esc(scope)}</span>` : ''}
+              ${v.pending ? '<span class="pending-badge">Pending deploy</span>' : ''}</div>
+            <div class="env-var-actions">
+              ${platformManaged
+                ? `<span class="managed-badge">Platform managed</span>
+                   ${v.origin === 'console' ? `<button class="btn danger" data-vdel="${esc(v.scope)}|${esc(v.key)}">Remove override</button>` : ''}`
+                : `<button class="btn" data-vedit="${esc(c)}|${esc(v.key)}|${esc(v.origin === 'console' ? v.scope : '')}">${v.origin === 'console' ? 'Edit override' : 'Add override'}</button>
+                   ${v.origin === 'console' ? `<button class="btn danger" data-vdel="${esc(v.scope)}|${esc(v.key)}">Remove</button>` : ''}`}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`).join('')}
+    <div class="env-var-form">
+      <div class="env-var-form-title">Add an app override</div>
+      <p class="env-vars-help">Overrides take precedence over repository values. Platform-managed settings cannot be changed.</p>
+      <div class="row">
+        <input id="vKey" placeholder="VARIABLE_NAME" aria-label="Variable name" class="mono" style="width:170px">
+        <input id="vVal" placeholder="Value" aria-label="Variable value" class="mono" style="flex:1;min-width:160px">
+      </div>
+      <div class="row">
+        <label for="vScope" class="muted">Apply to</label>
+        <select id="vScope">${scopeOpts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select>
+        ${comps.length > 1 ? `<select id="vComp" aria-label="Component"><option value="">All components</option>${comps.map(c => `<option value=".${esc(c)}">${esc(c)} only</option>`).join('')}</select>` : ''}
+        <button class="btn" id="vSave">Save</button>
+        <button class="btn primary" id="vSaveDeploy">Save &amp; redeploy</button>
+      </div>
     </div>`;
 
   const save = async redeploy => {
     const key = $('#vKey', box).value.trim(), value = $('#vVal', box).value;
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return toast('Key must look like MY_KEY');
+    if (PLATFORM_MANAGED_KEYS.has(key)) return toast(`${key} is managed by the platform and cannot be overridden`);
     const scope = $('#vScope', box).value + ($('#vComp', box)?.value || '');
     try {
       await api('/api/secret', { app, scope, key, value });
@@ -569,6 +628,7 @@ async function renderEnvVars(dr, app, env) {
     if (scope) { const [base, part] = scope.split('.'); $('#vScope', box).value = base; if ($('#vComp', box)) $('#vComp', box).value = part ? '.' + part : ''; }
     else { $('#vScope', box).value = env; if ($('#vComp', box) && comps.length > 1) $('#vComp', box).value = '.' + c; }
     $('#vVal', box).focus();
+    $('#vKey', box).scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
   box.querySelectorAll('[data-vdel]').forEach(b => b.onclick = async () => {
     const [scope, key] = b.dataset.vdel.split('|');
