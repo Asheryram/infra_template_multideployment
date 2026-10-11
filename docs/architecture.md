@@ -44,41 +44,38 @@ Traefik learns routes from container labels, which it reads through `socket-prox
 3. enforce MAX_PREVIEWS for new previews      10. compose config  (fail fast)
 4. snapshot .deploy/ into the stack dir        11. registry login, pull
 5. compute hosts / images / limits / mw        12. MIGRATE_CMD in a one-off container
-6. ensure DB + role (clone template if preview) 13. compose up --wait (healthchecks)
-7. resolve API_URL (frontend)                  14. write meta.env, relink dependent frontends
+6. use a database only if explicitly provisioned and wired
+                                                13. compose up --wait (healthchecks)
+7. assemble runtime env from platform metadata, repo env and server secrets
+                                                14. write meta.env
 ```
 
 On-disk state per environment (`/srv/deployments/<app>/<env>/`):
 
 | File | Purpose |
 |---|---|
-| `deploy/` | Snapshot of the repo's `.deploy/`, used by `redeploy`/`rollback`/relink without the repo |
+| `deploy/` | Snapshot of the repo's `.deploy/`, used by `redeploy`/`rollback` without the repo |
 | `stack.env` | Variables for the compose templates (images, hosts, limits) |
 | `compose-files` | Which templates plus extra file make up this stack |
 | `runtime/*.env` | Final container env per component (0600) |
-| `meta.env` | Tag, previous tag, branch, URLs, upstream API, deploy time and actor |
+| `meta.env` | Tag, previous tag, branch, platform URLs, deploy time and actor |
 | `.db_password` | Generated per environment (0600) |
 
-## Frontend → backend resolution
+## Frontend → backend configuration
 
 ```
-frontend preview (branch B)
-   │
-   ├─ manifest API_URL_<CLASS> set? ──────────────▶ use it
-   ├─ backend has pr-* with BRANCH == B? ──────────▶ use that preview's API_URL
-   └─ else ────────────────────────────────────────▶ backend/<BACKEND_FALLBACK_ENV> (develop)
-
-frontend non-preview (staging) ──────────────────▶ backend/staging
+frontend deployment
+   └─ API endpoint comes from the app's own .deploy/env/ or server-side variables
 ```
 
-The reverse direction is handled too. After a backend preview deploys, `relink_frontends` finds frontend previews with the same `BACKEND_APP` and branch that point elsewhere, and redeploys them. Destroying a backend preview relinks them back to the fallback. Teams don't coordinate merge order. They just use the same branch name in both repos.
+The platform does not discover backend repositories, match branches, or relink frontends when backend environments appear or disappear. Set the API URL explicitly for each environment or preview that needs one. Use server-side variables for secrets and `.deploy/env/` for non-secret defaults.
 
-Frontends must read `API_URL` **at runtime** (see `app-kit/dockerfiles/spa/`). A value baked in at build time can't follow the backend.
+Frontends must read their API URL **at runtime** (see `app-kit/dockerfiles/spa/`). A value baked in at build time cannot vary by environment. `API_URL` is not injected by the platform.
 
 ## Databases
 
-- One Postgres container and one database plus role per environment: `<app>_<env>` (dashes become underscores).
-- Previews clone `<app>__template` if it exists (`CREATE DATABASE … TEMPLATE`). That's near-instant and gives realistic seeded data. Load the template from a **sanitised** dump with `infra db template`. Never clone prod data into previews.
+- One shared Postgres container. Databases are optional and explicitly created per environment with `infra db create <app> <env>`; each gets a database and role named `<app>_<env>` (dashes become underscores).
+- `infra db use <app> <env> --key <VAR>` wires the generated URL into an app variable. Preview databases can be cloned from `<app>__template`; load that template from a **sanitised** dump with `infra db template`. Never clone prod data into previews.
 - Roles get a generated password and `REVOKE ALL … FROM PUBLIC`, so one app's credentials can't open another app's DB.
 - Postgres sits on an internal network with no published port. Reach it with `infra db psql` or an SSH tunnel.
 

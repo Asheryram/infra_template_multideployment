@@ -25,7 +25,7 @@ Repo-side non-secret config (`.deploy/env/*.env`) takes effect on the next CI de
 
 | Tab | What you do there |
 |---|---|
-| **Environments** | Every app and environment with open-links, status, branch/tag, which API it calls, which DB it uses, missing variables. **Manage** opens: API wiring, DB wiring, redeploy / restart / rollback / destroy, effective variables (masked), last 200 log lines |
+| **Environments** | Every app and environment with open-links, status, branch/tag, reported API/DB connection, and missing variables. **Manage** opens redeploy / restart / rollback / destroy, effective variables (masked), database actions, and last 200 log lines |
 | **Projects** | Register repositories, configure allowed environments, issue or rotate webhook secrets, and remove project access. The webhook secret is shown once; save it as the repo's `INFRA_WEBHOOK_SECRET` Actions secret. |
 | **Variables** | Server-side variables per app and scope: *all environments* (`common`), a class (`preview`, `develop`, `staging`, `prod`), or one environment (`pr-12`), optionally limited to one component (`.api` / `.web` / `.app`). Platform-managed metadata is read-only. App override changes apply on the next deploy; save and redeploy when they should take effect immediately. |
 | **Activity** | Who did what (console audit log) interleaved with deploy logs |
@@ -52,37 +52,19 @@ The command prints `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET`; the secret is
 
 CLI equivalent: `sudo infra secrets edit <app> <scope>` then `infra redeploy <app> <env>`.
 
-## Rewire environments by hand (DevOps overrides)
+## Set application connections
 
-CI and branch matching decide the default wiring. You can override it per environment, or for all of an app's previews with scope `preview`. Overrides survive CI redeploys, apply immediately, and are deleted with the environment.
+The platform does not discover backend repos, match branches, or change connection targets automatically. Set an app's API or external database URL in **Variables** (console) or with `sudo infra secrets edit <app> <scope>`, then redeploy.
+
+To provision this environment's own platform database:
 
 ```bash
-# Frontend → which API
-infra link shop-web pr-12   --api shop-api/staging          # test a PR against staging's API
-infra link shop-web preview --api shop-api/develop          # ALL shop-web previews → develop API
-infra link shop-web pr-12   --api-url https://api.partner.com
-infra link shop-web pr-12   --auto                          # back to automatic
-
-# API → which database
-infra attach-db shop-api pr-7 --share shop-api/staging      # reproduce a bug on staging's data
-infra attach-db shop-api pr-7 --url 'postgres://u:p@host.docker.internal:5433/legacy'   # a DB on the server
-infra attach-db shop-api pr-7 --url 'postgres://u:p@10.0.0.5:5432/reporting'            # a DB elsewhere
-infra attach-db shop-api pr-7 --own                         # back to its own DB (it was kept)
-
-infra overrides                                             # what's overridden right now (passwords masked)
+infra db create shop-api pr-7
+infra db use shop-api pr-7 --key DATABASE_URL
+infra redeploy shop-api pr-7
 ```
 
-Safety rails:
-
-| Rule | Why |
-|---|---|
-| Any prod target needs `--allow-prod` | A preview writing to prod data is the classic disaster |
-| `MIGRATE_CMD` is **skipped** on a database the environment doesn't own (add `--migrate` to allow) | A PR's migration must not alter staging's or someone else's schema |
-| `destroy` only ever drops the environment's **own** database | Shared and external databases are never dropped |
-| `destroy` refuses while another environment borrows its database | Repoint the borrowers first (`--own`) |
-| Pinned frontends are never moved by automatic relinking | Your choice wins until you set `--auto` |
-| External DB passwords are stored in `/var/lib/infra/overrides` (0600) and masked in output | Prefer a dedicated least-privilege DB user |
-
+For shared or external databases, set the connection variable your app expects and verify production/preview access policies yourself. The platform cannot protect data in an externally configured database.
 ## A deploy failed
 ```bash
 tail -n 100 /var/log/infra/deploy.log

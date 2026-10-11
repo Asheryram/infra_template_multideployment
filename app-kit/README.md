@@ -1,13 +1,13 @@
 # App kit: get preview environments for your repo
 
-Copy the app-kit files into your repo and fill in the manifest to get per-environment URLs. Environments get an isolated platform database only when `NEEDS_DB=true`; preview databases can optionally be cloned from a sanitised seed template.
+Copy the app-kit files into your repo and fill in the manifest to get per-environment URLs. Database provisioning and app-specific connection variables are explicit operations; the platform does not provision or wire a database from a manifest flag.
 
 ## 1. Copy
 
 ```
 your-repo/
 ├── .deploy/
-│   ├── manifest.env          ← the only file you must edit
+│   ├── manifest.env          ← required deployment settings
 │   ├── env/                  ← non-secret config per environment (optional)
 │   └── compose.extra.yml     ← extra containers like redis/workers (optional, rename from .example)
 ├── .github/workflows/deploy.yml
@@ -25,7 +25,24 @@ Start from the example matching your project in [examples/](examples/):
 | Single app (Next.js full-stack, Django, Rails, Laravel, Spring…) | `monolith.manifest.env` | `myapp-pr-12.<domain>` |
 | Frontend and backend folders in one repo | `split.manifest.env` | `myapp-pr-12.<domain>` + `api-myapp-pr-12.<domain>` |
 | Backend-only repo | `backend.manifest.env` | `myapp-api-pr-3.<domain>` |
-| Frontend-only repo | `frontend.manifest.env` | `myapp-web-pr-8.<domain>`, wired to the backend repo |
+| Frontend-only repo | `frontend.manifest.env` | `myapp-web-pr-8.<domain>` |
+
+The starter at [.deploy/manifest.env](.deploy/manifest.env) documents every accepted manifest setting. The supported settings are:
+
+| Setting | Meaning |
+|---|---|
+| `APP_NAME`, `TYPE`, `IMAGE_REPO` | App identity, one of `monolith`, `frontend`, `backend`, `split`, and image name/prefix |
+| `<APP\|WEB\|API>_CONTEXT`, `<APP\|WEB\|API>_DOCKERFILE` | CI build context and optional Dockerfile path, relative to the repository |
+| `<APP\|WEB\|API>_IMAGE` | Optional fixed image override; `{tag}` is replaced by the deployment tag |
+| `<APP\|WEB\|API>_PORT`, `_MEM_LIMIT`, `_CPUS` | Container listen port and resource limits |
+| `<APP\|WEB\|API>_HOST_<CLASS>` | Optional host override for a component and environment class, such as `WEB_HOST_PROD` |
+| `<APP\|WEB\|API>_REQUIRED_ENV` | Space-separated required runtime variable names; deploy blocks if any are missing |
+| `MIGRATE_CMD`, `MIGRATE_SERVICE` | Optional migration command and service for the one-off migration container |
+| `PREVIEW_MEM_LIMIT`, `MAX_PREVIEWS_PER_APP` | Optional preview resource limit and per-app preview cap |
+| `PREVIEW_AUTH`, `API_PREVIEW_AUTH` | Optional preview authentication switches (`true`/`false`) |
+| `EXTRA_MIDDLEWARES` | Comma-separated names of platform-configured Traefik middlewares |
+
+Unknown manifest keys are errors, not ignored warnings. Put application settings such as `DATABASE_URL`, `API_URL`, or `FRONTEND_URL` in `.deploy/env/` or server-side variables, not in `manifest.env`.
 
 ## 3. Requirements for your container
 
@@ -38,19 +55,26 @@ Start from the example matching your project in [examples/](examples/):
    | `APP_ENV` | `pr-42`, `develop`, `staging`, `prod` |
    | `ENV_CLASS` / `IS_PREVIEW` | `preview` / `true` |
    | `PUBLIC_URL` | `https://myapp-pr-42.apps.example.com` |
-   | `DATABASE_URL`, `PGHOST`, `PGUSER`… | when `NEEDS_DB=true` (app/api only) |
-   | `API_URL` | frontends: which backend to call |
-   | `FRONTEND_URL` | split APIs: for CORS |
-   | `INFRA_DOMAIN` | for CORS: allow `https://*.${INFRA_DOMAIN}` outside prod |
+   | `INFRA_DOMAIN` | platform domain; app may use it for environment-specific CORS policy |
    | `GIT_COMMIT`, `GIT_BRANCH`, `IMAGE_TAG` | for logs and Sentry releases |
 
+   `DATABASE_URL`, `API_URL`, `FRONTEND_URL`, and other app-specific variables are **not** injected. Configure them in `.deploy/env/common.env`, `.deploy/env/<class>.env`, `.deploy/env/<class>.<component>.env`, or in server-side variables. Environment-specific server values can use `<env>.env` / `<env>.<component>.env` scopes.
+
+   For the platform Postgres, deploy the app first, then create and wire a database explicitly:
+   ```bash
+   infra db create myapp pr-42
+   infra db use myapp pr-42 --key DATABASE_URL
+   infra redeploy myapp pr-42
+   ```
+   Preview databases can be seeded from a sanitised template created with `infra db template`. No `NEEDS_DB` or `DB_PREVIEW_SOURCE` manifest option exists.
+
 4. **Frontends: don't bake `API_URL` in at build time.** One image runs in every environment. For static SPAs, use `dockerfiles/spa-nginx.Dockerfile`, which writes `window.__ENV__` at container start. For Next.js, read `process.env.API_URL` on the server side (or expose it through a small `/api/config` route) rather than `NEXT_PUBLIC_*`.
-5. **Migrations must be idempotent.** They run before every deploy via `MIGRATE_CMD`.
+5. **Migrations must be idempotent.** `MIGRATE_CMD` runs before rollout only when its service has a connection URL to that environment's own platform database. Otherwise migrations are skipped; the deploy log says why.
 6. **Log to stdout/stderr**, not files. The platform rotates and collects them (`https://logs.<domain>`).
 
 ## Frontend and backend in different repos
 
-Use the **same branch name** in both repos (e.g. `feature/checkout`). The frontend preview then automatically talks to the backend preview from that branch. If there's no backend PR, it talks to `develop`. You don't need to coordinate merge order.
+The platform does not discover or automatically link a frontend to a backend by repository or branch. Set the frontend's API variable (for example `API_URL` or `VITE_API_URL`) explicitly in the appropriate `.deploy/env/` file or server-side environment scope. Configure different values for `develop`, `staging`, `prod`, and previews as your workflow requires. The frontend must read that setting at runtime.
 
 ## Secrets and new variables
 

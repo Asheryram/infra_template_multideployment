@@ -1,6 +1,6 @@
 # infra — Amplify-style environments on a single server
 
-Every repo can get **prod, staging, develop and a preview per pull request**, each with its own URL. Apps that opt into the platform database (`NEEDS_DB=true`) get an isolated database per environment; preview databases can be cloned from a sanitised seed template. App teams add the app-kit configuration to their repo; this repo runs everything else.
+Every repo can get **prod, staging, develop and a preview per pull request**, each with its own URL. The platform database is optional and provisioned explicitly per environment; previews can be seeded from a sanitised template. App teams add the app-kit configuration to their repo; this repo runs everything else.
 
 **It's safe on a server that already runs other apps.** By default (`HOST_MODE=shared`) it never changes host-wide settings and never touches containers, images, volumes or databases it didn't create. See [docs/shared-host.md](docs/shared-host.md).
 
@@ -15,7 +15,7 @@ Every repo can get **prod, staging, develop and a preview per pull request**, ea
  (prod stack)      (staging stack)      (preview, basic-auth)  (preview api)
                                  │
                        ┌─────────▼─────────┐
-                       │  Postgres (shared) │  shop_prod · shop_staging · shop_pr_42 …
+                       │ Postgres (optional)│  databases created only when needed
                        └───────────────────┘
 ```
 
@@ -39,7 +39,7 @@ Every repo can get **prod, staging, develop and a preview per pull request**, ea
 | `TYPE` | Components | Hosts (non-prod adds `-<env>`) |
 |---|---|---|
 | `monolith` | `app` | `shop.<domain>` |
-| `frontend` | `web` | `shop-web.<domain>`, its API is resolved from another repo (see below) |
+| `frontend` | `web` | `shop-web.<domain>`, configure its API URL as an app environment variable |
 | `backend` | `api` | `shop-api.<domain>` |
 | `split` | `web` + `api` | `shop.<domain>` + `api-shop.<domain>` |
 
@@ -49,12 +49,12 @@ Anything else (Redis, workers, cron containers, Mongo) goes in the app's optiona
 
 | Trigger | Env | Notes |
 |---|---|---|
-| PR opened/updated | `pr-<n>` | basic-auth, `noindex`, isolated DB when `NEEDS_DB=true` (optionally cloned from a seed template), auto-removed |
+| PR opened/updated | `pr-<n>` | basic-auth, `noindex`, optional explicitly provisioned DB (optionally seeded from a template), auto-removed |
 | push `develop` | `develop` | |
 | push `staging` | `staging` | |
 | push `main` | `prod` | gate it with required reviewers on the `prod` GitHub Environment |
 
-**How the frontend finds its backend.** A frontend preview uses the backend preview built from the **same branch name**. If there isn't one, it uses `develop`. When the matching backend preview appears or disappears later, the frontend is redeployed automatically with the new `API_URL`.
+**Frontend/backend configuration.** The platform does not auto-discover or branch-match a frontend with a backend. Set the frontend's API URL in `.deploy/env/` or server-side variables for the appropriate environment.
 
 ---
 
@@ -74,12 +74,12 @@ sudo bash /opt/infra/local/simulate-existing.sh          # make the VM look like
 sudo bash /opt/infra/bootstrap/install.sh /opt/infra/inventory/local.env
 sudo -u deploy infra platform up
 sudo -u deploy infra platform ps                 # platform containers should be running/healthy
-sudo -u deploy bash /opt/infra/local/smoke-test.sh      # deploys every project type, checks routing/auth/DB/relinking
+sudo -u deploy bash /opt/infra/local/smoke-test.sh      # deploys every project type, checks routing/auth/DB/network isolation
 sudo bash /opt/infra/local/verify-isolation.sh          # proves the "existing" apps were never touched
 ```
 Open `https://traefik.<vm-ip-dashed>.sslip.io` (self-signed cert, accept the warning; login `admin/admin`).
 
-**The full lifecycle story test** has two real apps (`demo-api` + `demo-web`) and a GitHub simulator using real git branches. It exercises develop → prod → frontend and backend PRs → a feature that needs a new secret → release and rollback → DevOps rewiring → merge and close. The script reports the current assertion totals when it runs:
+**The full lifecycle story test** has two demo apps (`demo-api` + `demo-web`) and a GitHub simulator using real git branches. It exercises develop → prod → frontend and backend PRs → a feature that needs a new secret → release and rollback → merge and close. The script reports the current assertion totals when it runs:
 ```bash
 sudo bash /opt/infra/local/e2e/run.sh            # ~5 min, cleans up after itself
 sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with URLs to open in the browser
@@ -113,7 +113,7 @@ sudo bash /opt/infra/local/e2e/run.sh --pause    # stops after each chapter with
 
 ## Onboarding an app (what teams do)
 
-See [app-kit/README.md](app-kit/README.md) for the full app requirements. In short: copy `app-kit/.deploy/` and `app-kit/.github/` into the repo, set `APP_NAME` / `TYPE` / ports in `.deploy/manifest.env`, register the repo with `infra project add <app> --repo <org/repo>`, add its printed `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET` as GitHub Actions secrets, then open a PR. A preview gets a database only when configured with `NEEDS_DB=true`.
+See [app-kit/README.md](app-kit/README.md) for the full app requirements and complete list of accepted manifest settings. In short: copy `app-kit/.deploy/` and `app-kit/.github/` into the repo, set `APP_NAME` / `TYPE` / ports in `.deploy/manifest.env`, register the repo with `infra project add <app> --repo <org/repo>`, add its printed `INFRA_WEBHOOK_URL` and `INFRA_WEBHOOK_SECRET` as GitHub Actions secrets, then open a PR. Unknown manifest settings fail deployment. Databases and app connection variables are provisioned/configured explicitly.
 
 ## Day-to-day
 
@@ -126,9 +126,9 @@ infra logs shop pr-42               # or open https://logs.<domain>
 infra redeploy shop staging         # after changing secrets
 infra rollback shop prod
 sudo infra secrets edit shop prod   # runtime secrets per app/env
-infra db template shop seed.dump    # previews now start with seeded, sanitised data
-infra link shop-web pr-12 --api shop-api/staging          # DevOps: point a frontend at any backend
-infra attach-db shop-api pr-7 --share shop-api/staging    # DevOps: point an API at any database
+infra db template shop seed.dump    # set the sanitised seed used when explicitly creating preview DBs
+infra db create shop pr-12
+infra db use shop pr-12 --key DATABASE_URL
 infra cleanup --dry-run
 ```
 More in the [runbook](docs/runbook.md).
@@ -149,4 +149,4 @@ More in the [runbook](docs/runbook.md).
 
 - **One server = one point of failure.** Backups and a rebuild from `bootstrap/` are your recovery plan. Practise it on the VM.
 - **Brief blip on deploy.** `compose up` replaces the container, which takes a second or two for previews and prod alike. Zero-downtime prod needs blue/green (see architecture doc).
-- **Shared Postgres.** It's efficient, but a runaway query in a preview can slow prod. Move prod to managed Postgres when it matters (set `NEEDS_DB=false` and put `DATABASE_URL` in the prod secrets).
+- **Shared Postgres.** It's efficient, but a runaway query in a preview can slow prod. Move prod to managed Postgres when it matters and set its connection string as a production app variable.

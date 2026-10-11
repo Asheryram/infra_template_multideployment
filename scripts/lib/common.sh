@@ -78,7 +78,7 @@ write_kv() {
 # Parse a repo's manifest.env WITHOUT executing it. The manifest comes from the app repo — on a
 # multi-tenant host it is untrusted input, so it's never `source`d. Only known keys are accepted,
 # values are taken literally (no $(), no ${}, no backticks), and every value is format-checked.
-MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|MAX_PREVIEWS_PER_APP|WATCH_PATHS|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
+MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|MAX_PREVIEWS_PER_APP|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
 load_manifest() {
   local file=$1 line key val n=0
   [[ -f $file ]] || die "manifest not found: $file"
@@ -95,7 +95,8 @@ load_manifest() {
       val=${val%%[[:space:]]#*}; val=${val%"${val##*[![:space:]]}"}
       [[ $val != *[\$\`\"\'\\]* ]] || die "manifest line $n ($key): quote values containing special characters with '…'"
     fi
-    if [[ ! $key =~ $MANIFEST_KEYS ]]; then warn "manifest: ignoring unknown key $key"; continue; fi
+    [[ $key =~ $MANIFEST_KEYS ]] \
+      || die "manifest line $n: unsupported key '$key' (see app-kit/.deploy/manifest.env for supported settings)"
     case $key in
       APP_NAME)                [[ -z $val || $val =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] ;;
       TYPE)                    [[ $val =~ ^(monolith|frontend|backend|split)$ ]] ;;

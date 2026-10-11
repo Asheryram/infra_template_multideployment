@@ -78,26 +78,28 @@ Click **Add project**.
 
 Both repos are already on `develop`.
 
-**2.1** Backend first, so the frontend has something to talk to:
+**2.1** Deploy the backend:
 ```bash
 $CI "$P/shop-api" push
 ```
 You should see `▶ build …`, `▶ signed webhook → deploy shop-api/develop`, then `✔ succeeded: https://shop-api-develop…`.
 - [ ] succeeded
 
-**2.2** The frontend:
+**2.2** Deploy the frontend. The platform does not select or inject its API URL:
 ```bash
 $CI "$P/shop-web" push
 ```
-- [ ] `✔ succeeded … (uses API https://shop-api-develop…)`
+- [ ] frontend deploy succeeded
+
+Set the frontend's API URL variable (the exact key is whatever the app reads) for `develop` to `https://shop-api-develop.127-0-0-1.sslip.io:8443`, then redeploy the frontend. If the backend needs a platform database, create and wire it explicitly with `infra db create shop-api develop` and `infra db use shop-api develop --key DATABASE_URL`.
 
 **2.3** Check in the browser:
 1. Open <https://shop-api-develop.127-0-0-1.sslip.io:8443/api/products> and **accept the certificate**. You should see 3 products as JSON.
-2. Open <https://shop-web-develop.127-0-0-1.sslip.io:8443>. You should see the product list, with "Backend: shop-api 1.0.0 · env develop · database shop_api_develop".
+2. Open <https://shop-web-develop.127-0-0-1.sslip.io:8443>. You should see the product list after its API URL has been configured.
 - [ ] both work
 
 **2.4** In the console:
-- **Environments** shows both apps on `develop`, green, with links. `shop-web` *Talks to API* `shop-api-develop`, and `shop-api` *Database* is `own`.
+- **Environments** shows both apps on `develop`, green, with links and any detected database connection.
 - **Activity** shows `webhook:deploy …` and `deploy:ok …` lines.
 - [ ] seen
 
@@ -117,12 +119,14 @@ done
 ```
 - [ ] two `✔ succeeded` lines (prod URLs have no `-develop`)
 
-**3.2** Open <https://shop-web.127-0-0-1.sslip.io:8443>. It shows env `prod`, using `shop-api.127-0-0-1.sslip.io`. Prod has **its own database** (`shop_api_prod`).
-- [ ] works (accept the cert for <https://shop-api.127-0-0-1.sslip.io:8443> first if the list says "network error")
+**3.2** Before testing the frontend, configure the API URL variable that `shop-web` reads for its `prod` environment to `https://shop-api.127-0-0-1.sslip.io:8443`, then redeploy it. The platform does not infer the frontend's backend from repo names or branch names. Provision a database separately if the API requires one.
+- [ ] frontend uses the explicitly configured prod API URL
 
 ---
 
-## Part 4: 👩‍💻 A feature: PRs on both repos, same branch name
+## Part 4: 👩‍💻 A feature: PRs on both repos
+
+The repos may use matching branch names for team coordination, but the platform does not match branches or automatically connect their previews. Configure the frontend preview's API URL explicitly.
 
 **4.1** Backend change on branch `feature/sale`:
 ```bash
@@ -144,13 +148,15 @@ git commit -qam "Sale banner"
 cd /tmp
 $CI "$P/shop-web" pr 2
 ```
-- [ ] the result line says `(uses API https://shop-api-pr-1…)`. The platform matched the branch names by itself.
+- [ ] frontend preview deploy succeeded
 
-**4.3** Check in the browser. Previews are password-protected with `preview` / `preview`.
+**4.3** In Variables or Environments → Manage, set the frontend's API URL variable for `pr-2` to `https://shop-api-pr-1.127-0-0-1.sslip.io:8443`, then redeploy. If the API uses a database, provision and wire it separately with `infra db create` and `infra db use`.
+
+Check the browser. Previews are password-protected with `preview` / `preview`.
 1. Accept the cert for <https://shop-api-pr-1.127-0-0-1.sslip.io:8443>.
-2. Open <https://shop-web-pr-2.127-0-0-1.sslip.io:8443>. It shows **"Shop — SALE"**, backend **1.1.0**, env **pr-1**, and database **shop_api_pr_1**. The preview has its own fresh database.
-3. <https://shop-web-develop.127-0-0-1.sslip.io:8443> is **unchanged**.
-- [ ] all three as described
+2. Open <https://shop-web-pr-2.127-0-0-1.sslip.io:8443>. It should show **"Shop — SALE"** and call the explicitly configured API preview.
+3. <https://shop-web-develop.127-0-0-1.sslip.io:8443> remains configured independently.
+- [ ] both preview URLs behave as configured
 
 **4.4** A developer pushes again to the PR (GitHub calls this "synchronize"):
 ```bash
@@ -175,24 +181,12 @@ To change one:
 2. Type `https://shop-api.127-0-0-1.sslip.io:8443` (prod's API).
 3. Keep "only pr-2" and click **Save & redeploy**.
 4. Reload pr-2: the backend is now `prod`.
-5. Click **Remove** on your override, then **Redeploy now**. It's back to the automatic value.
+5. Click **Remove** on your override, then **Redeploy now**. The value falls back to the repo configuration, if one is defined.
 
 To add or change an app variable, use **Add an app override** (or **Add override** beside a repository value), enter the key and value, and choose the scope: *only this env*, *all previews*, or *all environments*. Platform-managed metadata such as `APP_ENV`, `PUBLIC_URL`, `IMAGE_TAG`, and `GIT_COMMIT` is read-only. Sensitive keys (`…KEY`, `…SECRET`, `…TOKEN`, `…PASSWORD`) are masked. Use **Show** to reveal one; reveals are logged. Use **Save & redeploy** when the change should apply immediately.
 - [ ] done
 
-> `shop-web` opted into *auto-wiring* (`BACKEND_APP` in its manifest), so `API_URL` starts out filled by the platform. Without `BACKEND_APP` nothing is automatic. You'd just set the frontend's API variable here per environment, which is the usual way teams pass it (e.g. `VITE_API_URL`).
-
-**5.1 Or use the API URL helper.** Environments → `shop-web` / `pr-2` → **Manage** → *API URL helper (optional)* picks from deployed backends:
-1. Under *Frontend → API*, choose `shop-api / prod` → **Apply**. Reload pr-2: the backend now shows env `prod`.
-2. Choose **Automatic** → **Apply**. It's back on `pr-1`.
-- [ ] seen both
-
-**5.2 Point an API at another database.** Manage `shop-api` / `pr-1`:
-1. Under *API → database*, choose **Share shop-api / develop** → **Apply**. pr-2's page now says database `shop_api_develop`.
-2. Choose **Its own database** → **Apply**.
-- [ ] seen both
-
-Try sharing `shop-api / prod`. It's refused unless you tick *allow prod*. That's the safety rail.
+The platform does not auto-fill `API_URL` or select a backend. Set the variable name your frontend actually reads (for example, `API_URL` or `VITE_API_URL`) in the repo environment files or as a server-side variable. To change a database connection, explicitly create/use a platform database or configure the app's expected external DB variable; take care not to point previews at production data.
 
 **5.3 Logs.** In Manage, click **Last 200 lines** for live container logs. You can also use <https://logs.127-0-0-1.sslip.io:8443>, which shows only platform containers.
 - [ ] seen

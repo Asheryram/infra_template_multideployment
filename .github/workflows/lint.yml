@@ -15,6 +15,8 @@ jobs:
           shellcheck --version
           find . -name '*.sh' -not -path './app-kit/*' -print0 | xargs -0 shellcheck -x -S warning
           shellcheck -x -S warning bin/infra
+      - name: Validate app manifests
+        run: bash local/test-manifest-parser.sh
 
   compose:
     runs-on: ubuntu-latest

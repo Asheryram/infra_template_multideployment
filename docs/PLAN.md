@@ -12,8 +12,8 @@ _Last updated: 2026-10-11 · next up: item 3_
 
 - Shared-host-safe platform: `HOST_MODE=shared`, preflight, `infra.managed` labels, `infra-` prefix, no global prune, `bootstrap/uninstall.sh`
 - Traefik (8880/8443 locally), Postgres, Uptime Kuma, Dozzle, and the **console** at `https://console.<domain>` (`platform/console/`)
-- Project types: `monolith`, `split` (one repo, web+api together), `frontend` + `backend` (two repos, branch matching)
-- DevOps overrides: `infra link`, `infra attach-db`, and the console's Wiring section
+- Project types: `monolith`, `split` (one repo, web+api together), `frontend` + `backend` (two independently deployed repos)
+- App connections are configured as ordinary environment variables; cross-repo branch matching and automatic relinking are not implemented.
 - Variables per app and scope (common / class / single env / `.component`), `*_REQUIRED_ENV` blocking, "will miss" warnings
 - Validation scripts: `local/smoke-test.sh`, `local/e2e/run.sh`, and `local/verify-isolation.sh`. Run them for current results; assertion totals change as coverage evolves.
 
@@ -25,7 +25,7 @@ _Last updated: 2026-10-11 · next up: item 3_
 - Re-sync after editing on Windows: `.\local\wsl-up.ps1 -Name Ubuntu -Domain 127-0-0-1.sslip.io`
 - Remove everything: `sudo bash /opt/infra/bootstrap/uninstall.sh`
 
-**Discarded on purpose (2026-10-09):** the "one repo, frontend/ and backend/ deployed independently" mode (multiple `.deploy/` dirs + `WATCH_PATHS`). Don't redo it unless asked.
+**Discarded on purpose (2026-10-09):** the "one repo, frontend/ and backend/ deployed independently" mode (multiple `.deploy/` dirs + `WATCH_PATHS`). `WATCH_PATHS` is not a supported manifest key.
 
 ---
 
@@ -51,7 +51,7 @@ Each deployment environment has its own `<stack>_net`. Traefik joins networks fo
   - the target must OWN its DB (`DB_MODE=own`)
   - takes the stack lock, writes an audit line
 - [ ] Console: a Manage → "Seed database from…" dropdown (envs of the same app with their own DB), with typed confirmation.
-- [ ] Optional `DB_PREVIEW_SOURCE=env:develop` in the manifest: auto-seed new previews from develop at creation (default stays `template`). Docs warn about real/personal data in previews.
+- [ ] Future, not currently supported: decide whether to add a manifest option for seeding previews from another environment. Do not put `DB_PREVIEW_SOURCE` in manifests until parser and implementation support it.
 
 **Test / accept:**
 - [ ] e2e: develop has N visits, seed pr-X from develop → pr-X shows N+1. `--from prod` without the flag is refused, and no `*.dump` files exist anywhere under `/tmp`, `$STATE_DIR` or `$DEPLOY_ROOT` afterwards.

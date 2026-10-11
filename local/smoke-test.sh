@@ -5,8 +5,8 @@
 #   sudo -u deploy bash /opt/infra/local/smoke-test.sh          run and clean up
 #   sudo -u deploy bash /opt/infra/local/smoke-test.sh --keep   leave stacks running to poke at
 #
-# Covers: every project type, routing + TLS, preview basic-auth, per-env databases,
-# frontend→backend branch matching, relink on backend create/destroy, teardown.
+# Covers: every project type, routing + TLS, preview basic-auth, explicitly provisioned DB,
+# and environment isolation.
 set -Eeuo pipefail
 
 KEEP=0; [[ ${1:-} == --keep ]] && KEEP=1
@@ -47,6 +47,9 @@ expect_code 200 "https://traefik.$DOMAIN$S/dashboard/" -u "${DASHBOARD_AUTH_PLAI
 step "monolith: staging (no auth) + preview (auth)"
 infra deploy --manifest "$EX/monolith" --env staging --tag smoke >/dev/null
 infra deploy --manifest "$EX/monolith" --env pr-4 --tag smoke --branch smoke/mono >/dev/null
+infra db create smoke-mono pr-4 >/dev/null
+infra db use smoke-mono pr-4 --key DATABASE_URL >/dev/null
+infra redeploy smoke-mono pr-4 >/dev/null
 expect_code 200 "https://smoke-mono-staging.$DOMAIN$S/"
 expect_code 401 "https://smoke-mono-pr-4.$DOMAIN$S/"
 expect_code 200 "https://smoke-mono-pr-4.$DOMAIN$S/" -u "$AUTH"
@@ -56,23 +59,31 @@ step "split: web + api in one stack"
 infra deploy --manifest "$EX/split" --env pr-3 --tag smoke --branch smoke/split >/dev/null
 expect_code 200 "https://smoke-split-pr-3.$DOMAIN$S/" -u "$AUTH"
 expect_code 200 "https://api-smoke-split-pr-3.$DOMAIN$S/"
-[[ $(meta smoke-split pr-3 UPSTREAM_API_URL) == "https://api-smoke-split-pr-3.$DOMAIN$S" ]] \
-  && ok "web API_URL points at its own api" || bad "split API_URL wrong"
+[[ $(meta smoke-split pr-3 API_URL) == "https://api-smoke-split-pr-3.$DOMAIN$S" ]] \
+  && ok "split API endpoint is reported for CI/console metadata" || bad "split API metadata wrong"
 
-step "frontend ↔ backend branch matching"
+step "frontend and backend deploy independently"
 infra deploy --manifest "$EX/backend" --env develop --tag smoke --branch develop >/dev/null
 infra deploy --manifest "$EX/frontend" --env pr-2 --tag smoke --branch feature/login >/dev/null
-[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-develop.$DOMAIN$S" ]] \
-  && ok "no backend preview yet → falls back to develop" || bad "fallback: $(meta smoke-web pr-2 UPSTREAM_API_URL)"
+if infra env smoke-web pr-2 web | grep -q '^API_URL='; then
+  bad "frontend API_URL was unexpectedly injected"
+else
+  ok "frontend API_URL is app configuration, not platform-injected"
+fi
 
 infra deploy --manifest "$EX/backend" --env pr-1 --tag smoke --branch feature/login >/dev/null
-[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-pr-1.$DOMAIN$S" ]] \
-  && ok "backend preview on same branch → frontend relinked" || bad "relink: $(meta smoke-web pr-2 UPSTREAM_API_URL)"
-if infra env smoke-web pr-2 web | grep -q "API_URL=https://smoke-api-pr-1.$DOMAIN$S"; then ok "container env has new API_URL"; else bad "container env not updated"; fi
+if infra env smoke-web pr-2 web | grep -q '^API_URL='; then
+  bad "backend deploy unexpectedly changed frontend API_URL"
+else
+  ok "backend deploy does not silently change frontend configuration"
+fi
 
 infra destroy --app smoke-api --env pr-1 >/dev/null
-[[ $(meta smoke-web pr-2 UPSTREAM_API_URL) == "https://smoke-api-develop.$DOMAIN$S" ]] \
-  && ok "backend preview destroyed → frontend back on develop" || bad "unlink: $(meta smoke-web pr-2 UPSTREAM_API_URL)"
+if infra env smoke-web pr-2 web | grep -q '^API_URL='; then
+  bad "backend destroy unexpectedly changed frontend API_URL"
+else
+  ok "backend destroy leaves frontend configuration unchanged"
+fi
 
 step "redeploy / rollback"
 infra deploy --manifest "$EX/monolith" --env staging --tag smoke2 >/dev/null
