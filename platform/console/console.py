@@ -1011,6 +1011,26 @@ class Handler(BaseHTTPRequestHandler):
                 self.audit(s, f"project:{op}{'' if ok else ':FAILED'}", f"{app} {('repo=' + repo) if repo else ''}")
                 return self.send(200, {"ok": ok, "output": out, "secret": secret, "webhook_url": webhook_url(s)})
 
+            if u == "/api/secrets/bulk":
+                require_project_role(actor, store, app, "maintainer")
+                scope = body.get("scope", "common")
+                pairs = body.get("pairs", [])
+                if not SCOPE.match(scope):
+                    return self.send(400, {"error": "bad scope"})
+                if not isinstance(pairs, list) or len(pairs) > 200:
+                    return self.send(400, {"error": "bad pairs"})
+                saved = []
+                for item in pairs:
+                    k, v = item.get("key", ""), item.get("value", "")
+                    if not KEY.match(k) or k in PLATFORM_MANAGED_KEYS:
+                        continue
+                    if "\n" in v or "\r" in v:
+                        continue
+                    set_secret(s, app, scope, k, v, actor=self.user())
+                    saved.append(k)
+                self.audit(s, "variable:bulk", f"{app} scope={scope} keys={','.join(saved)}")
+                return self.send(200, {"ok": True, "saved": saved})
+
             if u == "/api/secret":
                 require_project_role(actor, store, app, "maintainer")
                 scope, key, value = body.get("scope", ""), body.get("key", ""), body.get("value")

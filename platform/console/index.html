@@ -818,7 +818,18 @@ async function renderVarsFor(app) {
         <input id="nVal" placeholder="value" class="mono" style="flex:1;min-width:180px">
         <button class="btn primary" id="nSave">Save</button>
       </div>
-      <div class="row muted" style="font-size:12.5px">Redeploy affected: <span id="affected"></span></div>
+      <div class="row" style="margin-top:4px">Redeploy affected: <span id="affected"></span></div>
+      <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12.5px">📋 Bulk import — paste a .env block</summary>
+        <div style="margin-top:8px">
+          <textarea id="bulkEnv" rows="8" placeholder="KEY=value&#10;ANOTHER_KEY=another value&#10;# comments are ignored" style="width:100%;font:12.5px/1.5 var(--mono);padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);resize:vertical"></textarea>
+          <div class="row" style="margin-top:6px">
+            <label for="bulkScope" class="muted">Apply to</label>
+            <select id="bulkScope">${[...scopes].map(s => `<option value="${esc(s)}">${esc(label(s))}</option>`).join('')}</select>
+            <button class="btn primary" id="bulkSave">Import all</button>
+          </div>
+          <div id="bulkOut"></div>
+        </div>
+      </details>
     </div>` : '<p class="muted" style="padding:12px 18px">Read-only access. Ask a project maintainer to change runtime variables.</p>'}
     ${!Object.keys(j.files).length ? '<div class="empty">No server-side variables for this app yet.</div>' : ''}
     ${Object.entries(j.files).map(([scope, kv]) => `
@@ -854,6 +865,26 @@ async function renderVarsFor(app) {
     try { await api('/api/secret', { app, scope, key, value: $('#nVal').value }); toast(`${key} saved — redeploy to apply`); $('#nKey').value = $('#nVal').value = ''; renderVarsFor(app); }
     catch (e) { toast(e.message); }
   };
+  $('#bulkSave', el)?.addEventListener('click', async () => {
+    const raw = $('#bulkEnv', el).value, scope = $('#bulkScope', el).value;
+    const pairs = raw.split('\n').flatMap(line => {
+      line = line.trim();
+      if (!line || line.startsWith('#')) return [];
+      const eq = line.indexOf('=');
+      if (eq < 1) return [];
+      let key = line.slice(0, eq).trim().replace(/^export\s+/, '');
+      let val = line.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
+      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? [{ key, value: val }] : [];
+    });
+    if (!pairs.length) return toast('No valid KEY=value lines found');
+    try {
+      const r = await api('/api/secrets/bulk', { app, scope, pairs });
+      $('#bulkOut', el).innerHTML = `<pre>Saved: ${esc(r.saved.join(', ') || 'none')}</pre>`;
+      toast(`${r.saved.length} variable(s) saved — redeploy to apply`);
+      $('#bulkEnv', el).value = '';
+      renderVarsFor(app);
+    } catch (e) { toast(e.message); }
+  });
   $('#varBody').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     const [scope, key] = b.dataset.del.split('|');
     if (!window.confirm(`Delete ${key} from ${scope}?`)) return;
