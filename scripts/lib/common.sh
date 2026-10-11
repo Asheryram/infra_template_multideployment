@@ -52,6 +52,14 @@ load_infra_env() {
   : "${LOCK_DIR:=/run/lock/infra}"
   : "${MAX_PREVIEWS:=8}"
   : "${PREVIEW_TTL_DAYS:=7}"
+  : "${RESOURCE_DEFAULT_MEM_LIMIT:=512m}"
+  : "${RESOURCE_DEFAULT_CPUS:=1.0}"
+  : "${RESOURCE_PREVIEW_MEM_LIMIT:=256m}"
+  : "${RESOURCE_PREVIEW_CPUS:=0.5}"
+  : "${RESOURCE_MAX_CONTAINER_MEM_LIMIT:=1g}"
+  : "${RESOURCE_MAX_CONTAINER_CPUS:=2.0}"
+  : "${RESOURCE_MAX_STACK_MEM_LIMIT:=2g}"
+  : "${RESOURCE_MAX_STACK_CPUS:=3.0}"
   : "${PREVIEW_AUTH_ENABLED:=true}"
   : "${PG_CONTAINER:=infra-postgres}"
   : "${DISK_ALERT_PCT:=80}"
@@ -78,7 +86,7 @@ write_kv() {
 # Parse a repo's manifest.env WITHOUT executing it. The manifest comes from the app repo — on a
 # multi-tenant host it is untrusted input, so it's never `source`d. Only known keys are accepted,
 # values are taken literally (no $(), no ${}, no backticks), and every value is format-checked.
-MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|PREVIEW_MEM_LIMIT|MAX_PREVIEWS_PER_APP|(APP|WEB|API)_(IMAGE|PORT|MEM_LIMIT|CPUS|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
+MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|MAX_PREVIEWS_PER_APP|(APP|WEB|API)_(IMAGE|PORT|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
 load_manifest() {
   local file=$1 line key val n=0
   [[ -f $file ]] || die "manifest not found: $file"
@@ -101,8 +109,6 @@ load_manifest() {
       APP_NAME)                [[ -z $val || $val =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] ;;
       TYPE)                    [[ $val =~ ^(monolith|frontend|backend|split)$ ]] ;;
       *_PORT)                  [[ $val =~ ^[0-9]{1,5}$ ]] ;;
-      *_MEM_LIMIT)             [[ $val =~ ^[0-9]+[kmgKMG]?$ ]] ;;
-      *_CPUS)                  [[ $val =~ ^[0-9]+(\.[0-9]+)?$ ]] ;;
       *_HOST_*)                [[ $val =~ ^[a-z0-9.-]+$ ]] ;;
       IMAGE_REPO|*_IMAGE)      [[ -z $val || $val =~ ^[a-zA-Z0-9._/:@{}-]+$ ]] ;;
       EXTRA_MIDDLEWARES)       [[ -z $val || $val =~ ^[a-zA-Z0-9@,_-]+$ ]] ;;
@@ -112,6 +118,82 @@ load_manifest() {
     esac || die "manifest line $n: invalid value for $key: $val"
     printf -v "$key" '%s' "$val"
   done < "$file"
+}
+
+# Resource overrides are plain data, never sourced. Exact env overrides win over the
+# environment class (e.g. all previews), which wins over the app-wide common scope.
+resource_file_value() {
+  local file=$1 wanted=$2 line result=""
+  [[ -r $file ]] || { printf ''; return; }
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == "$wanted="* ]] && result=${line#*=}
+  done < "$file"
+  printf '%s' "$result"
+}
+
+resource_resolve() {
+  local app=$1 env=$2 comp=$3 scope file key value
+  RESOURCE_MEM=""
+  RESOURCE_CPUS=""
+  for scope in common "$(env_class "$env")" "$env"; do
+    [[ -n $scope ]] || continue
+    file="$STATE_DIR/resources/$app/$scope.$comp.env"
+    key=MEM_LIMIT
+    value=$(resource_file_value "$file" "$key")
+    if [[ -n $value ]]; then RESOURCE_MEM=$value; fi
+    key=CPUS
+    value=$(resource_file_value "$file" "$key")
+    if [[ -n $value ]]; then RESOURCE_CPUS=$value; fi
+  done
+  if [[ -z $RESOURCE_MEM ]]; then
+    RESOURCE_MEM=$RESOURCE_DEFAULT_MEM_LIMIT
+    if [[ $(env_class "$env") == preview ]]; then RESOURCE_MEM=$RESOURCE_PREVIEW_MEM_LIMIT; fi
+  fi
+  if [[ -z $RESOURCE_CPUS ]]; then
+    RESOURCE_CPUS=$RESOURCE_DEFAULT_CPUS
+    if [[ $(env_class "$env") == preview ]]; then RESOURCE_CPUS=$RESOURCE_PREVIEW_CPUS; fi
+  fi
+}
+
+resource_mem_kib() {
+  local value=$1 number unit
+  [[ $value =~ ^([1-9][0-9]{0,8})([kKmMgG])$ ]] || return 1
+  number=${BASH_REMATCH[1]}; unit=${BASH_REMATCH[2],,}
+  case $unit in
+    k) printf '%s' "$number" ;;
+    m) printf '%s' "$((number * 1024))" ;;
+    g) printf '%s' "$((number * 1024 * 1024))" ;;
+  esac
+}
+
+resource_validate_value() {
+  local mem=$1 cpus=$2 mem_kib max_mem_kib
+  mem_kib=$(resource_mem_kib "$mem") || die "invalid infra memory limit: $mem"
+  max_mem_kib=$(resource_mem_kib "$RESOURCE_MAX_CONTAINER_MEM_LIMIT") \
+    || die "invalid RESOURCE_MAX_CONTAINER_MEM_LIMIT: $RESOURCE_MAX_CONTAINER_MEM_LIMIT"
+  [[ $cpus =~ ^[0-9]+(\.[0-9]{1,3})?$ ]] \
+    && awk -v n="$cpus" 'BEGIN { exit !(n > 0) }' \
+    || die "invalid infra CPU limit: $cpus"
+  [[ $RESOURCE_MAX_CONTAINER_CPUS =~ ^[0-9]+(\.[0-9]{1,3})?$ ]] \
+    && awk -v n="$RESOURCE_MAX_CONTAINER_CPUS" 'BEGIN { exit !(n > 0) }' \
+    || die "invalid RESOURCE_MAX_CONTAINER_CPUS: $RESOURCE_MAX_CONTAINER_CPUS"
+  (( mem_kib <= max_mem_kib )) \
+    || die "memory limit $mem exceeds per-container ceiling $RESOURCE_MAX_CONTAINER_MEM_LIMIT"
+  awk -v n="$cpus" -v max="$RESOURCE_MAX_CONTAINER_CPUS" 'BEGIN { exit !(n <= max) }' \
+    || die "CPU limit $cpus exceeds per-container ceiling $RESOURCE_MAX_CONTAINER_CPUS"
+}
+
+resource_validate_stack() {
+  local mem_kib=$1 cpus=$2 max_mem_kib
+  max_mem_kib=$(resource_mem_kib "$RESOURCE_MAX_STACK_MEM_LIMIT") \
+    || die "invalid RESOURCE_MAX_STACK_MEM_LIMIT: $RESOURCE_MAX_STACK_MEM_LIMIT"
+  [[ $RESOURCE_MAX_STACK_CPUS =~ ^[0-9]+(\.[0-9]{1,3})?$ ]] \
+    && awk -v n="$RESOURCE_MAX_STACK_CPUS" 'BEGIN { exit !(n > 0) }' \
+    || die "invalid RESOURCE_MAX_STACK_CPUS: $RESOURCE_MAX_STACK_CPUS"
+  (( mem_kib <= max_mem_kib )) \
+    || die "combined memory limits exceed stack ceiling $RESOURCE_MAX_STACK_MEM_LIMIT"
+  awk -v n="$cpus" -v max="$RESOURCE_MAX_STACK_CPUS" 'BEGIN { exit !(n <= max) }' \
+    || die "combined CPU limits exceed stack ceiling $RESOURCE_MAX_STACK_CPUS"
 }
 
 # Read one key from an env file without leaking anything into the caller.

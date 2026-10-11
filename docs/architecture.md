@@ -100,7 +100,7 @@ Frontends must read their API URL **at runtime** (see `app-kit/dockerfiles/spa/`
 | `metrics` profile | ~400 MB |
 | Each small preview (web 128 MB + api 256 MB) | ~400 MB |
 
-On a 4 GB VPS, plan for prod, staging, develop and roughly 3–4 previews. On 8 GB, roughly 10 previews. Set `MAX_PREVIEWS` accordingly and use `PREVIEW_MEM_LIMIT`.
+Set `MAX_PREVIEWS` based on available host capacity. Infra inventory configures default and preview CPU/memory limits, with hard per-container and per-stack ceilings; operators can set scoped app overrides in the console. These are container caps, not reservations of host capacity, so size preview counts and limits for the actual server.
 
 ## Possible next steps
 

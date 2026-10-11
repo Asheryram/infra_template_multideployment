@@ -19,6 +19,7 @@ import tarfile
 import threading
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -115,6 +116,118 @@ def env_class(env):
 
 def components(type_):
     return {"monolith": ["app"], "frontend": ["web"], "backend": ["api"], "split": ["web", "api"]}.get(type_, [])
+
+
+def resource_memory_bytes(value):
+    match = re.fullmatch(r"([1-9][0-9]{0,8})([kKmMgG])", str(value))
+    if not match:
+        raise ValueError(f"invalid memory limit: {value}")
+    number, unit = int(match.group(1)), match.group(2).lower()
+    return number * {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[unit]
+
+
+def resource_cpu(value):
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,3})?", str(value)):
+        raise ValueError(f"invalid CPU limit: {value}")
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(f"invalid CPU limit: {value}") from exc
+    if not number.is_finite() or number <= 0:
+        raise ValueError(f"invalid CPU limit: {value}")
+    return number
+
+
+def resource_settings(s):
+    env = read_env(ENV_FILE)
+    defaults = {
+        "mem_limit": env.get("RESOURCE_DEFAULT_MEM_LIMIT", "512m"),
+        "cpus": env.get("RESOURCE_DEFAULT_CPUS", "1.0"),
+        "preview_mem_limit": env.get("RESOURCE_PREVIEW_MEM_LIMIT", "256m"),
+        "preview_cpus": env.get("RESOURCE_PREVIEW_CPUS", "0.5"),
+        "max_container_mem_limit": env.get("RESOURCE_MAX_CONTAINER_MEM_LIMIT", "1g"),
+        "max_container_cpus": env.get("RESOURCE_MAX_CONTAINER_CPUS", "2.0"),
+        "max_stack_mem_limit": env.get("RESOURCE_MAX_STACK_MEM_LIMIT", "2g"),
+        "max_stack_cpus": env.get("RESOURCE_MAX_STACK_CPUS", "3.0"),
+    }
+    default_memory = resource_memory_bytes(defaults["mem_limit"])
+    preview_memory = resource_memory_bytes(defaults["preview_mem_limit"])
+    max_memory = resource_memory_bytes(defaults["max_container_mem_limit"])
+    resource_memory_bytes(defaults["max_stack_mem_limit"])
+    default_cpu = resource_cpu(defaults["cpus"])
+    preview_cpu = resource_cpu(defaults["preview_cpus"])
+    max_cpu = resource_cpu(defaults["max_container_cpus"])
+    resource_cpu(defaults["max_stack_cpus"])
+    if (default_memory > max_memory or preview_memory > max_memory
+            or default_cpu > max_cpu or preview_cpu > max_cpu):
+        raise ValueError("resource defaults exceed configured per-container ceilings")
+    return defaults
+
+
+def resource_file(s, app, scope, comp):
+    return f"{s['state_dir']}/resources/{app}/{scope}.{comp}.env"
+
+
+def resource_policy(s, app, env, candidate=None):
+    deployment = f"{s['deploy_root']}/{app}/{env}"
+    manifest = read_env(f"{deployment}/deploy/manifest.env")
+    comps = components(manifest.get("TYPE", ""))
+    if not comps or not os.path.isdir(deployment):
+        raise ValueError(f"deployment not found: {app}/{env}")
+    defaults = resource_settings(s)
+    cls = env_class(env)
+    scopes = ["common"] + (["preview"] if env.startswith("pr-") else []) + [env]
+    ordered = ["common"] + ([cls] if cls != "common" else []) + ([env] if env != cls else [])
+    result = []
+    for comp in comps:
+        overrides = {}
+        for scope in scopes:
+            raw = read_env(resource_file(s, app, scope, comp))
+            overrides[scope] = {
+                "mem_limit": raw.get("MEM_LIMIT", ""),
+                "cpus": raw.get("CPUS", ""),
+            }
+        if candidate and candidate["comp"] == comp:
+            overrides[candidate["scope"]] = candidate["values"]
+        effective = {
+            "mem_limit": defaults["preview_mem_limit"] if cls == "preview" else defaults["mem_limit"],
+            "cpus": defaults["preview_cpus"] if cls == "preview" else defaults["cpus"],
+        }
+        for scope in ordered:
+            effective.update({key: value for key, value in overrides.get(scope, {}).items() if value})
+        result.append({
+            "component": comp,
+            "effective": effective,
+            "overrides": {scope: {
+                "mem_limit": overrides[scope].get("mem_limit", ""),
+                "cpus": overrides[scope].get("cpus", ""),
+            } for scope in scopes},
+        })
+    return {"components": result, "defaults": defaults, "scopes": scopes}
+
+
+def save_resource_override(s, app, scope, comp, mem_limit=None, cpus=None):
+    path = resource_file(s, app, scope, comp)
+    values = read_env(path)
+    for key, value in (("MEM_LIMIT", mem_limit), ("CPUS", cpus)):
+        if value is None:
+            values.pop(key, None)
+        else:
+            values[key] = value
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    if not values:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        return
+    temporary = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(temporary, "w") as handle:
+        os.chmod(temporary, 0o600)
+        for key in ("MEM_LIMIT", "CPUS"):
+            if key in values:
+                handle.write(f"{key}={values[key]}\n")
+    os.replace(temporary, path)
 
 
 def required_missing(s, app, env):
@@ -584,6 +697,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
                 return self.send(200, {"components": env_variables(s, app, env)})
+            if u.path == "/api/resources":
+                app, env = q.get("app", ""), q.get("env", "")
+                if not (NAME.match(app) and NAME.match(env)):
+                    return self.send(400, {"error": "bad app/env"})
+                return self.send(200, resource_policy(s, app, env))
             if u.path == "/api/reveal":
                 app, env, comp, key = q.get("app", ""), q.get("env", ""), q.get("comp", ""), q.get("key", "")
                 if not (NAME.match(app) and NAME.match(env) and comp in ("app", "web", "api") and KEY.match(key)):
@@ -706,6 +824,53 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "values can't contain newlines"})
                 set_secret(s, app, scope, key, value, actor=self.user())
                 self.audit(s, "variable", f"{app} scope={scope} key={key} {'deleted' if value is None else 'set'}")
+                return self.send(200, {"ok": True})
+
+            if u == "/api/resources":
+                env, comp, scope = body.get("env", ""), body.get("component", ""), body.get("scope", "")
+                if not NAME.match(env):
+                    return self.send(400, {"error": "bad env"})
+                policy = resource_policy(s, app, env)
+                if comp not in [item["component"] for item in policy["components"]]:
+                    return self.send(400, {"error": "component is not part of this deployment"})
+                if scope not in policy["scopes"]:
+                    return self.send(400, {"error": "scope must be this environment, preview, or common"})
+
+                reset = body.get("reset") is True
+                if reset:
+                    values = {"mem_limit": "", "cpus": ""}
+                    mem_limit = cpus = None
+                else:
+                    mem_limit, cpus = body.get("mem_limit"), body.get("cpus")
+                    if not isinstance(mem_limit, str) or not isinstance(cpus, str):
+                        return self.send(400, {"error": "memory and CPU limits are required"})
+                    try:
+                        max_mem = resource_memory_bytes(policy["defaults"]["max_container_mem_limit"])
+                        if resource_memory_bytes(mem_limit) > max_mem:
+                            raise ValueError("memory limit exceeds the per-container ceiling")
+                        max_cpu = resource_cpu(policy["defaults"]["max_container_cpus"])
+                        if resource_cpu(cpus) > max_cpu:
+                            raise ValueError("CPU limit exceeds the per-container ceiling")
+                    except ValueError as exc:
+                        return self.send(400, {"error": str(exc)})
+                    values = {"mem_limit": mem_limit, "cpus": cpus}
+
+                candidate = {"comp": comp, "scope": scope, "values": values}
+                revised = resource_policy(s, app, env, candidate)
+                try:
+                    max_stack_mem = resource_memory_bytes(policy["defaults"]["max_stack_mem_limit"])
+                    max_stack_cpu = resource_cpu(policy["defaults"]["max_stack_cpus"])
+                    total_mem = sum(resource_memory_bytes(item["effective"]["mem_limit"])
+                                    for item in revised["components"])
+                    total_cpu = sum((resource_cpu(item["effective"]["cpus"])
+                                     for item in revised["components"]), Decimal(0))
+                except ValueError as exc:
+                    return self.send(400, {"error": str(exc)})
+                if total_mem > max_stack_mem or total_cpu > max_stack_cpu:
+                    return self.send(400, {"error": "combined component limits exceed this stack's configured ceiling"})
+                save_resource_override(s, app, scope, comp, mem_limit, cpus)
+                self.audit(s, "resource-policy", f"{app}/{env} scope={scope} component={comp} "
+                                                   f"{'reset' if reset else f'mem={mem_limit} cpus={cpus}'}")
                 return self.send(200, {"ok": True})
 
             if u == "/api/action":

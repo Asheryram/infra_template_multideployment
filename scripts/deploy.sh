@@ -121,6 +121,8 @@ base=$APP
 if [[ $ENV_NAME != prod ]]; then base="$APP-$ENV_NAME"; fi
 
 declare -A HOST IMAGE PORT MEM CPUS MW
+stack_mem_kib=0
+stack_cpus=0
 for comp in "${COMPONENTS[@]}"; do
   C=${comp^^}
 
@@ -135,10 +137,14 @@ for comp in "${COMPONENTS[@]}"; do
   fi
   IMAGE[$comp]=${image//\{tag\}/$TAG}
 
-  v="${C}_PORT";      PORT[$comp]=${!v:-$(default_port "$comp")}
-  v="${C}_MEM_LIMIT"; MEM[$comp]=${!v:-512m}
-  v="${C}_CPUS";      CPUS[$comp]=${!v:-1.0}
-  if [[ $PREVIEW == true && -n ${PREVIEW_MEM_LIMIT:-} ]]; then MEM[$comp]=$PREVIEW_MEM_LIMIT; fi
+  v="${C}_PORT"; PORT[$comp]=${!v:-$(default_port "$comp")}
+  resource_resolve "$APP" "$ENV_NAME" "$comp"
+  MEM[$comp]=$RESOURCE_MEM
+  CPUS[$comp]=$RESOURCE_CPUS
+  resource_validate_value "${MEM[$comp]}" "${CPUS[$comp]}"
+  component_mem_kib=$(resource_mem_kib "${MEM[$comp]}")
+  stack_mem_kib=$((stack_mem_kib + component_mem_kib))
+  stack_cpus=$(awk -v total="$stack_cpus" -v next="${CPUS[$comp]}" 'BEGIN { printf "%.3f", total + next }')
 
   mw="secure-headers@file,compress@file"
   if [[ $PREVIEW == true ]]; then
@@ -151,6 +157,7 @@ for comp in "${COMPONENTS[@]}"; do
   if [[ -n ${EXTRA_MIDDLEWARES:-} ]]; then mw+=",$EXTRA_MIDDLEWARES"; fi
   MW[$comp]=$mw
 done
+resource_validate_stack "$stack_mem_kib" "$stack_cpus"
 
 # Hostname ownership (multi-tenant): an app may only use hosts in its own namespace on the platform
 # domain, and never a host another environment already serves — no traffic hijacking.

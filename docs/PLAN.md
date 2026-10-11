@@ -60,7 +60,7 @@ Each deployment environment has its own `<stack>_net`. Traefik joins networks fo
 
 - [ ] Console Environments: filter/search by project and a per-project summary (env count, previews, RAM in use via `docker stats --no-stream` filtered by label).
 - [x] Per-project preview cap: `MAX_PREVIEWS_PER_APP` in `.deploy/manifest.env`, in addition to the global inventory cap.
-- [ ] Per-project resource ceiling: sum of `mem_limit` across a project's envs. Refuse a deploy over the budget.
+- [ ] Per-project aggregate resource budget across environments. Per-container and per-deployment-stack ceilings are enforced; this broader budget is still needed to prevent many individually capped environments from exceeding a project's allocation.
 - [ ] `infra project report`: which projects, owners, envs, last deploy, disk/RAM. Print in the CLI and show in the console.
 - [ ] Optional: per-project console access (team leads see only their project). That needs real users instead of a single ops basic-auth, e.g. Traefik forward-auth + GitHub OAuth.
 

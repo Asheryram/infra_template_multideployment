@@ -8,8 +8,8 @@ services:
     env_file: [runtime/app.env]
     extra_hosts: ["host.docker.internal:host-gateway"]   # reach DBs/services published on the server itself
     networks: [default]          # this environment's private network only (see ensure_stack_network)
-    mem_limit: ${APP_MEM_LIMIT:-512m}
-    cpus: ${APP_CPUS:-1.0}
+    mem_limit: ${APP_MEM_LIMIT:?infra resource policy missing}
+    cpus: ${APP_CPUS:?infra resource policy missing}
     pids_limit: 512
     security_opt: ["no-new-privileges:true"]
     logging:

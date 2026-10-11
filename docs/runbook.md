@@ -94,7 +94,7 @@ infra list
 infra cleanup --dry-run && infra cleanup
 docker system df
 ```
-Lower `MAX_PREVIEWS` / `PREVIEW_TTL_DAYS`, or set `PREVIEW_MEM_LIMIT` in noisy manifests.
+Lower `MAX_PREVIEWS` / `PREVIEW_TTL_DAYS`, adjust the infra-owned `RESOURCE_PREVIEW_*` inventory defaults, or set a scoped override under **Manage → Container Resources** in the console. Per-container and per-stack ceilings are enforced on every deploy.
 
 ## Restore a database
 ```bash

@@ -34,15 +34,17 @@ The starter at [.deploy/manifest.env](.deploy/manifest.env) documents every acce
 | `APP_NAME`, `TYPE`, `IMAGE_REPO` | App identity, one of `monolith`, `frontend`, `backend`, `split`, and image name/prefix |
 | `<APP\|WEB\|API>_CONTEXT`, `<APP\|WEB\|API>_DOCKERFILE` | CI build context and optional Dockerfile path, relative to the repository |
 | `<APP\|WEB\|API>_IMAGE` | Optional fixed image override; `{tag}` is replaced by the deployment tag |
-| `<APP\|WEB\|API>_PORT`, `_MEM_LIMIT`, `_CPUS` | Container listen port and resource limits |
+| `<APP\|WEB\|API>_PORT` | Container listen port |
 | `<APP\|WEB\|API>_HOST_<CLASS>` | Optional host override for a component and environment class, such as `WEB_HOST_PROD` |
 | `<APP\|WEB\|API>_REQUIRED_ENV` | Space-separated required runtime variable names; deploy blocks if any are missing |
 | `MIGRATE_CMD`, `MIGRATE_SERVICE` | Optional migration command and service for the one-off migration container |
-| `PREVIEW_MEM_LIMIT`, `MAX_PREVIEWS_PER_APP` | Optional preview resource limit and per-app preview cap |
+| `MAX_PREVIEWS_PER_APP` | Optional per-app preview cap |
 | `PREVIEW_AUTH`, `API_PREVIEW_AUTH` | Optional preview authentication switches (`true`/`false`) |
 | `EXTRA_MIDDLEWARES` | Comma-separated names of platform-configured Traefik middlewares |
 
 Unknown manifest keys are errors, not ignored warnings. Put application settings such as `DATABASE_URL`, `API_URL`, or `FRONTEND_URL` in `.deploy/env/` or server-side variables, not in `manifest.env`.
+
+CPU and memory limits are infra-owned and are deliberately not accepted in app manifests. The server operator sets inventory defaults and hard per-container/per-stack ceilings; per-app, environment, or preview overrides are managed in the Infra Console under **Manage → Container Resources**. Changes apply on redeploy.
 
 ## 3. Requirements for your container
 

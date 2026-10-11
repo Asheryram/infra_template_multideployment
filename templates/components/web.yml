@@ -7,8 +7,8 @@ services:
     init: true
     env_file: [runtime/web.env]
     networks: [default]          # this environment's private network only (see ensure_stack_network)
-    mem_limit: ${WEB_MEM_LIMIT:-256m}
-    cpus: ${WEB_CPUS:-0.5}
+    mem_limit: ${WEB_MEM_LIMIT:?infra resource policy missing}
+    cpus: ${WEB_CPUS:?infra resource policy missing}
     pids_limit: 256
     security_opt: ["no-new-privileges:true"]
     logging:
