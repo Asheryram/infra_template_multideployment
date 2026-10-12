@@ -4,250 +4,289 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Infra Console</title>
+<meta name="color-scheme" content="light dark">
 <style>
 :root {
-  --bg: #f0f2f5;
-  --sidebar: #0f1623;
-  --sidebar-hover: #1a2235;
-  --sidebar-active: #1e3a5f;
+  color-scheme: light;
+  --bg: #f5f4f1;
   --panel: #ffffff;
-  --text: #111827;
-  --muted: #6b7280;
-  --line: #e5e7eb;
-  --accent: #2563eb;
-  --accent-soft: #eff6ff;
-  --ok: #16a34a;
-  --warn: #d97706;
-  --bad: #dc2626;
-  --prod: #991b1b;
-  --staging: #92400e;
-  --develop: #1d4ed8;
-  --preview: #6d28d9;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --radius: 8px;
-  --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
-  --shadow-md: 0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -1px rgba(0,0,0,.06);
+  --panel-2: #faf9f7;
+  --text: #17181c;
+  --muted: #6c7078;
+  --faint: #9a9da4;
+  --line: #e8e5df;
+  --line-strong: #d6d2ca;
+  --ink: #17181c;          /* primary action */
+  --on-ink: #ffffff;
+  --accent: #2f5bea;       /* links, focus */
+  --accent-soft: #eef2ff;
+  --ok: #1d9a55;   --ok-soft: #e6f6ec;
+  --warn: #b97709; --warn-soft: #fdf3dc;
+  --bad: #d13b3b;  --bad-soft: #fdeaea;
+  --prod: #b4232a;    --prod-soft: #fbe9ea;
+  --staging: #a15c07; --staging-soft: #fdf0dc;
+  --develop: #1f5fd1; --develop-soft: #e8f0fd;
+  --preview: #6a46c9; --preview-soft: #f0eafc;
+  --sidebar: #ffffff;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(23,24,28,.04);
+  --shadow-lg: 0 24px 60px -12px rgba(23,24,28,.28);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0a0d14; --panel: #111827; --text: #f3f4f6; --muted: #9ca3af;
-    --line: #1f2937; --accent: #3b82f6; --accent-soft: #1e3a5f;
-    --sidebar: #080b12; --sidebar-hover: #111827; --sidebar-active: #1e3a5f;
+    color-scheme: dark;
+    --bg: #0d0e11; --panel: #15171b; --panel-2: #1a1c21; --text: #ecebe8; --muted: #9a9ea6; --faint: #6c7078;
+    --line: #25272d; --line-strong: #34373e; --ink: #f1f0ed; --on-ink: #111214;
+    --accent: #7c9bff; --accent-soft: #1b2340;
+    --ok: #3fcf84; --ok-soft: #102a1c; --warn: #f0b34a; --warn-soft: #2c2210; --bad: #ff6b6b; --bad-soft: #301616;
+    --prod: #ff7b80; --prod-soft: #331618; --staging: #f0b34a; --staging-soft: #2c2210;
+    --develop: #7fb0ff; --develop-soft: #14233d; --preview: #b79bff; --preview-soft: #241c3d;
+    --sidebar: #111316; --shadow: none; --shadow-lg: 0 24px 60px -12px rgba(0,0,0,.7);
   }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; min-height: 100vh; }
+html { -webkit-text-size-adjust: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex; min-height: 100vh; font-feature-settings: "tnum", "cv11"; -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
-/* ── Sidebar ── */
-#sidebar {
-  width: 220px; min-height: 100vh; background: var(--sidebar); color: #e2e8f0;
-  display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; z-index: 20;
-}
-#sidebar .brand {
-  display: flex; align-items: center; gap: 10px; padding: 20px 18px 16px;
-  border-bottom: 1px solid rgba(255,255,255,.07);
-}
-#sidebar .brand svg { flex-shrink: 0; }
-#sidebar .brand-name { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: -.01em; }
-#sidebar .brand-sub { font-size: 11px; color: #64748b; margin-top: 1px; }
-#sidebar nav { flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; }
-#sidebar nav button {
-  width: 100%; text-align: left; border: 0; background: none; color: #94a3b8;
-  padding: 9px 12px; border-radius: 6px; font: inherit; font-size: 13.5px; cursor: pointer;
-  display: flex; align-items: center; gap: 10px; transition: background .15s, color .15s;
-}
-#sidebar nav button:hover { background: var(--sidebar-hover); color: #e2e8f0; }
-#sidebar nav button.on { background: var(--sidebar-active); color: #fff; font-weight: 600; }
-#sidebar nav button svg { opacity: .7; flex-shrink: 0; }
-#sidebar nav button.on svg { opacity: 1; }
-#sidebar .sidebar-footer {
-  padding: 14px 18px; border-top: 1px solid rgba(255,255,255,.07);
-  font-size: 12px; color: #475569;
-}
-#sidebar .sidebar-footer a { color: #64748b; text-decoration: none; }
-#sidebar .sidebar-footer a:hover { color: #94a3b8; }
+/* ── Shell ── */
+#sidebar { width: 236px; background: var(--sidebar); border-right: 1px solid var(--line); display: flex; flex-direction: column;
+  position: fixed; inset: 0 auto 0 0; z-index: 20; }
+#sidebar .brand { display: flex; align-items: center; gap: 11px; padding: 18px 18px 14px; }
+#sidebar .brand svg { flex-shrink: 0; border-radius: 8px; }
+#sidebar .brand-name { font-size: 14.5px; font-weight: 650; letter-spacing: -.015em; }
+#sidebar .brand-sub { font-size: 11.5px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
+#sidebar nav { flex: 1; padding: 6px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+#sidebar nav button { width: 100%; text-align: left; border: 0; background: none; color: var(--muted); padding: 8px 10px;
+  border-radius: var(--radius-sm); font: inherit; font-size: 13.5px; cursor: pointer; display: flex; align-items: center; gap: 10px;
+  transition: background .12s, color .12s; }
+#sidebar nav button:hover { background: var(--panel-2); color: var(--text); }
+#sidebar nav button.on { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--ink); }
+#sidebar nav button svg { flex-shrink: 0; opacity: .8; }
+#sidebar .sidebar-footer { padding: 14px 18px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+#sidebar .sidebar-footer a { color: var(--muted); }
+#sidebar .sidebar-footer a:hover { color: var(--text); text-decoration: none; }
+#sidebarUser { margin-bottom: 8px; font-weight: 550; color: var(--text); }
+#sidebarLinks { display: flex; flex-direction: column; gap: 4px; }
 
-/* ── Main ── */
-#main { margin-left: 220px; flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
-#topbar {
-  background: var(--panel); border-bottom: 1px solid var(--line);
-  padding: 0 24px; height: 56px; display: flex; align-items: center; gap: 16px;
-  position: sticky; top: 0; z-index: 10; box-shadow: var(--shadow);
-}
-#topbar h1 { font-size: 15px; font-weight: 600; }
-#topbar .meta { color: var(--muted); font-size: 13px; margin-left: 4px; }
-#topbar .links { margin-left: auto; display: flex; gap: 8px; }
-#topbar .links a {
-  font-size: 12.5px; color: var(--muted); text-decoration: none; padding: 5px 10px;
-  border: 1px solid var(--line); border-radius: 6px; display: flex; align-items: center; gap: 5px;
-  transition: border-color .15s, color .15s;
-}
-#topbar .links a:hover { border-color: var(--accent); color: var(--accent); }
-#content { padding: 24px; max-width: 1280px; width: 100%; }
+#main { margin-left: 236px; flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+#topbar { background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); padding: 0 28px; height: 60px;
+  display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--line); }
+#menuBtn { display: none; }
+#topbar h1 { font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
+#topbar .meta { color: var(--muted); font-size: 12.5px; font-family: var(--mono); padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
+#topbar .links { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+#topbar .links a { font-size: 12.5px; color: var(--muted); padding: 5px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  display: flex; align-items: center; gap: 6px; background: var(--panel); transition: border-color .12s, color .12s; }
+#topbar .links a:hover { border-color: var(--line-strong); color: var(--text); text-decoration: none; }
+#content { padding: 26px 28px 60px; max-width: 1360px; width: 100%; }
 
-/* ── Stats row ── */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 22px; }
-.stat-card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 16px 18px; box-shadow: var(--shadow);
-}
-.stat-card .stat-label { font-size: 12px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
-.stat-card .stat-value { font-size: 26px; font-weight: 700; margin-top: 4px; line-height: 1; }
-.stat-card .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
-
-/* ── Cards ── */
+/* ── Cards / tables (used by the other tabs) ── */
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 16px; overflow: hidden; box-shadow: var(--shadow); }
-.card-header {
-  display: flex; align-items: center; gap: 10px; padding: 14px 18px;
-  border-bottom: 1px solid var(--line); background: var(--panel);
-}
-.card-header h2 { font-size: 14px; font-weight: 600; }
-.card-header .card-meta { color: var(--muted); font-size: 13px; margin-left: auto; }
-
-/* ── Table ── */
+.card-header { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.card-header h2 { font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
+.card-header .card-meta { color: var(--muted); font-size: 12.5px; margin-left: auto; }
 .scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
-th { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 10px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
+th { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 10px 16px;
+  border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; background: var(--panel-2); }
 td { padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13.5px; }
 tr:last-child td { border-bottom: 0; }
-tr:hover td { background: rgba(0,0,0,.015); }
-@media (prefers-color-scheme: dark) { tr:hover td { background: rgba(255,255,255,.02); } }
+tbody tr:hover td, table tr:hover td { background: var(--panel-2); }
+.empty { padding: 40px 24px; color: var(--muted); text-align: center; font-size: 13.5px; }
 
-/* ── Badges ── */
-.badge {
-  display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px;
-  font-size: 11.5px; font-weight: 600; letter-spacing: .01em;
-}
-.env-prod    { background: #fee2e2; color: var(--prod); }
-.env-staging { background: #fef3c7; color: var(--staging); }
-.env-develop { background: #dbeafe; color: var(--develop); }
-.env-preview { background: #ede9fe; color: var(--preview); }
-@media (prefers-color-scheme: dark) {
-  .env-prod { background: #3b0a0a; } .env-staging { background: #3b2000; }
-  .env-develop { background: #0f2040; } .env-preview { background: #2d1b5e; }
-}
-.badge-type { background: var(--accent-soft); color: var(--accent); }
+/* ── Pills, dots, chips ── */
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+.env-prod    { background: var(--prod-soft); color: var(--prod); border-color: transparent; }
+.env-staging { background: var(--staging-soft); color: var(--staging); border-color: transparent; }
+.env-develop { background: var(--develop-soft); color: var(--develop); border-color: transparent; }
+.env-preview { background: var(--preview-soft); color: var(--preview); border-color: transparent; }
+.badge-type { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; position: relative; }
+.up { background: var(--ok); } .down { background: var(--bad); } .blocked { background: var(--warn); }
+.up::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; background: var(--ok); opacity: .22; }
+.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 600;
+  background: var(--warn-soft); color: var(--warn); margin-left: 6px; white-space: nowrap; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.info { background: var(--accent-soft); color: var(--accent); }
+.chip.quiet { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
 
-/* ── Status dot ── */
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
-.up { background: var(--ok); box-shadow: 0 0 0 2px rgba(22,163,74,.2); }
-.down { background: var(--bad); box-shadow: 0 0 0 2px rgba(220,38,38,.2); }
-.blocked { background: var(--warn); box-shadow: 0 0 0 2px rgba(217,119,6,.2); }
+/* ── Buttons, inputs ── */
+button.btn { border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); padding: 6px 13px; border-radius: var(--radius-sm);
+  font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; transition: background .12s, border-color .12s; white-space: nowrap; }
+button.btn:hover { background: var(--panel-2); border-color: var(--faint); }
+button.primary { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+button.primary:hover { background: var(--ink); opacity: .86; border-color: var(--ink); }
+button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+button.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
+button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+button.ghost:hover { background: var(--panel-2); color: var(--text); border-color: transparent; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input, select { font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--panel); color: var(--text); transition: border-color .12s, box-shadow .12s; }
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+input::placeholder { color: var(--faint); }
 
-/* ── Chips ── */
-.chip { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--warn); color: var(--warn); margin-left: 5px; font-weight: 500; }
-
-/* ── Buttons ── */
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-button.btn {
-  border: 1px solid var(--line); background: var(--panel); color: var(--text);
-  padding: 6px 13px; border-radius: 6px; font: inherit; font-size: 13px; cursor: pointer;
-  transition: border-color .15s, background .15s; white-space: nowrap;
-}
-button.btn:hover { border-color: var(--accent); color: var(--accent); }
-button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-button.primary:hover { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
-button.danger { color: var(--bad); border-color: var(--bad); }
-button.danger:hover { background: #fee2e2; }
-button:disabled { opacity: .45; cursor: wait; }
-input, select {
-  font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--line);
-  border-radius: 6px; background: var(--panel); color: var(--text);
-  transition: border-color .15s;
-}
-input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
-
-/* ── Misc ── */
 .mono { font-family: var(--mono); font-size: 12.5px; }
 .muted { color: var(--muted); }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
 .resource-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin: 10px 0; }
-.resource-card { border: 1px solid var(--line); border-radius: 7px; padding: 12px; }
+.resource-card { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; background: var(--panel-2); }
 .resource-card h4 { font-size: 13px; text-transform: capitalize; margin-bottom: 8px; }
 .resource-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .resource-fields label { display: grid; gap: 4px; color: var(--muted); font-size: 11.5px; }
 .resource-fields input { width: 100%; font-family: var(--mono); }
 .resource-effective { color: var(--muted); font-size: 11.5px; margin-top: 8px; }
-.empty { padding: 32px; color: var(--muted); text-align: center; font-size: 13.5px; }
-pre {
-  background: #0d1117; color: #c9d1d9; padding: 14px 16px; border-radius: var(--radius);
-  overflow: auto; max-height: 440px; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
-}
-.banner {
-  background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
-  padding: 11px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.5;
-}
-@media (prefers-color-scheme: dark) { .banner { background: #2a1f00; border-color: #78350f; color: #fbbf24; } }
+pre { background: #0c0d10; color: #d6d9de; padding: 14px 16px; border-radius: var(--radius-sm); overflow: auto; max-height: 440px;
+  font: 12.5px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); }
+.banner { background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); color: var(--text);
+  padding: 11px 14px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.55; }
+.banner b { color: var(--warn); }
+
+/* ── Environments view ── */
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.toolbar .search { position: relative; flex: 1 1 240px; max-width: 360px; }
+.toolbar .search input { width: 100%; padding-left: 32px; }
+.toolbar .search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 2px; gap: 2px; }
+.seg button { border: 0; background: none; font: inherit; font-size: 12.5px; padding: 4px 11px; border-radius: 4px; color: var(--muted); cursor: pointer; font-weight: 500; }
+.seg button:hover { color: var(--text); }
+.seg button.on { background: var(--ink); color: var(--on-ink); }
+.toolbar .summary { margin-left: auto; color: var(--muted); font-size: 12.5px; display: flex; gap: 14px; flex-wrap: wrap; }
+.toolbar .summary b { color: var(--text); font-weight: 650; }
+
+.attention { border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--panel); border-radius: var(--radius);
+  margin-bottom: 18px; overflow: hidden; }
+.attention-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: var(--warn-soft); font-size: 12.5px; font-weight: 650; }
+.attention-item { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; text-align: left;
+  padding: 10px 16px; border: 0; border-top: 1px solid var(--line); background: none; color: inherit; font: inherit; cursor: pointer; }
+.attention-item:hover { background: var(--panel-2); }
+.attention-item .why { color: var(--muted); font-size: 12.5px; }
+.attention-item .go { color: var(--muted); font-size: 12px; }
+
+.app { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 18px; overflow: hidden; box-shadow: var(--shadow); }
+.app-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.app-head h2 { font-size: 15px; font-weight: 650; letter-spacing: -.015em; }
+.app-head .svc { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.svc-tag { font: 11.5px var(--mono); padding: 1px 8px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+.app-head .health { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+.app-head .count { color: var(--muted); font-size: 12.5px; margin-left: 8px; }
+
+.env-grid { display: grid; grid-template-columns: 16px 118px minmax(220px, 1.6fr) minmax(150px, 1fr) 124px 100px 84px; align-items: center; column-gap: 16px; }
+.env-cols { padding: 8px 18px; background: var(--panel-2); border-bottom: 1px solid var(--line); font-size: 10.5px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.env-row { padding: 12px 18px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background .1s; }
+.env-row:last-child { border-bottom: 0; }
+.env-row:hover { background: var(--panel-2); }
+.env-row:focus-visible { outline-offset: -2px; }
+.cell-env { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.cell-urls { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.url-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13px; }
+.url-line .svc-name { font: 11px var(--mono); color: var(--faint); min-width: 38px; }
+.url-line a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); border-bottom: 1px dotted var(--line-strong); }
+.url-line a:hover { color: var(--accent); text-decoration: none; border-bottom-color: var(--accent); }
+.cell-ref { min-width: 0; line-height: 1.35; }
+.cell-ref .branch { font: 12.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.cell-ref .tag { font: 11.5px var(--mono); color: var(--faint); }
+.cell-when { font-size: 12.5px; line-height: 1.35; }
+.cell-when .by { color: var(--faint); font-size: 11.5px; display: block; }
+.cell-act { display: flex; justify-content: flex-end; }
+.cell-act .btn { padding: 5px 11px; }
+.dbstate { font-size: 12.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.state-label { display: none; }
 
 /* ── Drawer ── */
-.drawer {
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(680px, 100vw);
-  background: var(--panel); border-left: 1px solid var(--line);
-  box-shadow: -8px 0 32px rgba(0,0,0,.12); z-index: 30;
-  overflow-y: auto; transform: translateX(100%); transition: transform .22s cubic-bezier(.4,0,.2,1);
-}
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); background: var(--bg); border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-lg); z-index: 30; overflow-y: auto; transform: translateX(100%); transition: transform .22s cubic-bezier(.4,0,.2,1); }
 .drawer.open { transform: none; }
-.drawer-header {
-  display: flex; align-items: center; gap: 12px; padding: 16px 20px;
-  border-bottom: 1px solid var(--line); position: sticky; top: 0;
-  background: var(--panel); z-index: 1;
-}
-.drawer-header h2 { font-size: 15px; font-weight: 600; }
+.drawer-header { display: flex; align-items: center; gap: 10px; padding: 16px 22px; border-bottom: 1px solid var(--line); position: sticky; top: 0;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px); z-index: 2; flex-wrap: wrap; }
+.drawer-header h2 { font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
 .drawer-header .close-btn { margin-left: auto; }
-.drawer section { padding: 18px 20px; border-bottom: 1px solid var(--line); }
-.drawer h3 { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 10px; }
+.drawer section { margin: 14px 18px; padding: 16px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.drawer section.flat { background: none; border: 0; padding: 0; }
+.drawer h3 { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px; }
 .kv td:first-child { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; color: var(--muted); width: 1%; padding-right: 20px; }
+.kv td { border: 0; padding: 4px 0; }
+.kv tr:hover td { background: none; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+.fact .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.fact .v { font: 13px var(--mono); margin-top: 2px; overflow-wrap: anywhere; }
+.svc-links { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.svc-links .url-line { font-size: 14px; }
+.actions-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* databases */
+.db { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; background: var(--panel-2); margin-bottom: 10px; }
+.db:last-child { margin-bottom: 0; }
+.db-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.db-top .var { font: 600 13px var(--mono); }
+.db-top .spacer { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.db-name { font: 12px var(--mono); color: var(--muted); margin-top: 6px; overflow-wrap: anywhere; }
+.db-url { display: flex; align-items: center; gap: 8px; margin-top: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 6px 6px 10px; }
+.db-url code { flex: 1; font: 12px var(--mono); overflow-wrap: anywhere; min-width: 0; }
+.db-url.revealed { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); background: var(--warn-soft); }
+.db-note { font-size: 12.5px; color: var(--muted); margin-top: 12px; }
+
+/* variables */
 .env-vars-help { color: var(--muted); font-size: 12.5px; margin-bottom: 12px; }
-.env-vars-list { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.env-vars-head, .env-var-row {
-  display: grid; grid-template-columns: minmax(105px, .8fr) minmax(145px, 1.5fr) minmax(130px, 1fr) auto;
-  align-items: center; gap: 12px; padding: 10px 12px;
-}
-.env-vars-head { background: var(--bg); color: var(--muted); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.env-vars-list { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.env-vars-head, .env-var-row { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(145px, 1.5fr) minmax(130px, 1fr) auto; align-items: center; gap: 12px; padding: 10px 12px; }
+.env-vars-head { background: var(--panel-2); color: var(--muted); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
 .env-var-row { border-top: 1px solid var(--line); min-width: 0; }
 .env-var-row.pending { background: var(--accent-soft); }
-.env-var-key { min-width: 0; font: 12px/1.45 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.env-var-key { min-width: 0; font: 12px/1.45 var(--mono); overflow-wrap: anywhere; }
 .env-var-value { display: flex; align-items: center; gap: 6px; min-width: 0; font: 12px/1.45 var(--mono); overflow-wrap: anywhere; }
 .env-var-value [data-val] { min-width: 0; overflow-wrap: anywhere; }
 .env-var-source { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
-.source-badge, .pending-badge, .managed-badge {
-  display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px;
-  background: var(--bg); border: 1px solid var(--line); color: var(--muted);
-  font-size: 10.5px; font-weight: 600; line-height: 1.4; white-space: nowrap;
-}
-.source-badge.repo { color: var(--develop); border-color: var(--develop); }
-.source-badge.console { color: var(--preview); border-color: var(--preview); }
-.source-badge.platform, .managed-badge { color: var(--muted); }
-.pending-badge { color: var(--warn); border-color: var(--warn); background: transparent; }
+.source-badge, .pending-badge, .managed-badge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; background: var(--panel-2);
+  border: 1px solid var(--line); color: var(--muted); font-size: 10.5px; font-weight: 600; line-height: 1.4; white-space: nowrap; }
+.source-badge.repo { color: var(--develop); background: var(--develop-soft); border-color: transparent; }
+.source-badge.console { color: var(--preview); background: var(--preview-soft); border-color: transparent; }
+.pending-badge { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
 .env-var-scope { width: 100%; color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
 .env-var-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .env-var-actions .btn { font-size: 11.5px; }
-.env-var-form { padding: 12px; margin-top: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+.env-var-form { padding: 12px; margin-top: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .env-var-form-title { font-size: 12px; font-weight: 650; margin-bottom: 8px; }
 .env-var-form .row { margin: 6px 0 0; }
 .env-var-form input { min-width: 0; }
-@media (max-width: 700px) {
+
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--on-ink); padding: 10px 18px;
+  border-radius: 999px; z-index: 50; display: none; max-width: 90vw; font-size: 13px; font-weight: 500; box-shadow: var(--shadow-lg); }
+#overlay { display: none; position: fixed; inset: 0; background: rgba(12,13,16,.42); z-index: 25; backdrop-filter: blur(1.5px); }
+#overlay.on { display: block; }
+
+/* ── Responsive ── */
+@media (max-width: 1100px) {
+  .env-grid { grid-template-columns: 16px 104px minmax(180px, 1.4fr) minmax(120px, 1fr) 100px 84px; }
+  .env-grid .c-db { display: none; }
+}
+@media (max-width: 860px) {
+  #sidebar { transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow-lg); }
+  body.menu-open #sidebar { transform: none; }
+  #main { margin-left: 0; }
+  #menuBtn { display: inline-flex; }
+  #topbar { padding: 0 16px; } #content { padding: 18px 16px 48px; }
+  #topbar .links, #topbar .meta { display: none; }
+  .env-cols { display: none; }
+  .env-grid { grid-template-columns: 16px 1fr auto; row-gap: 6px; }
+  .env-row .c-env { grid-column: 2; } .env-row .cell-act { grid-column: 3; grid-row: 1; }
+  .env-row .cell-urls, .env-row .cell-ref, .env-row .cell-when, .env-row .c-db { grid-column: 2 / 4; display: block; }
+  .state-label { display: inline; color: var(--faint); font-size: 11px; margin-right: 6px; text-transform: uppercase; letter-spacing: .05em; }
   .env-vars-head { display: none; }
   .env-var-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; padding: 12px; }
-  .env-var-key { grid-column: 1; }
-  .env-var-value { grid-column: 2; }
-  .env-var-source { grid-column: 1; }
-  .env-var-actions { grid-column: 2; }
   .env-var-form .row > * { flex: 1 1 100%; width: 100% !important; }
+  .toolbar .summary { margin-left: 0; }
 }
-
-/* ── Toast ── */
-.toast {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: #1f2937; color: #f9fafb; padding: 11px 20px; border-radius: 8px;
-  z-index: 50; display: none; max-width: 90vw; font-size: 13.5px;
-  box-shadow: var(--shadow-md);
-}
-
-/* ── Overlay ── */
-#overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 25; }
-#overlay.on { display: block; }
 </style>
 </head>
 <body>
@@ -255,8 +294,8 @@ pre {
 <div id="sidebar">
   <div class="brand">
     <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-      <rect width="28" height="28" rx="7" fill="#2563eb"/>
-      <path d="M7 14h14M14 7v14M9 9l10 10M19 9L9 19" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+      <rect width="28" height="28" rx="8" fill="#17181c"/>
+      <path d="M8 19l4-5-4-5M15 19h6" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
     <div>
       <div class="brand-name">Infra Console</div>
@@ -293,6 +332,7 @@ pre {
 
 <div id="main">
   <div id="topbar">
+    <button class="btn ghost" id="menuBtn" aria-label="Menu"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
     <h1 id="topTitle">Environments</h1>
     <span class="meta" id="topMeta"></span>
     <div class="links" id="topLinks"></div>
@@ -357,7 +397,7 @@ async function load() {
   const s = STATE.settings;
   const base = d => `https://${d}.${s.domain}${s.suffix}`;
   $('#sidebarDomain').textContent = s.domain || s.server;
-  $('#sidebarUser').textContent = '👤 ' + (STATE.user || 'unknown');
+  $('#sidebarUser').textContent = STATE.user || 'unknown';
   const platformAdmin = STATE.access?.platform_admin;
   const orgAdmin = STATE.access?.organizations?.some(org => org.role === 'org_admin');
   const canManageVars = platformAdmin || Object.values(STATE.access?.project_roles || {}).includes('maintainer');
@@ -370,7 +410,8 @@ async function load() {
     ? [['Traefik', base('traefik')], ['Logs', base('logs')], ['Status', base('status')]]
     : [['Status', base('status')]];
   $('#sidebarLinks').innerHTML = links
-    .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener">${n} ↗</a>`).join('');
+    .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener">${n} ↗</a>`).join('')
+    + (STATE.access?.auth_mode === 'keycloak' ? '<a href="/oauth2/sign_out?rd=%2Fsigned-out" style="margin-top:6px">Sign out</a>' : '');
   $('#topMeta').textContent = s.server;
   $('#topLinks').innerHTML = (platformAdmin
     ? [['Traefik', base('traefik')], ['Container logs', base('logs')], ['Uptime', base('status')]]
@@ -385,13 +426,49 @@ async function load() {
 }
 
 // ── Environments tab ──────────────────────────────────────────────────────────
-function renderEnvs() {
-  const apps = byApp(), names = Object.keys(apps).sort();
-  const total = STATE.deployments.length;
-  const up = STATE.deployments.filter(d => d.STATE === 'up').length;
-  const previews = STATE.deployments.filter(d => d.ENV_NAME.startsWith('pr-')).length;
-  const blocked = STATE.deployments.filter(d => d.STATE === 'blocked').length;
+let FILTER = { q: '', cls: 'all', attention: false };
+try { Object.assign(FILTER, JSON.parse(localStorage.getItem('infra.envFilter') || '{}'), { q: '' }); } catch (_) {}
+const saveFilter = () => { try { localStorage.setItem('infra.envFilter', JSON.stringify({ cls: FILTER.cls, attention: FILTER.attention })); } catch (_) {} };
 
+function serviceUrls(d) {            // [{svc, url}] — one per service when the deploy recorded them
+  const out = [];
+  for (const part of String(d.URLS || '').split(/\s+/).filter(Boolean)) {
+    const i = part.indexOf('=');
+    if (i > 0) out.push({ svc: part.slice(0, i), url: part.slice(i + 1) });
+  }
+  if (!out.length && d.URL) out.push({ svc: (d.SERVICES || [])[0] || '', url: d.URL });
+  return out;
+}
+const urlHost = u => u.replace(/^https?:\/\//, '');
+function urlLines(d) {
+  const urls = serviceUrls(d);
+  if (!urls.length) return '<span class="muted">—</span>';
+  return urls.map(u => `<div class="url-line">${urls.length > 1 || (d.SERVICES || []).length > 1 ? `<span class="svc-name">${esc(u.svc)}</span>` : ''}<a href="${esc(u.url)}" target="_blank" rel="noopener" title="${esc(u.url)}" onclick="event.stopPropagation()">${esc(urlHost(u.url))}</a></div>`).join('');
+}
+function attentionOf(d) {             // → [{level, why}] in priority order
+  const out = [];
+  if (d.STATE === 'blocked') out.push({ level: 'bad', why: `deploy blocked — missing ${d.MISSING.join(', ')}` });
+  else if (d.MISSING?.length) out.push({ level: 'bad', why: `missing ${d.MISSING.join(', ')}` });
+  if (d.STATE === 'down') out.push({ level: 'bad', why: 'no containers running' });
+  if (d.UPCOMING_MISSING?.length) out.push({ level: 'warn', why: `will miss ${d.UPCOMING_MISSING.join(', ')} once newer code arrives` });
+  if (d.DB_PENDING?.length) out.push({ level: 'info', why: `${d.DB_PENDING.length} database${d.DB_PENDING.length > 1 ? 's' : ''} to create (${d.DB_PENDING.join(', ')})` });
+  return out;
+}
+function dbCell(d) {
+  if (d.DB_PENDING?.length) return `<span class="chip info" style="margin:0" title="${esc(d.DB_PENDING.join(', '))}">${d.DB_PENDING.length} to create</span>${d.HAS_OWN_DB ? '<span class="chip ok">created</span>' : ''}`;
+  return d.HAS_OWN_DB ? '<span class="chip ok" style="margin:0">created</span>' : '<span class="muted">—</span>';
+}
+function matchesFilter(d) {
+  if (FILTER.cls !== 'all' && envClass(d.ENV_NAME) !== FILTER.cls) return false;
+  if (FILTER.attention && !attentionOf(d).some(a => a.level !== 'info')) return false;
+  const q = FILTER.q.trim().toLowerCase();
+  if (q && ![d.APP, d.ENV_NAME, d.BRANCH, d.TAG, ...(d.SERVICES || [])].join(' ').toLowerCase().includes(q)) return false;
+  return true;
+}
+
+function renderEnvs() {
+  const all = STATE.deployments;
+  const apps = byApp(), names = Object.keys(apps).sort();
   if (!names.length) {
     const hasTenantIdentity = ['authentik', 'keycloak'].includes(STATE.access?.auth_mode) && !STATE.access?.platform_admin;
     const message = hasTenantIdentity
@@ -400,49 +477,76 @@ function renderEnvs() {
     $('#tab-envs').innerHTML = `<div class="card"><div class="empty">${message}</div></div>`;
     return;
   }
+  const up = all.filter(d => d.STATE === 'up').length;
+  const previews = all.filter(d => d.ENV_NAME.startsWith('pr-')).length;
+  const needs = all.flatMap(d => attentionOf(d).map(a => ({ d, ...a })));
+  const urgent = needs.filter(n => n.level !== 'info');
 
-  const stats = `
-    <div class="stats">
-      <div class="stat-card"><div class="stat-label">Total Environments</div><div class="stat-value">${total}</div><div class="stat-sub">${names.length} app${names.length !== 1 ? 's' : ''}</div></div>
-      <div class="stat-card"><div class="stat-label">Running</div><div class="stat-value" style="color:var(--ok)">${up}</div><div class="stat-sub">${total - up} down</div></div>
-      <div class="stat-card"><div class="stat-label">Previews</div><div class="stat-value" style="color:var(--preview)">${previews}</div><div class="stat-sub">of ${esc(STATE.settings.max_previews)} max</div></div>
-      <div class="stat-card"><div class="stat-label">Blocked</div><div class="stat-value" style="color:${blocked ? 'var(--bad)' : 'var(--ok)'}">${blocked}</div><div class="stat-sub">${blocked ? 'missing secrets' : 'all clear'}</div></div>
+  const classes = [['all', 'All'], ['prod', 'Prod'], ['staging', 'Staging'], ['develop', 'Develop'], ['preview', 'Previews']];
+  const toolbar = `
+    <div class="toolbar">
+      <div class="search"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.2" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <input id="envSearch" type="search" placeholder="Filter by app, environment, branch…" value="${esc(FILTER.q)}" aria-label="Filter environments"></div>
+      <div class="seg" role="group" aria-label="Environment class">${classes.map(([k, l]) => `<button data-cls="${k}" class="${FILTER.cls === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="seg"><button id="envAttention" class="${FILTER.attention ? 'on' : ''}">Needs attention${urgent.length ? ` · ${urgent.length}` : ''}</button></div>
+      <div class="summary"><span><b>${all.length}</b> environments</span><span><b style="color:var(--ok)">${up}</b> running</span>
+        <span><b>${previews}</b>/${esc(STATE.settings.max_previews)} previews</span></div>
     </div>`;
 
-  const tables = names.map(app => {
+  const attention = urgent.length ? `
+    <div class="attention">
+      <div class="attention-head"><span class="dot blocked"></span>${urgent.length} thing${urgent.length > 1 ? 's' : ''} need${urgent.length === 1 ? 's' : ''} attention</div>
+      ${urgent.slice(0, 6).map(n => `<button class="attention-item" data-manage="${esc(n.d.APP)}|${esc(n.d.ENV_NAME)}">
+        <span class="dot ${n.level === 'bad' ? 'down' : 'blocked'}"></span>
+        <span><b>${esc(n.d.APP)}</b> ${envBadge(n.d.ENV_NAME)} <span class="why">${esc(n.why)}</span></span><span class="go">Open →</span></button>`).join('')}
+    </div>` : '';
+
+  const cards = names.map(app => {
     const rows = sortEnvs(apps[app]);
-    return `<div class="card">
-      <div class="card-header">
+    const shown = rows.filter(matchesFilter);
+    if (!shown.length) return '';
+    const svcs = [...new Set(rows.flatMap(d => d.SERVICES || []))];
+    const dots = rows.map(d => `<span class="dot ${d.STATE}" title="${esc(d.ENV_NAME)}: ${esc(d.STATE)}"></span>`).join('');
+    return `<section class="app">
+      <div class="app-head">
         <h2>${esc(app)}</h2>
-        <span class="badge badge-type">${esc(rows[0].TYPE || 'unknown')}</span>
-        <span class="card-meta">${rows.length} environment${rows.length !== 1 ? 's' : ''}</span>
+        <span class="svc">${svcs.map(sv => `<span class="svc-tag">${esc(sv)}</span>`).join('')}</span>
+        <span class="health">${dots}<span class="count">${shown.length === rows.length ? rows.length : shown.length + ' of ' + rows.length} env${rows.length !== 1 ? 's' : ''}</span></span>
       </div>
-      <div class="scroll"><table>
-        <tr><th>Status</th><th>Environment</th><th>URL</th><th>Branch / Tag</th><th>Database</th><th>Deployed</th><th></th></tr>
-        ${rows.map(d => {
-          const chips = [
-            d.STATE === 'blocked' ? '<span class="chip">blocked</span>' : '',
-            d.MISSING?.length && d.STATE !== 'blocked' ? `<span class="chip">${d.MISSING.length} missing</span>` : '',
-            d.UPCOMING_MISSING?.length ? `<span class="chip" title="required by newer branch: ${esc(d.UPCOMING_MISSING.join(', '))}">will miss ${d.UPCOMING_MISSING.length}</span>` : '',
-          ].join('');
-          return `<tr>
-            <td><span class="dot ${d.STATE}"></span></td>
-            <td>${envBadge(d.ENV_NAME)}${chips}</td>
-            <td>${hostLink(d.URL)}${d.API_URL && d.API_URL !== d.URL ? '<br>' + hostLink(d.API_URL) : ''}</td>
-            <td class="mono">${esc(d.BRANCH || '—')}<br><span class="muted">${esc(d.TAG || '')}</span></td>
-            <td>${d.HAS_OWN_DB ? '<span style="color:var(--ok)">provisioned</span>' : d.DB_WIPED ? '<span class="chip">wiped</span>' : '<span class="muted">—</span>'}</td>
-            <td style="white-space:nowrap">${ago(d.DEPLOYED_AT || d.BLOCKED_AT)}<br><span class="muted">${esc(d.DEPLOYED_BY || '')}</span></td>
-            <td><button class="btn" data-manage="${esc(d.APP)}|${esc(d.ENV_NAME)}">Manage →</button></td>
-          </tr>`;
-        }).join('')}
-      </table></div>
-    </div>`;
+      <div class="env-grid env-cols"><span></span><span>Environment</span><span>Endpoints</span><span>Branch · tag</span><span class="c-db">Database</span><span>Deployed</span><span></span></div>
+      ${shown.map(d => {
+        const warns = attentionOf(d).filter(a => a.level !== 'info');
+        const chips = warns.map(a => `<span class="chip ${a.level === 'bad' ? 'bad' : ''}" title="${esc(a.why)}">${esc(d.STATE === 'blocked' && a.level === 'bad' && a.why.startsWith('deploy') ? 'blocked' : a.why.split(' ')[0] === 'will' ? 'will miss ' + d.UPCOMING_MISSING.length : a.why.startsWith('no ') ? 'down' : (d.MISSING.length + ' missing'))}</span>`);
+        return `<div class="env-grid env-row" tabindex="0" role="button" data-manage="${esc(d.APP)}|${esc(d.ENV_NAME)}" aria-label="Manage ${esc(d.APP)} ${esc(d.ENV_NAME)}">
+          <span class="dot ${d.STATE}" title="${esc(d.STATE)}"></span>
+          <div class="cell-env c-env">${envBadge(d.ENV_NAME)}${[...new Set(chips)].join('')}</div>
+          <div class="cell-urls">${urlLines(d)}</div>
+          <div class="cell-ref"><span class="branch" title="${esc(d.BRANCH || '')}">${esc(d.BRANCH || '—')}</span><span class="tag">${esc(d.TAG || '')}</span></div>
+          <div class="dbstate c-db"><span class="state-label">Database</span>${dbCell(d)}</div>
+          <div class="cell-when">${ago(d.DEPLOYED_AT || d.BLOCKED_AT)}<span class="by">${esc(d.DEPLOYED_BY || '')}</span></div>
+          <div class="cell-act"><button class="btn" tabindex="-1">Manage</button></div>
+        </div>`;
+      }).join('')}
+    </section>`;
   }).join('');
 
-  $('#tab-envs').innerHTML = stats + tables;
+  const keepFocus = document.activeElement?.id === 'envSearch';
+  $('#tab-envs').innerHTML = toolbar + attention + (cards || '<div class="card"><div class="empty">No environments match this filter.</div></div>');
+  const box = $('#envSearch');
+  box.oninput = () => { FILTER.q = box.value; const pos = box.selectionStart; renderEnvs(); const nb = $('#envSearch'); nb.focus(); nb.setSelectionRange(pos, pos); };
+  if (keepFocus) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  document.querySelectorAll('#tab-envs [data-cls]').forEach(b => b.onclick = () => { FILTER.cls = b.dataset.cls; saveFilter(); renderEnvs(); });
+  $('#envAttention').onclick = () => { FILTER.attention = !FILTER.attention; saveFilter(); renderEnvs(); };
 }
 
+document.addEventListener('keydown', e => {
+  const r = e.target.closest?.('.env-row');
+  if (r && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); r.click(); }
+  if (e.key === 'Escape') closeDrawer();
+});
+$('#menuBtn').onclick = () => document.body.classList.toggle('menu-open');
 document.addEventListener('click', e => {
+  if (e.target.closest('#sidebar nav button')) document.body.classList.remove('menu-open');
   const m = e.target.closest('[data-manage]');
   if (m) { const [a, en] = m.dataset.manage.split('|'); openDrawer(a, en); }
   const t = e.target.closest('#sidebar nav button');
@@ -467,39 +571,43 @@ async function openDrawer(app, env, refresh) {
   const canOperate = platformAdmin || ['operator', 'maintainer'].includes(d.ROLE);
   const dbSources = STATE.deployments.filter(x => x.HAS_OWN_DB);
 
+  const urls = serviceUrls(d);
   dr.innerHTML = `
   <div class="drawer-header">
     <h2>${esc(app)}</h2>${envBadge(env)}
-    <span class="muted" style="font-size:13px">${esc(d.TYPE || '')}</span>
-    <span class="badge">${esc(d.ROLE || 'platform admin')}</span>
-    <button class="btn close-btn" id="drawerClose">✕ Close</button>
+    <span class="dot ${d.STATE}" title="${esc(d.STATE)}"></span><span class="muted" style="font-size:12.5px">${esc(d.STATE)}</span>
+    <span class="badge">${esc((d.ROLE || 'platform admin').replace('_', ' '))}</span>
+    <button class="btn ghost close-btn" id="drawerClose" aria-label="Close">✕</button>
   </div>
-  ${d.MISSING?.length ? `<section><div class="banner"><b>${d.STATE === 'blocked' ? 'Deploy blocked' : 'Required variables missing'}:</b>
-    <span class="mono"> ${d.MISSING.map(esc).join(', ')}</span><br>
-    Add them under <a href="#" id="goVars">Variables → ${esc(app)}</a>, then
-    ${canOperate ? '<button class="btn primary" data-act="redeploy" style="margin-top:6px">Retry deploy</button>' : ''}</div></section>` : ''}
-  <section>
-    <h3>Open</h3>
-    <div style="margin-bottom:6px">App: ${hostLink(d.URL)}</div>
-    ${d.API_URL && d.API_URL !== d.URL ? `<div style="margin-bottom:6px">API: ${hostLink(d.API_URL)}</div>` : ''}
-    <div class="muted" style="font-size:12.5px">Branch <span class="mono">${esc(d.BRANCH || '—')}</span> · tag <span class="mono">${esc(d.TAG || '')}</span>${d.PREV_TAG ? ` · prev <span class="mono">${esc(d.PREV_TAG)}</span>` : ''} · commit <span class="mono">${esc((d.COMMIT || '').slice(0, 10))}</span></div>
-    ${isPreview ? '<div class="muted" style="margin-top:6px;font-size:12.5px">Preview login: use the preview basic-auth credentials from the inventory.</div>' : ''}
-  </section>
-  <section><h3>Database</h3><div id="dbBox" class="muted">loading…</div></section>
-  <section><h3>Container Resources</h3><div id="resourcesBox" class="muted">loading…</div></section>
-  <section><h3>Environment Variables</h3><div id="varsBox" class="muted">loading…</div></section>
-  <section>
-    <h3>Actions</h3>
-    <div class="row">
-      ${canOperate ? '<button class="btn primary" data-act="redeploy">↺ Redeploy</button><button class="btn" data-act="restart">⟳ Restart</button>' : ''}
-      ${canOperate && d.PREV_TAG ? `<button class="btn" data-act="rollback">⬅ Roll back to ${esc(d.PREV_TAG)}</button>` : ''}
-      ${platformAdmin ? '<button class="btn danger" data-act="destroy">✕ Destroy…</button>' : ''}
+  <section class="flat" style="margin-bottom:0">
+    <div class="actions-bar">
+      ${canOperate ? '<button class="btn primary" data-act="redeploy">Redeploy</button><button class="btn" data-act="restart">Restart</button>' : ''}
+      ${canOperate && d.PREV_TAG ? `<button class="btn" data-act="rollback">Roll back to <span class="mono">${esc(d.PREV_TAG.slice(0, 16))}</span></button>` : ''}
+      ${platformAdmin ? '<button class="btn danger" data-act="destroy" style="margin-left:auto">Destroy…</button>' : ''}
       ${!canOperate && !platformAdmin ? '<span class="muted">Read-only project access</span>' : ''}
     </div>
   </section>
+  ${d.MISSING?.length ? `<section style="border-color:var(--warn)"><div class="banner" style="border:0;padding:0;background:none"><b>${d.STATE === 'blocked' ? 'Deploy blocked' : 'Required variables missing'}:</b>
+    <span class="mono"> ${d.MISSING.map(esc).join(', ')}</span><br>
+    Add them under <a href="#" id="goVars">Variables → ${esc(app)}</a>, then
+    ${canOperate ? '<button class="btn primary" data-act="redeploy" style="margin-top:8px">Retry deploy</button>' : ''}</div></section>` : ''}
   <section>
-    <h3>Logs <button class="btn" id="loadLogs" style="margin-left:8px;font-size:12px">Load last 200 lines</button></h3>
-    <div id="logOut" style="margin-top:8px"></div>
+    <h3>Endpoints</h3>
+    <div class="svc-links">${urls.length ? urls.map(u => `<div class="url-line"><span class="svc-name">${esc(u.svc)}</span><a href="${esc(u.url)}" target="_blank" rel="noopener">${esc(urlHost(u.url))} ↗</a></div>`).join('') : '<span class="muted">—</span>'}</div>
+    <div class="facts">
+      <div class="fact"><div class="k">Branch</div><div class="v">${esc(d.BRANCH || '—')}</div></div>
+      <div class="fact"><div class="k">Image tag</div><div class="v">${esc(d.TAG || '—')}</div></div>
+      <div class="fact"><div class="k">Commit</div><div class="v">${esc((d.COMMIT || '').slice(0, 10) || '—')}</div></div>
+      <div class="fact"><div class="k">Deployed</div><div class="v">${ago(d.DEPLOYED_AT || d.BLOCKED_AT) || '—'}${d.DEPLOYED_BY ? ' · ' + esc(d.DEPLOYED_BY) : ''}</div></div>
+    </div>
+    ${isPreview ? '<div class="muted" style="margin-top:12px;font-size:12.5px">Preview login: use the preview basic-auth credentials from the inventory.</div>' : ''}
+  </section>
+  <section><h3>Databases</h3><div id="dbBox" class="muted">loading…</div></section>
+  <section><h3>Container resources</h3><div id="resourcesBox" class="muted">loading…</div></section>
+  <section><h3>Environment variables</h3><div id="varsBox" class="muted">loading…</div></section>
+  <section>
+    <h3>Logs <button class="btn" id="loadLogs" style="margin-left:auto;font-size:12px">Load last 200 lines</button></h3>
+    <div id="logOut"></div>
   </section>
   <section>
     <h3>Output</h3>
@@ -590,27 +698,43 @@ async function renderResources(dr, app, env) {
   });
 }
 
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
+  try {
+    const t = document.createElement('textarea'); t.value = text; t.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(t); t.select(); const ok = document.execCommand('copy'); t.remove(); return ok;
+  } catch (_) { return false; }
+}
+
 async function renderDatabase(dr, app, env, dbSources) {
   const box = $('#dbBox', dr);
   const i = await api(`/api/database?app=${app}&env=${env}`).catch(e => ({ error: e.message }));
   if (i.error) { box.textContent = i.error; return; }
+  const dbs = i.databases || [];
   const others = dbSources.filter(x => !(x.APP === app && x.ENV_NAME === env));
   box.classList.remove('muted');
+  if (!dbs.length) { box.innerHTML = '<span class="muted">This app declares no databases in <span class="mono">.infradeploy/infra.yml</span>.</span>'; return; }
+  const status = d => d.created
+    ? (d.exists ? `<span class="chip ok" style="margin:0">created</span><span class="muted" style="font-size:12px">${esc(d.size)}</span>` : '<span class="chip bad" style="margin:0">missing in Postgres</span>')
+    : d.wiped ? '<span class="chip" style="margin:0">wiped</span>' : '<span class="chip quiet" style="margin:0">not created</span>';
+  const pending = dbs.filter(d => !d.created);
   box.innerHTML = `
-    <table class="kv">
-      <tr><td>This env's DB</td><td>${i.exists ? `<b>${esc(i.name)}</b> · ${esc(i.size)}` : i.wiped ? '<span class="chip">wiped</span>' : '<span class="muted">none</span>'}</td></tr>
-      ${i.url_masked ? `<tr><td>Connection URL</td><td class="mono">${esc(i.url_masked)}</td></tr>` : ''}
-      <tr><td>App connected to</td><td>${esc(CONNECTED_LABEL(i.connected))}</td></tr>
-    </table>
-    <p class="muted" style="font-size:12.5px;margin:10px 0">The database is only <b>provisioned</b> — the app uses it only if you set its connection variable (whatever the app calls it) to this URL. Wiping removes it; the app keeps running until you recreate it.</p>
-    <div class="row">
-      ${i.can_manage && !i.exists ? `<button class="btn primary" id="dbCreate">${i.wiped ? 'Recreate (empty)' : 'Create database'}</button>` : ''}
-      ${i.can_wipe && i.exists ? `<button class="btn danger" id="dbWipe">Wipe…</button>` : ''}
-    </div>
-    ${i.exists && i.can_manage ? `<div class="row" style="margin-top:4px">
-      Copy URL into variable <input id="dbKey" placeholder="e.g. DB_URL, PG_DSN, DATABASE_URL" class="mono" style="flex:1;min-width:220px">
-      <button class="btn primary" id="dbUseOwn">Set variable → this DB</button></div>` : ''}
-    ${others.length && i.can_manage ? `<div class="row" style="margin-top:4px">or point at another env's DB
+    ${dbs.map(d => `<div class="db" data-db="${esc(d.id)}">
+      <div class="db-top">
+        <span class="var">${esc(d.inject_as)}</span><span class="svc-tag">${esc(d.service)}</span>${status(d)}
+        <span class="spacer">
+          ${i.can_manage && !d.created ? `<button class="btn primary" data-dbcreate="${esc(d.id)}">${d.wiped ? 'Recreate (empty)' : 'Create database'}</button>` : ''}
+          ${i.can_wipe && d.created ? `<button class="btn danger" data-dbwipe="${esc(d.id)}">Wipe…</button>` : ''}
+        </span>
+      </div>
+      <div class="db-name">${esc(d.name)}</div>
+      ${d.created ? `<div class="db-url" data-urlbox><code data-urltext>${esc(d.url_masked || '')}</code>
+        ${i.can_reveal ? `<button class="btn" data-dbreveal="${esc(d.id)}">Reveal</button>` : ''}</div>` : ''}
+    </div>`).join('')}
+    <p class="db-note">Declared databases are <b>not</b> created automatically. Creating one provisions it in the shared Postgres and redeploys this environment so its URL is injected as <span class="mono">${esc(dbs.map(d => d.inject_as).join(', '))}</span>.
+      ${i.can_reveal ? '' : 'Only platform administrators can reveal the full connection URL.'}</p>
+    <div class="row">${i.can_manage && pending.length > 1 ? `<button class="btn primary" id="dbCreateAll">Create all (${pending.length})</button>` : ''}</div>
+    ${others.length && i.can_manage && dbs.some(d => d.created) ? `<div class="row" style="margin-top:4px">Point a variable at another environment's database
       <select id="dbFrom">${others.map(x => `<option value="${esc(x.APP)}/${esc(x.ENV_NAME)}">${esc(x.APP)} / ${esc(x.ENV_NAME)}</option>`).join('')}</select>
       as <input id="dbKey2" placeholder="variable name" class="mono" style="width:180px">
       <button class="btn" id="dbUseOther">Set variable</button></div>` : ''}
@@ -621,14 +745,38 @@ async function renderDatabase(dr, app, env, dbSources) {
     toast(r.ok ? what : 'Failed — see output');
     renderDatabase(dr, app, env, dbSources); renderEnvVars(dr, app, env);
   };
-  $('#dbCreate', box)?.addEventListener('click', async () => done(await api('/api/dbop', { app, env, op: 'create' }), 'Database ready'));
-  $('#dbUseOwn', box)?.addEventListener('click', async () => {
-    const key = $('#dbKey', box).value.trim();
-    if (!key) return toast('Enter the variable name your app uses for the DB connection');
-    done(await api('/api/dbop', { app, env, op: 'use', from: `${app}/${env}`, key, scope: env }), `${key} set — redeploy to apply`);
+  box.querySelectorAll('[data-dbcreate]').forEach(btn => btn.onclick = async () => {
+    btn.disabled = true; toast('Creating and redeploying…');
+    done(await api('/api/dbop', { app, env, op: 'create', db: btn.dataset.dbcreate }), 'Database created and injected');
+  });
+  $('#dbCreateAll', box)?.addEventListener('click', async () => {
+    toast('Creating and redeploying…');
+    done(await api('/api/dbop', { app, env, op: 'create' }), 'Databases created and injected');
+  });
+  box.querySelectorAll('[data-dbwipe]').forEach(btn => btn.onclick = async () => {
+    const c = prompt(`Wipe database ${btn.dataset.dbwipe} of ${app}/${env}? All data is deleted.\nType ${app}/${env} to confirm:`);
+    if (c !== `${app}/${env}`) return toast('Not confirmed');
+    done(await api('/api/dbop', { app, env, op: 'wipe', db: btn.dataset.dbwipe, confirm: c }), 'Database wiped');
+  });
+  // Reveal the full URL: platform admins only (enforced server-side, audited). Auto-hides after 30 s.
+  box.querySelectorAll('[data-dbreveal]').forEach(btn => btn.onclick = async () => {
+    const wrap = btn.closest('[data-urlbox]'), code = $('[data-urltext]', wrap), masked = code.textContent;
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/database/reveal?app=${encodeURIComponent(app)}&env=${encodeURIComponent(env)}&db=${encodeURIComponent(btn.dataset.dbreveal)}`);
+      code.textContent = r.url; wrap.classList.add('revealed');
+      wrap.querySelectorAll('.extra').forEach(n => n.remove());
+      const copy = document.createElement('button'); copy.className = 'btn extra'; copy.textContent = 'Copy';
+      const hide = document.createElement('button'); hide.className = 'btn ghost extra'; hide.textContent = 'Hide';
+      wrap.append(copy, hide); btn.hidden = true;
+      const restore = () => { code.textContent = masked; wrap.classList.remove('revealed'); wrap.querySelectorAll('.extra').forEach(n => n.remove()); btn.hidden = false; btn.disabled = false; clearTimeout(timer); };
+      const timer = setTimeout(restore, 30000);
+      copy.onclick = async () => toast((await copyText(r.url)) ? 'URL copied' : 'Copy failed — select the text manually');
+      hide.onclick = restore;
+    } catch (e) { toast(e.message); btn.disabled = false; }
   });
   $('#dbUseOther', box)?.addEventListener('click', async () => {
-    const from = $('#dbFrom', box).value, key = ($('#dbKey2', box) || $('#dbKey', box)).value.trim();
+    const from = $('#dbFrom', box).value, key = $('#dbKey2', box).value.trim();
     if (!key) return toast('Enter the variable name your app uses for the DB connection');
     let allow_prod = false;
     if (from.endsWith('/prod')) {
@@ -636,11 +784,6 @@ async function renderDatabase(dr, app, env, dbSources) {
       allow_prod = true;
     }
     done(await api('/api/dbop', { app, env, op: 'use', from, key, scope: env, allow_prod }), `${key} → ${from} — redeploy to apply`);
-  });
-  $('#dbWipe', box)?.addEventListener('click', async () => {
-    const c = prompt(`Wipe the database of ${app}/${env}? All data is deleted.\nType ${app}/${env} to confirm:`);
-    if (c !== `${app}/${env}`) return toast('Not confirmed');
-    done(await api('/api/dbop', { app, env, op: 'wipe', confirm: c }), 'Database wiped');
   });
 }
 
@@ -784,7 +927,7 @@ function renderVars() {
           <select id="varApp"></select>
           <input id="varAppNew" placeholder="or type an app name" style="width:200px">
         </div>
-        <p class="muted" style="font-size:12.5px;margin-top:8px">Precedence (later wins): repo <span class="mono">.deploy/env</span> → <b>all</b> → <b>class</b> → <b>one environment</b>. Append <span class="mono">.api/.web/.app</span> to target one component.</p>
+        <p class="muted" style="font-size:12.5px;margin-top:8px">Precedence (later wins): repo <span class="mono">.infradeploy/env</span> → <b>all</b> → <b>class</b> → <b>one environment</b>. Target one service by appending <span class="mono">.&lt;service&gt;</span> to the scope.</p>
       </div>
       <div id="varBody"></div>
     </div>`;
@@ -803,6 +946,7 @@ async function renderVarsFor(app) {
   const j = await api(`/api/secrets?app=${encodeURIComponent(app)}`);
   const envs = sortEnvs(STATE.deployments.filter(d => d.APP === app));
   const scopes = new Set(['common', 'preview', 'develop', 'staging', 'prod', ...envs.map(d => d.ENV_NAME), ...Object.keys(j.files)]);
+  const svcNames = [...new Set(envs.flatMap(d => d.SERVICES || []))].sort();
   const missing = envs.filter(d => d.MISSING?.length);
   const upcoming = envs.filter(d => d.UPCOMING_MISSING?.length);
   const label = s => s === 'common' ? 'all environments' : s === 'preview' ? 'all previews' : s.includes('.') ? `${s.split('.')[0]} · ${s.split('.')[1]} only` : s;
@@ -813,7 +957,7 @@ async function renderVarsFor(app) {
     ${j.can_manage ? `<div style="padding:12px 18px;border-bottom:1px solid var(--line)">
       <div class="row">
         <select id="nScope">${[...scopes].map(s => `<option value="${esc(s)}">${esc(label(s))}</option>`).join('')}</select>
-        <select id="nComp"><option value="">all components</option><option value=".api">api only</option><option value=".web">web only</option><option value=".app">app only</option></select>
+        <select id="nComp"><option value="">all services</option>${svcNames.map(n => `<option value=".${esc(n)}">${esc(n)} only</option>`).join('')}</select>
         <input id="nKey" placeholder="KEY" class="mono" style="width:180px">
         <input id="nVal" placeholder="value" class="mono" style="flex:1;min-width:180px">
         <button class="btn primary" id="nSave">Save</button>
@@ -1024,7 +1168,7 @@ async function renderProjects(reveal) {
   <div class="card">
     <div class="card-header"><h2>Add a Project</h2></div>
     <div style="padding:16px 18px">
-      <p class="muted" style="font-size:12.5px;margin-bottom:12px">Lets a repo deploy to this server through signed webhooks. The app name must equal <span class="mono">APP_NAME</span> in the repo's <span class="mono">.deploy/manifest.env</span>.</p>
+      <p class="muted" style="font-size:12.5px;margin-bottom:12px">Lets a repo deploy to this server through signed webhooks. The app name must equal <span class="mono">name</span> in the repo's <span class="mono">.infradeploy/infra.yml</span>.</p>
       <div class="row">
         <input id="pApp" placeholder="app name, e.g. shop-api" class="mono" style="width:200px">
         <input id="pRepo" placeholder="owner/repo" class="mono" style="width:280px">

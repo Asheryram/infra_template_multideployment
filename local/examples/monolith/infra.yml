@@ -1,0 +1,8 @@
+# Smoke-test app: monolith with a database.
+name: smoke-mono
+services:
+  app:
+    image: traefik/whoami:v1.10
+    port: 80
+    databases:
+      - inject_as: DATABASE_URL

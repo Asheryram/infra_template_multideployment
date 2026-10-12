@@ -1,0 +1,12 @@
+# demo-api — backend repo (its own GitHub repo in real life)
+name: demo-api
+services:
+  api:
+    image: local/demo-api
+    port: 8080
+    health_path: /health
+    databases:
+      - inject_as: DATABASE_URL
+migrate:
+  service: api
+  cmd: python migrate.py

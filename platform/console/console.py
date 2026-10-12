@@ -9,6 +9,7 @@ import base64
 import glob
 import hashlib
 import hmac
+import html
 import io
 import json
 import os
@@ -19,10 +20,12 @@ import subprocess
 import tarfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from access import AccessStore, PROJECT_ROLES, ROLE_ORDER
 
@@ -31,13 +34,19 @@ ENV_FILE = os.environ.get("INFRA_ENV_FILE", "/etc/infra/infra.env")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$")
-SCOPE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?(\.(app|web|api))?$")
+SCOPE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?(\.[a-z0-9-]+)?$")
 KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SENSITIVE = re.compile(r"PASS|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATABASE_URL|DSN|AUTH", re.I)
 PLATFORM_MANAGED_KEYS = {
     "APP_NAME", "APP_ENV", "ENV_CLASS", "IS_PREVIEW", "PORT", "PUBLIC_URL",
     "INFRA_DOMAIN", "IMAGE_TAG", "GIT_BRANCH", "GIT_COMMIT",
 }
+# Preview access (PREVIEW_AUTH_MODE=keycloak): Traefik asks /auth/preview before every preview request.
+# Identity comes ONLY from the previews oauth2-proxy's answer for the browser's session cookie — never from
+# request headers, which a client could forge. Access = a project role on the app (viewer or above) or platform admin.
+PREVIEW_AUTH_URL = os.environ.get("INFRA_PREVIEW_AUTH_URL", "http://oauth2-previews:4180/oauth2/auth")
+PREVIEW_SESSIONS = {}          # sha256(cookie) -> (expires, identity); short TTL so revoked access bites within seconds
+PREVIEW_SEEN = set()           # uids already recorded in the access store (first sight registers the person)
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -109,6 +118,34 @@ def require_project_role(actor, store, app, minimum="viewer"):
     return role
 
 
+def preview_identity(cookie):
+    """{uid, email, username, groups} for a preview session cookie, or None when not signed in."""
+    if not cookie:
+        return None
+    key = hashlib.sha256(cookie.encode()).hexdigest()
+    now = time.time()
+    hit = PREVIEW_SESSIONS.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    request = urllib.request.Request(PREVIEW_AUTH_URL, headers={"Cookie": cookie})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            h = {k.lower(): v for k, v in response.headers.items()}
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return None
+        raise
+    uid, email = h.get("x-auth-request-user", "").strip(), h.get("x-auth-request-email", "").strip()
+    if not uid or not email or len(uid) > 200 or len(email) > 320:
+        return None
+    ident = {"uid": uid, "email": email, "username": h.get("x-auth-request-preferred-username", "").strip()[:200],
+             "groups": h.get("x-auth-request-groups", "")}
+    if len(PREVIEW_SESSIONS) > 500:
+        PREVIEW_SESSIONS.clear()
+    PREVIEW_SESSIONS[key] = (now + 15, ident)
+    return ident
+
+
 def mask(key, value):
     if not value or not SENSITIVE.search(key):
         return value
@@ -144,8 +181,9 @@ def env_class(env):
     return "preview" if env.startswith("pr-") else env
 
 
-def components(type_):
-    return {"monolith": ["app"], "frontend": ["web"], "backend": ["api"], "split": ["web", "api"]}.get(type_, [])
+def components(manifest):
+    """Service names declared in a deployment's infra.yml."""
+    return list((manifest.get("services") or {}).keys())
 
 
 def resource_memory_bytes(value):
@@ -200,8 +238,7 @@ def resource_file(s, app, scope, comp):
 
 def resource_policy(s, app, env, candidate=None):
     deployment = f"{s['deploy_root']}/{app}/{env}"
-    manifest = read_env(f"{deployment}/deploy/manifest.env")
-    comps = components(manifest.get("TYPE", ""))
+    comps = components(load_manifest(f"{deployment}/deploy"))
     if not comps or not os.path.isdir(deployment):
         raise ValueError(f"deployment not found: {app}/{env}")
     defaults = resource_settings(s)
@@ -260,28 +297,49 @@ def save_resource_override(s, app, scope, comp, mem_limit=None, cpus=None):
     os.replace(temporary, path)
 
 
+def parse_manifest_field(yml, field):
+    """Value of a top-level infra.yml field via the platform's validating parser (never executes repo content)."""
+    r = subprocess.run(["python3", os.path.join(INFRA_ROOT, "scripts", "parse-manifest.py"), yml, "--field", field],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    out = r.stdout.strip()
+    try:
+        return json.loads(out)
+    except ValueError:
+        return out
+
+
+def load_manifest(deploy_dir):
+    """{"name": str, "services": {svc: cfg}} from <deploy_dir>/infra.yml, or {} when absent/invalid."""
+    yml = os.path.join(deploy_dir, "infra.yml")
+    if not os.path.isfile(yml):
+        return {}
+    svcs = parse_manifest_field(yml, "services")
+    return {"name": parse_manifest_field(yml, "name") or "", "services": svcs if isinstance(svcs, dict) else {}}
+
+
 def required_missing(s, app, env):
     """Keys the manifest requires that the environment's runtime env lacks."""
     d = f"{s['deploy_root']}/{app}/{env}"
-    man = read_env(f"{d}/deploy/manifest.env")
     missing = []
-    for comp in components(man.get("TYPE", "")):
-        have = read_env(f"{d}/runtime/{comp}.env")
-        for key in man.get(f"{comp.upper()}_REQUIRED_ENV", "").split():
-            if not have.get(key):
-                missing.append(f"{comp}:{key}")
+    for svc, cfg in (load_manifest(f"{d}/deploy").get("services") or {}).items():
+        have = read_env(f"{d}/runtime/{svc}.env")
+        for key in (cfg.get("required_env") or []):
+            if not have.get(str(key)):
+                missing.append(f"{svc}:{key}")
     return missing
 
 
-def available_keys(s, app, env, comp):
-    """Keys an environment WOULD get on its next deploy (repo env files + server variables)."""
+def available_keys(s, app, env, svc):
+    """Keys an environment WOULD get on its next deploy."""
     cls = env_class(env)
     repo = f"{s['deploy_root']}/{app}/{env}/deploy/env"
     srv = f"{s['secrets_root']}/{app}"
-    files = [f"{repo}/common.env", f"{repo}/{cls}.env", f"{repo}/{cls}.{comp}.env",
-             f"{srv}/common.env", f"{srv}/{cls}.env", f"{srv}/{cls}.{comp}.env"]
+    files = [f"{repo}/common.env", f"{repo}/{cls}.env", f"{repo}/{cls}.{svc}.env",
+             f"{srv}/common.env", f"{srv}/{cls}.env", f"{srv}/{cls}.{svc}.env"]
     if env != cls:
-        files += [f"{srv}/{env}.env", f"{srv}/{env}.{comp}.env"]
+        files += [f"{srv}/{env}.env", f"{srv}/{env}.{svc}.env"]
     keys = set()
     for f in files:
         keys |= {k for k, v in read_env(f).items() if v}
@@ -289,15 +347,13 @@ def available_keys(s, app, env, comp):
 
 
 def required_by_app(s):
-    """{app: {(component, key)}} — union of REQUIRED_ENV across every deployed branch of the app.
-    A key a PR introduces shows up here before it reaches develop/staging/prod."""
+    """{app: {(service, key)}} across every deployed branch."""
     req = {}
-    for man in glob.glob(f"{s['deploy_root']}/*/*/deploy/manifest.env"):
-        app = man.split("/")[-4]
-        m = read_env(man)
-        for comp in components(m.get("TYPE", "")):
-            for key in m.get(f"{comp.upper()}_REQUIRED_ENV", "").split():
-                req.setdefault(app, set()).add((comp, key))
+    for deploy_dir in glob.glob(f"{s['deploy_root']}/*/*/deploy"):
+        app = deploy_dir.split("/")[-3]
+        for svc, cfg in (load_manifest(deploy_dir).get("services") or {}).items():
+            for key in (cfg.get("required_env") or []):
+                req.setdefault(app, set()).add((svc, str(key)))
     return req
 
 
@@ -316,22 +372,24 @@ def deployments(s):
         m["RUNNING"] = counts.get(f"{s['prefix']}-{app}-{env}", 0)
         m["STATE"] = "blocked" if status.get("STATUS") == "blocked" else ("up" if m["RUNNING"] else "down")
         m["MISSING"] = status.get("MISSING", "").split() if status else required_missing(s, app, env)
-        m["HAS_OWN_DB"] = os.path.exists(f"{d}.db_password") and not os.path.exists(f"{d}.db_wiped")
-        m["DB_WIPED"] = os.path.exists(f"{d}.db_wiped")
-        comps = components(m.get("TYPE", ""))
+        created = [p[len(f"{d}.db_password_"):] for p in glob.glob(f"{d}.db_password_*")]
+        m["HAS_OWN_DB"] = any(not os.path.exists(f"{d}.db_wiped_{n}") for n in created)
+        m["DB_PENDING"] = m.get("DB_PENDING", "").split()
+        svcs = components(load_manifest(f"{d}/deploy"))
+        m["SERVICES"] = svcs
         m["UPCOMING_MISSING"] = sorted(
             f"{c}:{k}" for c, k in required.get(app, set())
-            if c in comps and f"{c}:{k}" not in m["MISSING"] and k not in available_keys(s, app, env, c))
+            if c in svcs and f"{c}:{k}" not in m["MISSING"] and k not in available_keys(s, app, env, c))
         rows.append(m)
     return rows
 
 
-def env_scopes(env, comp):
-    """Console variable files that apply to <env>/<comp>, lowest → highest precedence."""
+def env_scopes(env, svc):
+    """Console variable files that apply to <env>/<svc>."""
     cls = env_class(env)
-    scopes = ["common", cls, f"{cls}.{comp}"]
+    scopes = ["common", cls, f"{cls}.{svc}"]
     if env != cls:
-        scopes += [env, f"{env}.{comp}"]
+        scopes += [env, f"{env}.{svc}"]
     return scopes
 
 
@@ -351,7 +409,7 @@ def env_variables(s, app, env):
                     if path.startswith(f"{s['secrets_root']}/{app}/"):
                         source = ("console", os.path.basename(path)[:-4])
                     elif path.startswith(f"{d}/deploy/env/"):
-                        source = ("repo", ".deploy/env/" + os.path.basename(path))
+                        source = ("repo", ".infradeploy/env/" + os.path.basename(path))
                     continue
                 if not line or line.startswith("#") or "=" not in line:
                     continue
@@ -440,7 +498,7 @@ def tail(path, n=150):
 #   X-Infra-Timestamp: <unix seconds>           (±300 s, replay window)
 #   X-Infra-Signature: sha256=<hex HMAC-SHA256(secret, "<timestamp>." + raw body)>
 #   body: {"action": "deploy"|"destroy", "repo": "owner/repo", "env": "pr-12", "tag": "sha-…",
-#          "branch": "…", "commit": "…", "bundle": "<base64 tar.gz of the .deploy directory>"}
+#          "branch": "…", "commit": "…", "bundle": "<base64 tar.gz of the .infradeploy directory>"}
 # → 202 {"job": id}. Poll GET /webhook/jobs/<id>, signed the same way over "<timestamp>.<id>".
 
 WEBHOOK_MAX = 512 * 1024
@@ -500,8 +558,8 @@ def extract_bundle(s, b64, job_id):
         if len(members) > 200 or sum(m.size for m in members) > 2 * 1024 * 1024:
             raise ValueError("bundle has too many or too large files")
         t.extractall(d, filter="data")     # rejects absolute paths, '..', links out, devices
-    if not os.path.isfile(os.path.join(d, "manifest.env")):
-        raise ValueError("bundle has no manifest.env at its root (tar the .deploy directory itself)")
+    if not os.path.isfile(os.path.join(d, "infra.yml")):
+        raise ValueError("bundle has no infra.yml at its root (tar the .infradeploy directory itself)")
     return d
 
 
@@ -511,8 +569,7 @@ def run_job(s, job_id, args, workdir, app, env):
         ok, out = infra(*args)
     meta = read_env(f"{s['deploy_root']}/{app}/{env}/meta.env") if ok and args[0] == "deploy" else {}
     JOBS[job_id].update(status="succeeded" if ok else "failed", ok=ok, output=out[-6000:], finished=time.time(),
-                        url=meta.get("URL", ""), api_url=meta.get("API_URL", ""),
-                        upstream_api_url=meta.get("UPSTREAM_API_URL", ""))
+                        url=meta.get("URL", ""), urls=meta.get("URLS", ""))
     if workdir:
         shutil.rmtree(workdir, ignore_errors=True)
     audit_line(s, f"webhook:{app}", f"{args[0]}:{'ok' if ok else 'FAILED'}", f"{app}/{env} job={job_id}")
@@ -560,9 +617,9 @@ def webhook(s, headers, payload):
             workdir = extract_bundle(s, body.get("bundle"), job_id)
         except (ValueError, tarfile.TarError, base64.binascii.Error) as e:
             return 400, {"error": f"bundle: {e}"}
-        if read_env(os.path.join(workdir, "manifest.env")).get("APP_NAME") != app:
+        if parse_manifest_field(os.path.join(workdir, "infra.yml"), "name") != app:
             shutil.rmtree(workdir, ignore_errors=True)
-            return deny(f"bundle APP_NAME is not {app}")
+            return deny(f"infra.yml name is not {app} (or infra.yml is invalid)")
         args = ["deploy", "--manifest", workdir, "--env", env, "--tag", tag, "--branch", branch, "--commit", commit]
     elif action == "destroy":
         if not env.startswith("pr-"):
@@ -689,6 +746,52 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def preview_gate(self, s, q):
+        """Traefik forwardAuth target for preview environments. 200 = let through, 302 = go sign in, 403 = no access."""
+        app = q.get("app", "")
+        if s["console_auth_mode"] != "keycloak" or not NAME.match(app):
+            return self.send(404, {"error": "not found"})
+        try:
+            ident = preview_identity(self.headers.get("Cookie", ""))
+        except Exception:
+            return self.send(503, b"Sign-in service unavailable", "text/plain; charset=utf-8")
+        sso = f"https://sso.{s['domain']}{s['suffix']}"
+        if ident is None:
+            if self.headers.get("X-Forwarded-Method", "GET").upper() not in ("GET", "HEAD"):
+                return self.send(401, b"Sign in required", "text/plain; charset=utf-8")
+            proto = "http" if self.headers.get("X-Forwarded-Proto") == "http" else "https"
+            host, uri = self.headers.get("X-Forwarded-Host", ""), self.headers.get("X-Forwarded-Uri", "/")
+            hostname = host.split(":")[0].lower()
+            back = (f"{proto}://{host}{uri}" if (hostname.endswith("." + s["domain"]) and uri.startswith("/"))
+                    else sso + "/")           # a spoofed host never becomes a redirect target
+            self.send_response(302)
+            self.send_header("Location", f"{sso}/oauth2/start?rd={quote(back, safe='')}")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        uid = "keycloak:" + ident["uid"]
+        store = access_store(s)
+        if uid not in PREVIEW_SEEN:           # register the person so an admin can grant them access by email
+            store.observe_identity(uid, ident["username"], ident["email"], ident["username"] or ident["email"])
+            PREVIEW_SEEN.add(uid)
+        groups = {g.strip().strip("/") for g in re.split(r"[,;]", ident["groups"]) if g.strip()}
+        role = store.role_for_project(uid, app, s["keycloak_platform_admin_group"] in groups)
+        if role == "platform_admin" or role in PROJECT_ROLES:
+            return self.send(200, {"ok": True})
+        page = (
+            "<!doctype html><html lang='en'><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'><title>No access</title>"
+            "<body style='font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:1rem;color:#17181c'>"
+            f"<h1 style='font-size:1.4rem'>You don't have access to this preview</h1>"
+            f"<p>You are signed in as <b>{html.escape(ident['email'])}</b>, but you have no role on "
+            f"<b>{html.escape(app)}</b>.</p>"
+            "<p>Ask a project maintainer or organization administrator to grant you the <b>viewer</b> role "
+            "(your account is already registered under this email).</p>"
+            f"<p><a href='{html.escape(sso)}/oauth2/sign_out'>Sign out</a></p></body></html>"
+        )
+        return self.send(403, page.encode(), "text/html; charset=utf-8")
+
     def audit(self, s, action, detail):
         audit_line(s, self.user(), action, detail)
 
@@ -739,6 +842,8 @@ class Handler(BaseHTTPRequestHandler):
                     "<p><a href='/'>Sign in again</a></p></body></html>"
                 )
                 return self.send(200, page, "text/html; charset=utf-8")
+            if u.path == "/auth/preview":
+                return self.preview_gate(s, q)
             actor = self.actor(s)
             if actor is None:
                 return self.send(401, {"error": "authentication required"})
@@ -784,9 +889,10 @@ class Handler(BaseHTTPRequestHandler):
                     for rows in runtime.values():
                         for row in rows:
                             row["value"] = "••••••"
-                return self.send(200, {"runtime": runtime, "manifest": {k: v for k, v in read_env(f"{d}/deploy/manifest.env").items()
-                                                                        if not SENSITIVE.search(k)},
-                                       "role": role})
+                man = load_manifest(f"{d}/deploy")
+                return self.send(200, {"runtime": runtime, "manifest": {"name": man.get("name", ""), "services": {
+                    k: {f: v for f, v in cfg.items() if f in ("image", "port", "health_path", "required_env")}
+                    for k, cfg in (man.get("services") or {}).items()}}, "role": role})
             if u.path == "/api/secrets":
                 app = q.get("app", "")
                 if not NAME.match(app):
@@ -811,11 +917,25 @@ class Handler(BaseHTTPRequestHandler):
                     info = json.loads(out.strip().splitlines()[-1])
                 except (ValueError, IndexError):
                     return self.send(200, {"error": out[-500:]})
-                info["url_masked"] = mask_url(info.get("url", ""))
-                info.pop("url", None)          # the full URL only ever goes into a variable, server-side
+                for item in info.get("databases", []):
+                    item["url_masked"] = mask_url(item.pop("url", ""))   # full URLs only ever go into variables, server-side
                 info["can_manage"] = is_platform_admin(actor) or role == "maintainer"
                 info["can_wipe"] = is_platform_admin(actor)
+                info["can_reveal"] = is_platform_admin(actor)
                 return self.send(200, info)
+            if u.path == "/api/database/reveal":
+                app, env, db = q.get("app", ""), q.get("env", ""), q.get("db", "")
+                if not (NAME.match(app) and NAME.match(env)
+                        and re.fullmatch(r"[a-z0-9-]+:[A-Za-z_][A-Za-z0-9_]*", db)):
+                    return self.send(400, {"error": "bad request"})
+                if not is_platform_admin(actor):
+                    return self.send(403, {"error": "only a platform administrator may reveal a database URL"})
+                ok, out = infra("db", "url", app, env, "--db", db, timeout=30)
+                url = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip().startswith("postgres://")), "")
+                if not (ok and url):
+                    return self.send(404, {"error": "database is not created"})
+                self.audit(s, "db-reveal", f"{app}/{env} {db}")
+                return self.send(200, {"url": url})
             if u.path == "/api/vars":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
@@ -834,12 +954,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
                 require_project_role(actor, store, app)
-                policy = resource_policy(s, app, env)
-                policy["can_manage"] = is_platform_admin(actor)
-                return self.send(200, policy)
+                try:
+                    policy = resource_policy(s, app, env)
+                    policy["can_manage"] = is_platform_admin(actor)
+                    return self.send(200, policy)
+                except ValueError:
+                    return self.send(200, {"components": [], "can_manage": is_platform_admin(actor)})
             if u.path == "/api/reveal":
                 app, env, comp, key = q.get("app", ""), q.get("env", ""), q.get("comp", ""), q.get("key", "")
-                if not (NAME.match(app) and NAME.match(env) and comp in ("app", "web", "api") and KEY.match(key)):
+                if not (NAME.match(app) and NAME.match(env) and NAME.match(comp) and KEY.match(key)):
                     return self.send(400, {"error": "bad request"})
                 if not is_platform_admin(actor):
                     return self.send(403, {"error": "only a platform administrator may reveal secret values"})
@@ -1117,27 +1240,34 @@ class Handler(BaseHTTPRequestHandler):
                 env, op = body.get("env", ""), body.get("op", "")
                 if not NAME.match(env):
                     return self.send(400, {"error": "bad env"})
+                db_id = body.get("db", "")
+                if db_id and not re.fullmatch(r"[a-z0-9-]+:[A-Za-z_][A-Za-z0-9_]*", db_id):
+                    return self.send(400, {"error": "bad database id"})
+                db_args = ["--db", db_id] if db_id else []
                 if op == "create":
                     require_project_role(actor, store, app, "maintainer")
-                    args = ["db", "create", app, env]
+                    args = ["db", "create", app, env, *db_args]
                 elif op == "wipe":
                     if not is_platform_admin(actor):
                         return self.send(403, {"error": "only a platform administrator may wipe a database"})
                     if body.get("confirm") != f"{app}/{env}":
                         return self.send(400, {"error": f"type {app}/{env} to confirm"})
-                    args = ["db", "wipe", app, env] + (["--i-really-mean-prod"] if env == "prod" else [])
+                    args = ["db", "wipe", app, env, *db_args] + (["--i-really-mean-prod"] if env == "prod" else [])
                 elif op == "use":
                     require_project_role(actor, store, app, "maintainer")
                     src, key, scope = body.get("from", f"{app}/{env}"), body.get("key", "DATABASE_URL"), body.get("scope", env)
                     if not (re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", src) and KEY.match(key) and SCOPE.match(scope)):
                         return self.send(400, {"error": "bad source, key or scope"})
-                    args = ["db", "use", app, env, "--from", src, "--key", key, "--scope", scope]
+                    args = ["db", "use", app, env, "--from", src, "--key", key, "--scope", scope, *db_args]
                     if body.get("allow_prod"):
                         args.append("--allow-prod")
                 else:
                     return self.send(400, {"error": "unknown op"})
                 self.audit(s, f"db:{op}", f"{app}/{env} {body.get('from', '')} {body.get('key', '')}".strip())
                 ok, out = infra(*args, timeout=120, actor=self.user())
+                if ok and op in ("create", "wipe"):      # apply now: inject (or stop injecting) the URL and run migrations
+                    ok2, out2 = infra("redeploy", app, env, timeout=600, actor=self.user())
+                    ok, out = ok and ok2, out + chr(10) + out2
                 return self.send(200, {"ok": ok, "output": mask_url(out)})
 
             return self.send(404, {"error": "not found"})

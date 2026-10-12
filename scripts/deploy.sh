@@ -1,33 +1,32 @@
 #!/usr/bin/env bash
 # Deploy or update one environment of one app.
 #
-#   infra deploy --manifest <repo>/.deploy --env <env> --tag <tag> [--branch <b>] [--commit <sha>] [--no-pull]
-#   infra redeploy <app> <env> [--tag <tag>]     re-run using the stored manifest (after a variable change)
-#   infra rollback <app> <env>                   redeploy the previous tag
+#   infra deploy --manifest <repo>/.infradeploy --env <env> --tag <tag> [--branch <b>] [--commit <sha>] [--no-pull]
+#   infra redeploy <app> <env> [--tag <tag>]
+#   infra rollback <app> <env>
 #
-# <env> is prod | staging | develop | pr-<number> | any short name (qa, demo...).
-# Hosts:  prod → <app>.<DOMAIN>, others → <app>-<env>.<DOMAIN>
-#         TYPE=split adds api-<app>[-<env>].<DOMAIN> for the API.
+# <env> is prod | staging | develop | pr-<number> | any short name.
+# Each service in infra.yml gets its own host:
+#   service 'web' or 'app' -> <app>[-<env>].<DOMAIN>
+#   any other name         -> <svcname>-<app>[-<env>].<DOMAIN>
 SCRIPT_NAME=deploy
-# shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
-# shellcheck source=lib/db.sh
 source "$INFRA_ROOT/scripts/lib/db.sh"
 
 APP="" ENV_NAME="" TAG="" MANIFEST_DIR="" BRANCH="" COMMIT="" PULL=1 REDEPLOY=0 ROLLBACK=0
 while (( $# )); do
   case $1 in
-    --app)      APP=${2:?--app needs a value}; shift 2 ;;
-    --env)      ENV_NAME=${2:?--env needs a value}; shift 2 ;;
-    --tag)      TAG=${2:?--tag needs a value}; shift 2 ;;
-    --manifest) MANIFEST_DIR=${2:?--manifest needs a value}; shift 2 ;;
+    --app)      APP=${2:?}; shift 2 ;;
+    --env)      ENV_NAME=${2:?}; shift 2 ;;
+    --tag)      TAG=${2:?}; shift 2 ;;
+    --manifest) MANIFEST_DIR=${2:?}; shift 2 ;;
     --branch)   BRANCH=${2-}; shift 2 ;;
     --commit)   COMMIT=${2-}; shift 2 ;;
     --no-pull)  PULL=0; shift ;;
     --redeploy) REDEPLOY=1; shift ;;
     --rollback) REDEPLOY=1; ROLLBACK=1; shift ;;
     -h|--help)  usage ;;
-    *) die "unknown argument: $1 (see --help)" ;;
+    *) die "unknown argument: $1" ;;
   esac
 done
 
@@ -42,8 +41,9 @@ if (( REDEPLOY )); then
   [[ -n $APP ]] || die "redeploy/rollback need --app"
   validate_name app "$APP"
   META="$(stack_dir "$APP" "$ENV_NAME")/meta.env"
-  # A blocked deploy (missing variables) is the newest intent: retry ITS tag, not the one still live.
-  if [[ -f $(stack_dir "$APP" "$ENV_NAME")/status.env && $ROLLBACK -eq 0 ]]; then META="$(stack_dir "$APP" "$ENV_NAME")/status.env"; fi
+  if [[ -f $(stack_dir "$APP" "$ENV_NAME")/status.env && $ROLLBACK -eq 0 ]]; then
+    META="$(stack_dir "$APP" "$ENV_NAME")/status.env"
+  fi
   [[ -f $META ]] || die "no existing deployment $APP/$ENV_NAME"
   if (( ROLLBACK )); then
     TAG=$(meta_get "$META" PREV_TAG)
@@ -56,24 +56,31 @@ if (( REDEPLOY )); then
   MANIFEST_DIR="$(stack_dir "$APP" "$ENV_NAME")/deploy"
 fi
 
-[[ -n $TAG ]] || die "--tag is required"
-[[ -n $MANIFEST_DIR ]] || die "--manifest is required (path to the app's .deploy directory)"
-[[ -f $MANIFEST_DIR/manifest.env ]] || die "manifest not found: $MANIFEST_DIR/manifest.env"
+[[ -n $TAG ]]          || die "--tag is required"
+[[ -n $MANIFEST_DIR ]] || die "--manifest is required"
+[[ -f $MANIFEST_DIR/infra.yml ]] || die "infra.yml not found: $MANIFEST_DIR/infra.yml"
 MANIFEST_DIR=$(cd "$MANIFEST_DIR" && pwd)
 BRANCH=${BRANCH//\'/_}
 
-load_manifest "$MANIFEST_DIR/manifest.env"     # parsed, never executed (untrusted repo input)
-: "${APP_NAME:?APP_NAME is missing from manifest.env}"
-: "${TYPE:?TYPE is missing from manifest.env}"
+# Parse infra.yml via Python (untrusted repo input — never sourced directly)
+PARSED=$(python3 "$INFRA_ROOT/scripts/parse-manifest.py" "$MANIFEST_DIR/infra.yml") \
+  || die "infra.yml is invalid (see errors above)"
+eval "$PARSED"
+
+: "${APP_NAME:?APP_NAME missing from infra.yml}"
 validate_name app "$APP_NAME"
-[[ -z $APP || $APP == "$APP_NAME" ]] || die "--app '$APP' does not match APP_NAME '$APP_NAME' in the manifest"
+[[ -z $APP || $APP == "$APP_NAME" ]] \
+  || die "--app '$APP' does not match name '$APP_NAME' in infra.yml"
 APP=$APP_NAME
-case $APP in console|traefik|logs|status|hooks|grafana|www|api) die "APP_NAME '$APP' is reserved by the platform" ;; esac
-comps=$(components_for "$TYPE")
-read -r -a COMPONENTS <<<"$comps"
+case $APP in console|traefik|logs|status|hooks|grafana|www|api|auth|sso)
+  die "name '$APP' is reserved by the platform" ;; esac
+
+read -r -a SERVICES <<< "$SERVICES"
+(( ${#SERVICES[@]} > 0 )) || die "infra.yml has no services"
 
 STACK=$(stack_name "$APP" "$ENV_NAME")
 STACK_DIR=$(stack_dir "$APP" "$ENV_NAME")
+STACK_NETWORK=$(stack_network "$APP" "$ENV_NAME")
 CLASS=$(env_class "$ENV_NAME")
 CLASS_VAR=${CLASS^^}; CLASS_VAR=${CLASS_VAR//-/_}
 PREVIEW=false
@@ -83,29 +90,28 @@ acquire_lock "$STACK"
 
 if [[ ! -f $STACK_DIR/meta.env ]]; then
   foreign=$(foreign_in_project "$STACK")
-  [[ -z $foreign ]] || die "compose project '$STACK' already has containers we did not create ($foreign) — refusing to touch them. Change STACK_PREFIX or APP_NAME."
+  [[ -z $foreign ]] || die "compose project '$STACK' already has containers we did not create ($foreign)"
 fi
 
 if [[ $PREVIEW == true && ! -f $STACK_DIR/meta.env ]]; then
   n=$(count_previews)
-  (( n < MAX_PREVIEWS )) || die "preview limit reached ($n/$MAX_PREVIEWS). Close old PRs or run 'infra cleanup'."
-  # Per-app cap: MAX_PREVIEWS_PER_APP in the manifest overrides the global limit for this app.
+  (( n < MAX_PREVIEWS )) || die "preview limit reached ($n/$MAX_PREVIEWS)"
   if [[ -n ${MAX_PREVIEWS_PER_APP:-} ]]; then
     app_n=$(find "$DEPLOY_ROOT/$APP" -mindepth 1 -maxdepth 1 -type d -name 'pr-*' 2>/dev/null | wc -l)
     (( app_n < MAX_PREVIEWS_PER_APP )) \
-      || die "per-app preview limit reached for $APP ($app_n/$MAX_PREVIEWS_PER_APP). Close old PRs or run 'infra cleanup'."
+      || die "per-app preview limit reached ($app_n/$MAX_PREVIEWS_PER_APP)"
   fi
 fi
 
 PREV_TAG=""
 if [[ -f $STACK_DIR/meta.env ]]; then
   old_tag=$(meta_get "$STACK_DIR/meta.env" TAG)
-  if [[ $old_tag == "$TAG" ]]; then PREV_TAG=$(meta_get "$STACK_DIR/meta.env" PREV_TAG); else PREV_TAG=$old_tag; fi
+  if [[ $old_tag == "$TAG" ]]; then PREV_TAG=$(meta_get "$STACK_DIR/meta.env" PREV_TAG)
+  else PREV_TAG=$old_tag; fi
 fi
 
-log "deploying $STACK  type=$TYPE  tag=$TAG  branch=${BRANCH:-n/a}"
+log "deploying $STACK  services=${SERVICES[*]}  tag=$TAG  branch=${BRANCH:-n/a}"
 
-# Keep a snapshot of the manifest so redeploys don't need the app repo.
 mkdir -p "$STACK_DIR/runtime"
 if (( ! REDEPLOY )); then
   rm -rf "$STACK_DIR/deploy.new"
@@ -115,114 +121,169 @@ if (( ! REDEPLOY )); then
 fi
 DEPLOY_DIR="$STACK_DIR/deploy"
 
-# ----------------------------------------------------------------------------- per component
+# ----------------------------------------------------------------------------- per service
 
-base=$APP
-if [[ $ENV_NAME != prod ]]; then base="$APP-$ENV_NAME"; fi
-
-declare -A HOST IMAGE PORT MEM CPUS MW
+declare -A SVC_HOST SVC_IMAGE SVC_PORT SVC_MEM SVC_CPUS SVC_MW SVC_SSO
 stack_mem_kib=0
 stack_cpus=0
-for comp in "${COMPONENTS[@]}"; do
-  C=${comp^^}
 
-  host="$base.$DOMAIN"
-  if [[ $TYPE == split && $comp == api ]]; then host="api-$base.$DOMAIN"; fi
-  v="${C}_HOST_${CLASS_VAR}"; HOST[$comp]=${!v:-$host}        # e.g. WEB_HOST_PROD=www.example.com
+for svc in "${SERVICES[@]}"; do
+  S=${svc^^}; S=${S//-/_}
 
-  v="${C}_IMAGE"; image=${!v:-}
-  if [[ -z $image ]]; then
-    [[ -n ${IMAGE_REPO:-} ]] || die "set IMAGE_REPO (or ${C}_IMAGE) in manifest.env"
-    image="$IMAGE_REPO/$comp:$TAG"
+  # host
+  host_var="${S}_HOST_${CLASS_VAR}"
+  if [[ -n ${!host_var:-} ]]; then
+    host=${!host_var}
+  else
+    base=$APP
+    [[ $ENV_NAME == prod ]] || base="$APP-$ENV_NAME"
+    if [[ $svc == web || $svc == app ]]; then
+      host="$base.$DOMAIN"
+    else
+      host="$svc-$base.$DOMAIN"
+    fi
   fi
-  IMAGE[$comp]=${image//\{tag\}/$TAG}
+  SVC_HOST[$svc]=$host
 
-  v="${C}_PORT"; PORT[$comp]=${!v:-$(default_port "$comp")}
-  resource_resolve "$APP" "$ENV_NAME" "$comp"
-  MEM[$comp]=$RESOURCE_MEM
-  CPUS[$comp]=$RESOURCE_CPUS
-  resource_validate_value "${MEM[$comp]}" "${CPUS[$comp]}"
-  component_mem_kib=$(resource_mem_kib "${MEM[$comp]}")
-  stack_mem_kib=$((stack_mem_kib + component_mem_kib))
-  stack_cpus=$(awk -v total="$stack_cpus" -v addend="${CPUS[$comp]}" 'BEGIN { printf "%.3f", total + addend }')
+  # image: <image>:<tag> (replace {tag} placeholder if present)
+  img_var="${S}_IMAGE"
+  raw_image=${!img_var:-}
+  [[ -n $raw_image ]] || die "service '$svc': image is required"
+  SVC_IMAGE[$svc]=${raw_image//\{tag\}/$TAG}
+  # append tag if no tag/digest already present
+  if [[ ${SVC_IMAGE[$svc]} != *:* && ${SVC_IMAGE[$svc]} != *@* ]]; then
+    SVC_IMAGE[$svc]="${SVC_IMAGE[$svc]}:$TAG"
+  fi
 
+  # port
+  port_var="${S}_PORT"
+  SVC_PORT[$svc]=${!port_var:-80}
+
+  # resources
+  resource_resolve "$APP" "$ENV_NAME" "$svc"
+  SVC_MEM[$svc]=$RESOURCE_MEM
+  SVC_CPUS[$svc]=$RESOURCE_CPUS
+  resource_validate_value "${SVC_MEM[$svc]}" "${SVC_CPUS[$svc]}"
+  svc_mem_kib=$(resource_mem_kib "${SVC_MEM[$svc]}")
+  stack_mem_kib=$((stack_mem_kib + svc_mem_kib))
+  stack_cpus=$(awk -v t="$stack_cpus" -v a="${SVC_CPUS[$svc]}" 'BEGIN{printf "%.3f",t+a}')
+
+  # middlewares
   mw="secure-headers@file,compress@file"
   if [[ $PREVIEW == true ]]; then
     mw+=",preview-noindex@file"
-    # APIs skip basic-auth by default: browsers won't send it on cross-origin fetches.
-    auth=${PREVIEW_AUTH:-true}
-    if [[ $comp == api ]]; then auth=${API_PREVIEW_AUTH:-false}; fi
-    if [[ $PREVIEW_AUTH_ENABLED == true && $auth == true ]]; then mw+=",preview-auth@file"; fi
+    auth_var="ENV_PREVIEW_AUTH"
+    auth=${!auth_var:-true}
+    svc_auth_var="ENV_PREVIEW_${S}_AUTH"
+    if [[ -n ${!svc_auth_var:-} ]]; then auth=${!svc_auth_var}; fi
+    if [[ $PREVIEW_AUTH_ENABLED == true && $auth == true ]]; then
+      if [[ ${PREVIEW_AUTH_MODE:-basic} == keycloak ]]; then
+        mw+=",${STACK}-${svc}-sso@docker"; SVC_SSO[$svc]=1      # Keycloak login + project-role check (console /auth/preview)
+      else
+        mw+=",preview-auth@file"                                 # shared basic-auth password
+      fi
+    fi
   fi
-  if [[ -n ${EXTRA_MIDDLEWARES:-} ]]; then mw+=",$EXTRA_MIDDLEWARES"; fi
-  MW[$comp]=$mw
+  extra_var="${S}_EXTRA_MIDDLEWARES"
+  if [[ -n ${!extra_var:-} ]]; then mw+=",${!extra_var}"; fi
+  SVC_MW[$svc]=$mw
 done
 resource_validate_stack "$stack_mem_kib" "$stack_cpus"
 
-# Hostname ownership (multi-tenant): an app may only use hosts in its own namespace on the platform
-# domain, and never a host another environment already serves — no traffic hijacking.
-for comp in "${COMPONENTS[@]}"; do
-  h=${HOST[$comp]}
+# hostname ownership check
+for svc in "${SERVICES[@]}"; do
+  h=${SVC_HOST[$svc]}
   if [[ $h == *".$DOMAIN" ]]; then
     sub=${h%".$DOMAIN"}
-    [[ $sub == "$APP" || $sub == "$APP-"* || $sub == "api-$APP" || $sub == "api-$APP-"* ]] \
-      || die "host $h is outside $APP's namespace (allowed on $DOMAIN: $APP[-…] and api-$APP[-…])"
+    valid=false
+    [[ $sub == "$APP" || $sub == "$APP-"* ]] && valid=true
+    [[ $sub == "$svc-$APP" || $sub == "$svc-$APP-"* ]] && valid=true
+    $valid || die "host $h is outside $APP's namespace"
   fi
   for f in "$DEPLOY_ROOT"/*/*/stack.env; do
     [[ $f == "$STACK_DIR/stack.env" ]] && continue
-    if grep -qF "_HOST='$h'" "$f"; then
-      die "host $h is already served by $(dirname "${f#"$DEPLOY_ROOT/"}") — refusing to take it over"
-    fi
+    grep -qF "_HOST='$h'" "$f" \
+      && die "host $h already served by $(dirname "${f#"$DEPLOY_ROOT/"}")"
   done
 done
 
-URL="https://${HOST[${COMPONENTS[0]}]}$URL_PORT_SUFFIX"
-SELF_API_URL=""
-case $TYPE in
-  monolith)      SELF_API_URL="https://${HOST[app]}$URL_PORT_SUFFIX" ;;
-  backend|split) SELF_API_URL="https://${HOST[api]}$URL_PORT_SUFFIX" ;;
-esac
+URL="https://${SVC_HOST[${SERVICES[0]}]}$URL_PORT_SUFFIX"
 
-# ----------------------------------------------------------------------------- database
-# Deploy never provisions or wires a database. If an environment needs one:
-#   infra db create <app> <env>          — spin up an isolated DB for that branch
-#   infra db url <app> <env>             — get the connection URL
-# Then paste the URL into the console as DATABASE_URL (or any variable name the app uses).
-# One environment can point at another's DB — just set the variable to that URL.
-# If a DB already exists for this environment it is left completely untouched.
+# ----------------------------------------------------------------------------- databases
+# Databases declared in infra.yml are NOT created here. They are created on demand
+# (console button / `infra db create`). A database that has been created gets its role and
+# password re-synced and its URL injected into the declaring service; the rest are reported.
 
-DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
-OWN_DB=false
-pwfile="$STACK_DIR/.db_password"
-if [[ -s $pwfile ]] && pg_running && db_exists "$DB_NAME"; then OWN_DB=true; fi
+USES_PG=false
+ALL_DBS=()
+PENDING_DBS=()
+declare -A DB_NAMES  # svc -> space-separated "inject_as=url" pairs
 
+declared=$(declared_dbs "$DEPLOY_DIR" "$APP" "$ENV_NAME") || die "failed to read databases from infra.yml"
+while IFS='|' read -r id svc inject_as db_name fixed_pw; do
+  [[ -n $id ]] || continue
+  if ! db_is_created "$STACK_DIR" "$db_name"; then
+    PENDING_DBS+=("$id")
+    continue
+  fi
+  if pg_running; then
+    db_ensure "$db_name" "$db_name" "$(<"$STACK_DIR/.db_password_$db_name")" "" "$CLASS"
+    USES_PG=true
+  fi
+  DB_NAMES[$svc]+="${inject_as}=$(db_url_for "$STACK_DIR" "$db_name") "
+  ALL_DBS+=("$db_name")
+done <<< "$declared"
+if (( ${#PENDING_DBS[@]} )); then
+  log "databases declared but not created yet: ${PENDING_DBS[*]} (create them in the console → Database)"
+fi
 
 # ----------------------------------------------------------------------------- runtime env files
-# Order (later wins): injected by infra < repo .deploy/env/* < server secrets.
 
-for comp in "${COMPONENTS[@]}"; do
-  out="$STACK_DIR/runtime/$comp.env"
+for svc in "${SERVICES[@]}"; do
+  S=${svc^^}; S=${S//-/_}
+  out="$STACK_DIR/runtime/$svc.env"
   (
     umask 077
     {
-      echo "# Generated by 'infra deploy' — do not edit. Change the sources listed below instead."
+      echo "# Generated by 'infra deploy' — do not edit."
       echo "APP_NAME=$APP"
       echo "APP_ENV=$ENV_NAME"
       echo "ENV_CLASS=$CLASS"
       echo "IS_PREVIEW=$PREVIEW"
-      echo "PORT=${PORT[$comp]}"
-      echo "PUBLIC_URL=https://${HOST[$comp]}$URL_PORT_SUFFIX"
+      echo "PORT=${SVC_PORT[$svc]}"
+      echo "PUBLIC_URL=https://${SVC_HOST[$svc]}$URL_PORT_SUFFIX"
       echo "INFRA_DOMAIN=$DOMAIN"
       echo "IMAGE_TAG=$TAG"
       echo "GIT_BRANCH=$BRANCH"
       echo "GIT_COMMIT=$COMMIT"
-      # Nothing else is injected: no DATABASE_URL, no API URLs. Connections are variables DevOps sets.
+
+      # inject DB URLs declared in infra.yml
+      if [[ -n ${DB_NAMES[$svc]:-} ]]; then
+        echo "# --- injected databases"
+        for pair in ${DB_NAMES[$svc]}; do
+          echo "$pair"
+        done
+      fi
+
+      # inject per-env-class static vars from infra.yml environments block
+      cls_prefix="ENV_${CLASS_VAR}_${S}_"
+      for var in $(compgen -v "$cls_prefix" || true); do
+        key=${var#"$cls_prefix"}
+        [[ $key == AUTH ]] && continue   # platform setting, not an app variable
+        echo "$key=${!var}"
+      done
+
       cat_existing \
-        "$DEPLOY_DIR/env/common.env" "$DEPLOY_DIR/env/$CLASS.env" "$DEPLOY_DIR/env/$CLASS.$comp.env" \
-        "$SECRETS_ROOT/$APP/common.env" "$SECRETS_ROOT/$APP/$CLASS.env" "$SECRETS_ROOT/$APP/$CLASS.$comp.env"
-      # Most specific: variables for exactly this environment (e.g. pr-12.env), set from the console.
+        "$DEPLOY_DIR/env/common.env"        \
+        "$DEPLOY_DIR/env/$CLASS.env"        \
+        "$DEPLOY_DIR/env/$CLASS.$svc.env"   \
+        "$SECRETS_ROOT/$APP/common.env"     \
+        "$SECRETS_ROOT/$APP/$CLASS.env"     \
+        "$SECRETS_ROOT/$APP/$CLASS.$svc.env"
       if [[ $ENV_NAME != "$CLASS" ]]; then
-        cat_existing "$SECRETS_ROOT/$APP/$ENV_NAME.env" "$SECRETS_ROOT/$APP/$ENV_NAME.$comp.env"
+        cat_existing \
+          "$SECRETS_ROOT/$APP/$ENV_NAME.env" \
+          "$SECRETS_ROOT/$APP/$ENV_NAME.$svc.env"
       fi
     } > "$out.tmp"
   )
@@ -230,14 +291,15 @@ for comp in "${COMPONENTS[@]}"; do
 done
 
 # ----------------------------------------------------------------------------- required variables
-# Manifest: <COMPONENT>_REQUIRED_ENV="STRIPE_KEY NEW_FEATURE_URL". Missing or empty → the deploy is
-# blocked before anything changes, and the console shows exactly what to add where.
 
 missing_all=()
-for comp in "${COMPONENTS[@]}"; do
-  v="${comp^^}_REQUIRED_ENV"
-  for key in ${!v:-}; do
-    if ! grep -qE "^${key}=.+" "$STACK_DIR/runtime/$comp.env"; then missing_all+=("$comp:$key"); fi
+for svc in "${SERVICES[@]}"; do
+  S=${svc^^}; S=${S//-/_}
+  req_var="${S}_REQUIRED_ENV"
+  for key in ${!req_var:-}; do
+    if ! grep -qE "^${key}=.+" "$STACK_DIR/runtime/$svc.env"; then
+      missing_all+=("$svc:$key")
+    fi
   done
 done
 if (( ${#missing_all[@]} )); then
@@ -246,7 +308,6 @@ if (( ${#missing_all[@]} )); then
   write_kv "$tmp" MISSING "${missing_all[*]}"
   write_kv "$tmp" APP "$APP"
   write_kv "$tmp" ENV_NAME "$ENV_NAME"
-  write_kv "$tmp" TYPE "$TYPE"
   write_kv "$tmp" TAG "$TAG"
   write_kv "$tmp" BRANCH "$BRANCH"
   write_kv "$tmp" COMMIT "$COMMIT"
@@ -254,221 +315,178 @@ if (( ${#missing_all[@]} )); then
   mv "$tmp" "$STACK_DIR/status.env"
   alert "deploy BLOCKED for $STACK: missing ${missing_all[*]}"
   scopes="'$ENV_NAME'"
-  if [[ $ENV_NAME != "$CLASS" ]]; then scopes+=" (this PR only) or '$CLASS' (all previews)"; fi
+  [[ $ENV_NAME != "$CLASS" ]] && scopes+=" or '$CLASS' (all previews)"
+  for m in "${missing_all[@]}"; do
+    for p in "${PENDING_DBS[@]}"; do
+      [[ $m == "$p" ]] && warn "$m is a database that has not been created — create it in the console → Database, then redeploy"
+    done
+  done
   die "missing required variables: ${missing_all[*]}
-       Add them in the console (https://console.$DOMAIN$URL_PORT_SUFFIX → Variables → $APP, scope $scopes)
-       or: sudo infra secrets edit $APP $CLASS   — then retry: infra redeploy $APP $ENV_NAME"
+       Add them in the console → Variables → $APP, scope $scopes"
 fi
 rm -f "$STACK_DIR/status.env"
 
-# ----------------------------------------------------------------------------- compose inputs
+# ----------------------------------------------------------------------------- generate compose
 
-tmp="$STACK_DIR/stack.env.tmp"
-: > "$tmp"
+# Generate one compose file per service from the generic template
+mkdir -p "$STACK_DIR/generated"
+: > "$STACK_DIR/compose-files"
+
+for svc in "${SERVICES[@]}"; do
+  S=${svc^^}; S=${S//-/_}
+  out="$STACK_DIR/generated/$svc.yml"
+  sso_labels=""
+  if [[ -n ${SVC_SSO[$svc]:-} ]]; then
+    sso_labels="      - traefik.http.middlewares.${STACK}-${svc}-sso.forwardauth.address=http://console:8000/auth/preview?app=${APP}
+      - traefik.http.middlewares.${STACK}-${svc}-sso.forwardauth.trustForwardHeader=true"
+  fi
+  cat > "$out" << COMPOSEYML
+services:
+  ${svc}:
+    image: ${SVC_IMAGE[$svc]}
+    restart: unless-stopped
+    init: true
+    env_file: [runtime/${svc}.env]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [default]
+    mem_limit: ${SVC_MEM[$svc]}
+    cpus: ${SVC_CPUS[$svc]}
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    labels:
+      - infra.managed=true
+      - infra.app=${APP}
+      - infra.env=${ENV_NAME}
+      - traefik.enable=true
+      - traefik.docker.network=${STACK_NETWORK}
+      - traefik.http.routers.${STACK}-${svc}.rule=Host(\`${SVC_HOST[$svc]}\`)
+      - traefik.http.routers.${STACK}-${svc}.entrypoints=websecure
+      - traefik.http.routers.${STACK}-${svc}.tls=${ROUTER_TLS:-true}
+      - traefik.http.routers.${STACK}-${svc}.middlewares=${SVC_MW[$svc]}
+      - traefik.http.routers.${STACK}-${svc}.service=${STACK}-${svc}
+      - traefik.http.services.${STACK}-${svc}.loadbalancer.server.port=${SVC_PORT[$svc]}
+${sso_labels}
+
+networks:
+  default:
+    name: ${STACK_NETWORK}
+    external: true
+COMPOSEYML
+  echo "stack:generated/$svc.yml" >> "$STACK_DIR/compose-files"
+done
+
+# ----------------------------------------------------------------------------- stack.env
+
+tmp="$STACK_DIR/stack.env.tmp"; : > "$tmp"
 write_kv "$tmp" STACK "$STACK"
 write_kv "$tmp" APP "$APP"
 write_kv "$tmp" ENV_NAME "$ENV_NAME"
 write_kv "$tmp" TAG "$TAG"
 write_kv "$tmp" DOMAIN "$DOMAIN"
 write_kv "$tmp" ROUTER_TLS "$ROUTER_TLS"
-STACK_NETWORK=$(stack_network "$APP" "$ENV_NAME")
 write_kv "$tmp" STACK_NETWORK "$STACK_NETWORK"
-# Postgres joins this environment's network only if it actually uses the platform DB.
-USES_PG=false
-# Postgres joins this environment's network only if it has its own DB or a variable points at Postgres.
-if [[ $OWN_DB == true ]] || grep -qs "@$PG_CONTAINER[:/]" "$STACK_DIR"/runtime/*.env; then USES_PG=true; fi
-for comp in "${COMPONENTS[@]}"; do
-  C=${comp^^}
-  write_kv "$tmp" "${C}_IMAGE" "${IMAGE[$comp]}"
-  write_kv "$tmp" "${C}_HOST" "${HOST[$comp]}"
-  write_kv "$tmp" "${C}_PORT" "${PORT[$comp]}"
-  write_kv "$tmp" "${C}_MEM_LIMIT" "${MEM[$comp]}"
-  write_kv "$tmp" "${C}_CPUS" "${CPUS[$comp]}"
-  write_kv "$tmp" "${C}_MIDDLEWARES" "${MW[$comp]}"
-done
 mv "$tmp" "$STACK_DIR/stack.env"
 
-{
-  for comp in "${COMPONENTS[@]}"; do echo "tpl:components/$comp.yml"; done
-  if [[ -f $DEPLOY_DIR/compose.extra.yml ]]; then echo "stack:deploy/compose.extra.yml"; fi
-} > "$STACK_DIR/compose-files"
-
 load_stack "$APP" "$ENV_NAME"
-"${COMPOSE[@]}" config --quiet || die "invalid compose configuration for $STACK"
+"${COMPOSE[@]}" config --quiet || die "invalid compose configuration"
 
-# Stamp every service — including sidecars from compose.extra.yml — as ours.
+# stamp managed label
 {
-  echo "# Generated by 'infra deploy': marks every container in this stack as managed by infra."
   echo "services:"
-  "${COMPOSE[@]}" config --services | while read -r svc; do
-    printf '  %s:\n    labels:\n      infra.managed: "true"\n' "$svc"
+  "${COMPOSE[@]}" config --services | while read -r s; do
+    printf '  %s:\n    labels:\n      infra.managed: "true"\n' "$s"
   done
 } > "$STACK_DIR/managed.yml"
 echo "stack:managed.yml" >> "$STACK_DIR/compose-files"
 load_stack "$APP" "$ENV_NAME"
 
-# ----------------------------------------------------------------------------- roll out
+# ----------------------------------------------------------------------------- network + pull
 
-# ----------------------------------------------------------------------------- policy
-# The repo controls its .deploy/ folder (incl. compose.extra.yml). On a multi-tenant host that
-# must never become a way into the host or into another project, so the fully merged stack is
-# checked BEFORE anything starts. Violations block the deploy.
-
-compose_without_extra() { # BASE = the COMPOSE command with only the platform templates
-  local i; BASE=()
-  for (( i = 0; i < ${#COMPOSE[@]}; i++ )); do
-    if [[ ${COMPOSE[i]} == -f && ( ${COMPOSE[i+1]:-} == "$STACK_DIR/deploy/compose.extra.yml" \
-          || ${COMPOSE[i+1]:-} == "$STACK_DIR/managed.yml" ) ]]; then i=$((i + 1)); continue; fi
-    BASE+=("${COMPOSE[i]}")
-  done
-}
-
-policy_violations() {
-  local full raw base
-  full=$("${COMPOSE[@]}" config --format json)
-  raw=$("${COMPOSE[@]}" config --no-normalize --no-interpolate --no-consistency --format json)
-  compose_without_extra
-  base=$("${BASE[@]}" config --format json)
-  jq -rn --argjson c "$full" --argjson r "$raw" --argjson b "$base" --arg runtime "$STACK_DIR/runtime/" '
-    def tlabels: (. // {}) | with_entries(select(.key | startswith("traefik.")));
-    def service_checks($s; $v):
-      (if $v.privileged then "privileged" else empty end),
-      (if (($v.cap_add // []) | length) > 0 then "cap_add" else empty end),
-      (if (($v.devices // []) | length) > 0 then "devices" else empty end),
-      ("network_mode", "pid", "ipc", "uts", "userns_mode", "cgroup_parent", "container_name"
-         | select($v[.] != null)),
-      (if (($v.ports // []) | length) > 0 then "ports (publish through Traefik instead)" else empty end),
-      (if $v.build != null then "build (images are built in CI)" else empty end),
-      (if (($v.volumes_from // []) | length) > 0 then "volumes_from" else empty end),
-      (($v.volumes // [])[] | select(.type != "volume" and .type != "tmpfs") | "\(.type) mount \(.source // "")"),
-      (($v.security_opt // [])[] | select(. != "no-new-privileges:true" and . != "no-new-privileges") | "security_opt \(.)"),
-      (($v.networks // {}) | keys[] | select(. != "default") | "extra network \(.)"),
-      (if (($v.sysctls // {}) | length) > 0 then "sysctls" else empty end),
-      (if ($v.mem_limit // $v.deploy.resources.limits.memory) == null then "no mem_limit" else empty end),
-      ((($r.services[$s].env_file) // [])[] | .path | select(startswith($runtime) | not) | "env_file \(.)"),
-      (if ($v.labels | tlabels) != ($b.services[$s].labels | tlabels)
-         then "traefik labels differ from the platform template (custom routing is not allowed)" else empty end);
-    ($c.services | to_entries[] | .key as $s | service_checks($s; .value) | "\($s): \(.)"),
-    (($c.volumes // {}) | to_entries[] | select(.value.external == true or ((.value.driver_opts // {}) | length) > 0)
-       | "volume \(.key): external volumes and driver_opts are not allowed"),
-    (($c.networks // {}) | keys[] | select(. != "default") | "top-level network \(.)"),
-    (($c.configs // {}) | keys[] | "top-level configs: \(.)"),
-    (($c.secrets // {}) | keys[] | "top-level secrets: \(.)")'
-}
-
-discard_if_new() { # a refused FIRST deploy leaves nothing behind (DB, network, state)
-  if [[ ! -f $STACK_DIR/meta.env ]]; then
-    db_drop "$DB_NAME" "$DB_NAME"            # only exists if this very deploy provisioned it
-    rm -rf "$STACK_DIR"; rmdir "$DEPLOY_ROOT/$APP" 2>/dev/null || true
-  fi
-}
-if ! violations=$(policy_violations); then
-  discard_if_new
-  die "could not evaluate the stack policy (is compose.extra.yml valid?)"
+if [[ $USES_PG == true ]] || grep -qs "@$PG_CONTAINER[:/]" "$STACK_DIR"/runtime/*.env; then
+  USES_PG=true
 fi
-if [[ -n $violations ]]; then
-  discard_if_new
-  alert "deploy REFUSED for $STACK: stack violates the platform policy"
-  die "the stack violates the platform policy (nothing was started):
-$(sed 's/^/         - /' <<<"$violations")
-       Sidecars in compose.extra.yml may only use images, env (runtime/*.env), named volumes,
-       tmpfs and mem_limit. Ports, host mounts, privileges and custom routing are not allowed."
-fi
-
-# Before migrations: `compose run` already needs the network (and Postgres on it).
 ensure_stack_network "$STACK_NETWORK" "$APP" "$ENV_NAME" "$USES_PG"
 
 registry_login
-load_stack "$APP" "$ENV_NAME"     # rebuild COMPOSE so pulls use the project's DOCKER_CONFIG
+load_stack "$APP" "$ENV_NAME"
 if (( PULL )); then
   mapfile -t stack_images < <("${COMPOSE[@]}" config --images)
   record_owned_images "${stack_images[@]}"
-  # Tags are immutable (sha-…), so an image already on the host is the right one even if the
-  # registry is unreachable. A truly missing image still fails at `up`.
   if ! "${COMPOSE[@]}" pull --quiet 2>/dev/null; then
     warn "pull failed — continuing with images already on this host"
   fi
 fi
 
-# Migrations: scan the service's runtime env for any variable whose value is a postgres URL
-# pointing at the platform DB. The variable name doesn't matter — apps call it whatever they want
-# (DATABASE_URL, DB_URL, PG_DSN, POSTGRES_URI, …). We find it, check it's this env's own DB,
-# and use it. If it points at another env's DB, MIGRATE_ON_SHARED_DB=true is required.
-#
-# Atomicity guard: pre-migration snapshot for non-prod so DevOps can restore if compose up
-# fails after a successful migration.
-db_of_url() { sed -nE 's#^[a-z]+://[^@]*@([^:/]+)(:[0-9]+)?/([^?]+).*#\1 \3#p' <<<"$1"; }
+# ----------------------------------------------------------------------------- migrations
+
 if [[ -n ${MIGRATE_CMD:-} ]]; then
-  msvc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
-  # Find the first env var whose value looks like a postgres URL pointing at the platform DB.
-  murl=$(awk -F= -v pg_container="$PG_CONTAINER" '
-    $1 ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && $2 ~ /^postgres(ql)?:\/\// && index($0, "@" pg_container) {
-      sub(/^[^=]*=/, "")
-      print
-      exit
+  msvc=${MIGRATE_SERVICE:-${SERVICES[-1]}}
+  murl=$(awk -F= -v pg="$PG_CONTAINER" '
+    $1~/^[A-Za-z_][A-Za-z0-9_]*$/ && $2~/^postgres(ql)?:\/\// && index($0,"@"pg) {
+      sub(/^[^=]*=/,""); print; exit
     }' "$STACK_DIR/runtime/$msvc.env")
-  read -r mhost mdb <<<"$(db_of_url "$murl")"
   if [[ -z $murl ]]; then
-    log "migrations skipped: no variable in '$msvc' points at the platform DB yet — set one in the console then redeploy"
-    MIGRATE_CMD=""
-  elif [[ $mdb != "$DB_NAME" ]] \
-       && ! grep -qE '^MIGRATE_ON_SHARED_DB=true$' "$STACK_DIR/runtime/$msvc.env"; then
-    warn "migrations skipped: DB variable points at '$mdb', not this environment's own DB '$DB_NAME' (set MIGRATE_ON_SHARED_DB=true to allow)"
+    log "migrations skipped: no postgres URL in '$msvc' yet"
     MIGRATE_CMD=""
   fi
 fi
 if [[ -n ${MIGRATE_CMD:-} ]]; then
-  svc=${MIGRATE_SERVICE:-${COMPONENTS[-1]}}
-  # Pre-migration snapshot for non-prod: lets DevOps restore if compose up fails after a
-  # successful migration. Stored in BACKUP_DIR/pre-migrate/<stack>-<tag>.dump, kept for 3 days.
+  svc=${MIGRATE_SERVICE:-${SERVICES[-1]}}
   if [[ $ENV_NAME != prod && -n ${BACKUP_DIR:-} ]]; then
-    snap_dir="$BACKUP_DIR/pre-migrate"
-    mkdir -p "$snap_dir"; chmod 700 "$snap_dir"
+    snap_dir="$BACKUP_DIR/pre-migrate"; mkdir -p "$snap_dir"; chmod 700 "$snap_dir"
     snap="$snap_dir/$STACK-$TAG.dump"
-    if docker exec "$PG_CONTAINER" pg_dump -U postgres -Fc "$DB_NAME" > "$snap" 2>/dev/null; then
+    db_name=$(db_ident "${APP}_${ENV_NAME}")
+    if docker exec "$PG_CONTAINER" pg_dump -U postgres -Fc "$db_name" > "$snap" 2>/dev/null; then
       log "pre-migration snapshot: $snap"
       find "$snap_dir" -name "$STACK-*.dump" -mtime +3 -delete 2>/dev/null || true
     else
-      warn "pre-migration snapshot failed — continuing anyway"
+      warn "pre-migration snapshot failed — continuing"
       rm -f "$snap"
     fi
   fi
-  log "running migrations in '$svc': $MIGRATE_CMD"
-  if ! "${COMPOSE[@]}" run --rm --no-deps -T --label traefik.enable=false "$svc" sh -c "$MIGRATE_CMD"; then
-    alert "migrations FAILED for $STACK ($TAG) — old version still running"
+  log "running migrations: $MIGRATE_CMD"
+  if ! "${COMPOSE[@]}" run --rm --no-deps -T --label traefik.enable=false \
+       "$svc" sh -c "$MIGRATE_CMD"; then
+    alert "migrations FAILED for $STACK ($TAG)"
     die "migrations failed"
   fi
 fi
 
-if ! "${COMPOSE[@]}" up -d --remove-orphans --wait --wait-timeout "${DEPLOY_WAIT_TIMEOUT:-180}"; then
+# ----------------------------------------------------------------------------- roll out
+
+if ! "${COMPOSE[@]}" up -d --remove-orphans --wait \
+     --wait-timeout "${DEPLOY_WAIT_TIMEOUT:-180}"; then
   "${COMPOSE[@]}" ps -a || true
   "${COMPOSE[@]}" logs --no-color --tail 100 || true
   alert "deploy FAILED for $STACK ($TAG)"
   die "containers did not become healthy within ${DEPLOY_WAIT_TIMEOUT:-180}s"
 fi
 
-# Healthy containers aren't reachable until Traefik has picked them up (event + reload, ~1-3 s).
-# Ask Traefik itself — from inside its container, so this works from the CLI, CI runner and console
-# alike — until the host stops returning Traefik's "no route" 404. 401 (preview auth) counts as routed.
+# Waits until Traefik routes the host (anything but a 404 counts). Readiness itself is gated by the
+# image's own HEALTHCHECK through `up --wait`; the platform never injects one (images may lack wget/curl).
 wait_routed() {
-  local host=$1 scheme=https i out
-  if [[ $ROUTER_TLS != true ]]; then scheme=http; fi
+  local host=$1 path=${2:-/} scheme=https i out
+  [[ $ROUTER_TLS == true ]] || scheme=http
   for i in $(seq 1 30); do
     if out=$(docker exec infra-traefik wget -q -O /dev/null --no-check-certificate \
-               --header "Host: $host" "$scheme://127.0.0.1:443/" 2>&1); then return 0; fi
+               --header "Host: $host" "$scheme://127.0.0.1:443$path" 2>&1); then return 0; fi
     [[ $out == *" 404"* ]] || return 0
     sleep 1
   done
-  warn "Traefik still answers 404 for $host after 30s — the app may 404 on '/', or routing is broken"
+  warn "Traefik still 404 for $host after 30s"
 }
-for comp in "${COMPONENTS[@]}"; do wait_routed "${HOST[$comp]}"; done
+for svc in "${SERVICES[@]}"; do
+  S=${svc^^}; S=${S//-/_}; hp_var="${S}_HEALTH_PATH"
+  wait_routed "${SVC_HOST[$svc]}" "${!hp_var:-/}"
+done
 
 # ----------------------------------------------------------------------------- record
 
-tmp="$STACK_DIR/meta.env.tmp"
-: > "$tmp"
+tmp="$STACK_DIR/meta.env.tmp"; : > "$tmp"
 write_kv "$tmp" APP "$APP"
-write_kv "$tmp" TYPE "$TYPE"
 write_kv "$tmp" ENV_NAME "$ENV_NAME"
 write_kv "$tmp" CLASS "$CLASS"
 write_kv "$tmp" TAG "$TAG"
@@ -476,36 +494,18 @@ write_kv "$tmp" PREV_TAG "$PREV_TAG"
 write_kv "$tmp" BRANCH "$BRANCH"
 write_kv "$tmp" COMMIT "$COMMIT"
 write_kv "$tmp" URL "$URL"
-write_kv "$tmp" API_URL "$SELF_API_URL"
-# What the service is actually connected to (for the console) — scan all env vars for any
-# postgres URL, not just DATABASE_URL (apps name it whatever their framework expects).
-db_of_url() { sed -nE 's#^[a-z]+://[^@]*@([^:/]+)(:[0-9]+)?/([^?]+).*#\1 \3#p' <<<"$1"; }
-DB_CONNECTED=none
-for comp in "${COMPONENTS[@]}"; do
-  while IFS='=' read -r _ val; do
-    [[ $val == postgres* ]] || continue
-    read -r h d <<<"$(db_of_url "$val")"
-    [[ -n $h ]] || continue
-    if [[ $h == "$PG_CONTAINER" && $d == "$DB_NAME" ]]; then DB_CONNECTED=own
-    elif [[ $h == "$PG_CONTAINER" ]]; then DB_CONNECTED="platform:$d"
-    else DB_CONNECTED="external:$h"; fi
-    break
-  done < <(awk '/^[A-Za-z_][A-Za-z0-9_]*=postgres/ { print }' "$STACK_DIR/runtime/$comp.env")
-done
-write_kv "$tmp" DB_NAME "$([[ $OWN_DB == true ]] && echo "$DB_NAME")"
-write_kv "$tmp" DB_CONNECTED "$DB_CONNECTED"
+urls=""; for svc in "${SERVICES[@]}"; do urls+="$svc=https://${SVC_HOST[$svc]}$URL_PORT_SUFFIX "; done
+write_kv "$tmp" URLS "${urls% }"
+write_kv "$tmp" SERVICES "${SERVICES[*]}"
 write_kv "$tmp" STACK_NETWORK "$STACK_NETWORK"
 write_kv "$tmp" USES_PG "$USES_PG"
+write_kv "$tmp" DB_LIST "${ALL_DBS[*]:-}"
+write_kv "$tmp" DB_PENDING "${PENDING_DBS[*]:-}"
 write_kv "$tmp" REPO "${GITHUB_REPOSITORY:-$(meta_get "$STACK_DIR/meta.env" REPO 2>/dev/null || true)}"
 write_kv "$tmp" DEPLOYED_AT "$(date +%s)"
 write_kv "$tmp" DEPLOYED_BY "${GITHUB_ACTOR:-${SUDO_USER:-${USER:-unknown}}}"
 mv "$tmp" "$STACK_DIR/meta.env"
 
 log "OK  $STACK is live at $URL"
-if [[ -n ${GITHUB_OUTPUT:-} ]]; then
-  {
-    echo "url=$URL"
-    echo "api_url=$SELF_API_URL"
-  } >> "$GITHUB_OUTPUT"
-fi
+[[ -z ${GITHUB_OUTPUT:-} ]] || echo "url=$URL" >> "$GITHUB_OUTPUT"
 echo "$URL"

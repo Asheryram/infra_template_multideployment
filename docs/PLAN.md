@@ -12,7 +12,7 @@ _Last updated: 2026-10-11 · next up: item 3_
 
 - Shared-host-safe platform: `HOST_MODE=shared`, preflight, `infra.managed` labels, `infra-` prefix, no global prune, `bootstrap/uninstall.sh`
 - Traefik (8880/8443 locally), Postgres, Uptime Kuma, Dozzle, and the **console** at `https://console.<domain>` (`platform/console/`)
-- Project types: `monolith`, `split` (one repo, web+api together), `frontend` + `backend` (two independently deployed repos)
+- **One config format (2026-10-12):** `.infradeploy/infra.yml` lists independent `services`; no project types. Databases are declared per service and created on demand (console button), then injected; `required_env` blocks deploys. Parsed by `scripts/parse-manifest.py`. `manifest.env`, `compose.extra.yml` and `templates/components` were removed (clean break).
 - App connections are configured as ordinary environment variables; cross-repo branch matching and automatic relinking are not implemented.
 - Variables per app and scope (common / class / single env / `.component`), `*_REQUIRED_ENV` blocking, "will miss" warnings
 - Validation scripts: `local/smoke-test.sh`, `local/e2e/run.sh`, and `local/verify-isolation.sh`. Run them for current results; assertion totals change as coverage evolves.
@@ -59,15 +59,17 @@ Each deployment environment has its own `<stack>_net`. Traefik joins networks fo
 ### 4. Multi-project management polish
 
 - [ ] Console Environments: filter/search by project and a per-project summary (env count, previews, RAM in use via `docker stats --no-stream` filtered by label).
-- [x] Per-project preview cap: `MAX_PREVIEWS_PER_APP` in `.deploy/manifest.env`, in addition to the global inventory cap.
+- [x] Per-project preview cap: `max_previews_per_app` in `.infradeploy/infra.yml`, in addition to the global inventory cap.
 - [ ] Per-project aggregate resource budget across environments. Per-container and per-deployment-stack ceilings are enforced; this broader budget is still needed to prevent many individually capped environments from exceeding a project's allocation.
 - [ ] `infra project report`: which projects, owners, envs, last deploy, disk/RAM. Print in the CLI and show in the console.
 - [ ] Validate the tenant identity-provider integrations end-to-end: Keycloak/OIDC and Authentik login, role isolation, account lifecycle, recovery, backup/restore, and VPN-only routing. See `docs/access-control.md`.
 
-### 5. Optional: `devops.yaml` manifest format
+### 5. infra.yml follow-ups (new format landed untested on a live host)
 
-- [ ] Accept `.deploy/devops.yaml` in addition to `manifest.env`. Convert YAML → env with `yq` (install in bootstrap/console image), with a schema check. `manifest.env` stays the canonical internal format.
-- [ ] App-kit: ship `devops.yaml.example` next to `manifest.env`.
+- [ ] Run `local/smoke-test.sh` and `local/e2e/run.sh` on WSL/Docker and fix whatever the format change broke (e2e still contains assertions written for the old API_URL auto-linking and may need rewriting).
+- [ ] `infra db create|use|info|wipe` (scripts/db.sh) and the console Database tab still assume one DB per environment; update for per-service databases (`DB_LIST` in meta.env).
+- [ ] Console: show per-service URLs (`URLS` in meta.env) and per-service required/missing keys in the UI; docs/onboarding-local.md still describes manifest.env.
+- [ ] Remove the `python3` assumption on non-Linux dev machines (Windows Git Bash only has `python`).
 
 ### 6. Real-world rollout (after 1–3)
 

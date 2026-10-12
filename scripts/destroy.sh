@@ -37,21 +37,26 @@ acquire_lock "$STACK"
 
 # Other environments whose variables point at THIS environment's database (set by DevOps,
 # e.g. a preview using develop's DB). Dropping it would break them.
-DB_NAME=$(db_ident "${APP}_${ENV_NAME}")
-users=""
-for f in "$SECRETS_ROOT"/*/*.env "$DEPLOY_ROOT"/*/*/runtime/*.env; do
-  case $f in "$STACK_DIR"/*|"$SECRETS_ROOT/$APP/$ENV_NAME".*) continue ;; esac
-  if grep -qE "@$PG_CONTAINER(:[0-9]+)?/$DB_NAME([?[:space:]]|$)" "$f" 2>/dev/null; then f=${f#"$SECRETS_ROOT/"}; users+=" ${f#"$DEPLOY_ROOT/"}"; fi
+# Every database this environment created: whatever has a password file (declared in infra.yml and created
+# through `infra db create`), plus what the last deploy recorded. Declared-but-never-created ones are not touched.
+DB_NAMES=()
+[[ -f $STACK_DIR/meta.env ]] && read -r -a DB_NAMES <<< "$(meta_get "$STACK_DIR/meta.env" DB_LIST)"
+for pwf in "$STACK_DIR"/.db_password_*; do [[ -e $pwf ]] && DB_NAMES+=("${pwf##*/.db_password_}"); done
+for DB_NAME in "${DB_NAMES[@]}"; do
+  users=""
+  for f in "$SECRETS_ROOT"/*/*.env "$DEPLOY_ROOT"/*/*/runtime/*.env; do
+    case $f in "$STACK_DIR"/*|"$SECRETS_ROOT/$APP/$ENV_NAME".*) continue ;; esac
+    if grep -qE "@$PG_CONTAINER(:[0-9]+)?/$DB_NAME([?[:space:]]|$)" "$f" 2>/dev/null; then f=${f#"$SECRETS_ROOT/"}; users+=" ${f#"$DEPLOY_ROOT/"}"; fi
+  done
+  if [[ -n $users ]] && (( ! KEEP_DB )); then
+    die "other environments' variables use the database $DB_NAME:$users — change them first, or use --keep-db"
+  fi
 done
-if [[ -n $users ]] && (( ! KEEP_DB )); then
-  die "other environments' variables use the database $DB_NAME:$users — change them first, or use --keep-db"
-fi
 
 # Only ever drop the database this environment OWNS (never a shared/external one).
-TYPE="" BRANCH=""
+BRANCH=""
 if [[ -f $STACK_DIR/stack.env ]]; then
   if [[ -f $STACK_DIR/meta.env ]]; then
-    TYPE=$(meta_get "$STACK_DIR/meta.env" TYPE)
     BRANCH=$(meta_get "$STACK_DIR/meta.env" BRANCH)
   fi
   load_stack "$APP" "$ENV_NAME"
@@ -71,7 +76,7 @@ fi
 remove_stack_network "$(stack_network "$APP" "$ENV_NAME")"
 
 if (( ! KEEP_DB )); then
-  db_drop "$DB_NAME" "$DB_NAME"        # IF EXISTS — no-op when it never had its own DB
+  for DB_NAME in "${DB_NAMES[@]}"; do db_drop "$DB_NAME" "$DB_NAME"; done   # IF EXISTS — only databases this env created
 fi
 
 rm -rf "$STACK_DIR"

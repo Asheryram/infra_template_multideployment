@@ -47,20 +47,23 @@ expect_code 200 "https://traefik.$DOMAIN$S/dashboard/" -u "${DASHBOARD_AUTH_PLAI
 step "monolith: staging (no auth) + preview (auth)"
 infra deploy --manifest "$EX/monolith" --env staging --tag smoke >/dev/null
 infra deploy --manifest "$EX/monolith" --env pr-4 --tag smoke --branch smoke/mono >/dev/null
+if infra db list | grep -q smoke_mono_pr_4; then bad "database must not exist before it is created"; else ok "declared database not created by deploy"; fi
 infra db create smoke-mono pr-4 >/dev/null
-infra db use smoke-mono pr-4 --key DATABASE_URL >/dev/null
 infra redeploy smoke-mono pr-4 >/dev/null
 expect_code 200 "https://smoke-mono-staging.$DOMAIN$S/"
 expect_code 401 "https://smoke-mono-pr-4.$DOMAIN$S/"
 expect_code 200 "https://smoke-mono-pr-4.$DOMAIN$S/" -u "$AUTH"
-if infra db list | grep -q smoke_mono_pr_4; then ok "database smoke_mono_pr_4 exists"; else bad "database smoke_mono_pr_4 missing"; fi
+if infra db list | grep -q smoke_mono_pr_4; then ok "database created on demand"; else bad "database smoke_mono_pr_4 missing"; fi
+
+infra destroy --app smoke-mono --env pr-4 >/dev/null 2>&1 || true   # free a preview slot (shared hosts cap previews)
 
 step "split: web + api in one stack"
 infra deploy --manifest "$EX/split" --env pr-3 --tag smoke --branch smoke/split >/dev/null
 expect_code 200 "https://smoke-split-pr-3.$DOMAIN$S/" -u "$AUTH"
 expect_code 200 "https://api-smoke-split-pr-3.$DOMAIN$S/"
-[[ $(meta smoke-split pr-3 API_URL) == "https://api-smoke-split-pr-3.$DOMAIN$S" ]] \
-  && ok "split API endpoint is reported for CI/console metadata" || bad "split API metadata wrong"
+[[ $(meta smoke-split pr-3 URLS) == *"api=https://api-smoke-split-pr-3.$DOMAIN$S"* ]] \
+  && ok "every service URL is recorded in metadata" || bad "service URLs missing from metadata"
+infra destroy --app smoke-split --env pr-3 >/dev/null 2>&1 || true   # free a preview slot
 
 step "frontend and backend deploy independently"
 infra deploy --manifest "$EX/backend" --env develop --tag smoke --branch develop >/dev/null

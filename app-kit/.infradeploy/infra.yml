@@ -1,0 +1,56 @@
+# =============================================================================
+#  .infradeploy/infra.yml — tells the infra platform how to run this repo.
+#  Every entry under `services:` is deployed independently, as if it lived in
+#  its own repo. Ready-made versions: app-kit/examples/
+# =============================================================================
+
+# Unique on the server; lowercase, digits, dashes, max 30 chars. Becomes the hostname.
+name: myapp
+
+services:
+  # URL convention:
+  #   a service named `web` or `app`  ->  myapp.<domain>           (previews: myapp-pr-12.<domain>)
+  #   any other service name          ->  <service>-myapp.<domain>  (e.g. api-myapp.<domain>)
+  app:
+    # Image repository WITHOUT a tag. CI builds and pushes <image>:<tag>; the platform deploys it.
+    image: ghcr.io/your-org/myapp
+    port: 3000                  # port the container listens on (also passed in as $PORT)
+    health_path: /health        # probed through Traefik after rollout (default /). Container health comes from the image's own HEALTHCHECK.
+    # build_context: .          # read by CI (default: repo root)
+    # dockerfile: Dockerfile    # path from repo root (default: <build_context>/Dockerfile)
+
+    # Keys this service MUST have (from .infradeploy/env or console variables). A missing
+    # key blocks the deploy before anything changes. Add a key here in the same PR as the feature.
+    required_env: []
+    #  - JWT_SECRET
+
+    # Declares databases this service needs. They are NOT created automatically: use the console's
+    # Database button (or `infra db create`) per environment. Once created, the URL is injected as the
+    # named variable on the next deploy (the console redeploys for you).
+    databases: []
+    #  - inject_as: DATABASE_URL
+    #  - inject_as: ANALYTICS_DATABASE_URL
+    #    password: analytics    # optional: fixed password instead of a generated one
+
+    # host:                     # optional custom host per environment class
+    #   prod: www.example.com
+    # extra_middlewares: rate-limit@file
+
+# Optional: run a command in a one-off container before rollout (needs a database above).
+# migrate:
+#   service: app
+#   cmd: npm run migrate
+
+# Optional: cap open previews for this app.
+# max_previews_per_app: 3
+
+# Static, non-secret variables per environment class (prod, staging, develop, preview).
+# Secrets are never written here — set them in the console.
+# environments:
+#   prod:
+#     app:
+#       FEATURE_X: "true"
+#   preview:
+#     auth: true                # basic-auth in front of every service in previews (default true)
+#     api:
+#       auth: false             # override for one service: previews of the API stay public

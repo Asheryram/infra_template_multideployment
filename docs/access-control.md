@@ -48,6 +48,21 @@ The `keycloak` Compose profile can run while `CONSOLE_AUTH_MODE=basic` during se
 
 Keycloak user IDs are stored with a `keycloak:` prefix and are intentionally distinct from Authentik IDs. Switching from Authentik requires re-adding users to organizations and re-granting project roles; do not remove the old provider data until the new grants are verified.
 
+## Preview environments with Keycloak (optional)
+
+By default every preview sits behind one shared basic-auth password (`PREVIEW_AUTH_PLAIN`). With `PREVIEW_AUTH_MODE=keycloak`, previews use the same Keycloak identities and project roles as the console instead.
+
+**Who can open a preview:** someone who is signed in to Keycloak **and** either is a platform administrator or has a project role (viewer, operator or maintainer) on that app. Roles are per app and never inherited: a viewer of `shop-web` cannot open `shop-api` previews. Signed in but without a role shows a "no access" page; the person is registered under their email, so an organization admin can grant the role from the console's **Access** tab. Revoking a role takes effect within about 15 seconds. A service with `environments.preview.<service>.auth: false` in `infra.yml` stays public, exactly as with basic auth.
+
+How it works: Traefik asks the console (`/auth/preview?app=<app>`) before every preview request. The console asks a dedicated `oauth2-previews` proxy whether the browser's session cookie is valid (identity is taken only from that answer, never from request headers). Signed-out browsers are sent to Keycloak and back to the exact preview URL. The login cookie is shared across `*.<domain>`, and the OIDC callback is one fixed host, `sso.<domain>`, because Keycloak cannot register wildcard hosts. `sso.<domain>` is VPN-restricted like `auth.<domain>`, so previewers must reach Keycloak (VPN) to sign in.
+
+1. In `/etc/infra/platform.secrets.env` add `OAUTH2_PREVIEWS_CLIENT_SECRET` (`openssl rand -hex 32`) and `OAUTH2_PREVIEWS_COOKIE_SECRET` (`openssl rand -base64 24`, exactly 32 characters).
+2. Create the Keycloak client `infra-previews` (override with `OAUTH2_PREVIEWS_CLIENT_ID`): either run `sudo bash platform/keycloak/create-previews-client.sh` (creates or updates only that client; `--dry-run` shows what it would do), or create it by hand exactly like the console client in step 6 above, with the single redirect URI `https://sso.<domain><public-port-if-nonstandard>/oauth2/callback`. It needs the same `groups` mapper (and Audience mapper) as the console client.
+3. In `/etc/infra/infra.env` set `PREVIEW_AUTH_MODE=keycloak` and add `keycloak-previews` to `PLATFORM_PROFILES` (for example `keycloak,keycloak-auth,keycloak-previews`). Requires `CONSOLE_AUTH_MODE=keycloak`. `infra platform up` refuses inconsistent combinations.
+4. Apply with `sudo -u deploy infra platform up`. Existing previews switch on their **next deploy** (the middleware is generated per service); redeploy them or push to the PR.
+
+Switching back: set `PREVIEW_AUTH_MODE=basic`, remove `keycloak-previews` from the profiles, run `infra platform up`, and redeploy the previews. `sso` and `auth` are reserved app names.
+
 ## Enable Authentik (alternative)
 
 Authentik remains available as an alternative. Do not enable its tenant-auth mode until a real VPN subnet is known and the Authentik host can be reached from a VPN-connected client.

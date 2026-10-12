@@ -1,0 +1,8 @@
+# Frontend-only repo. Served at myapp.<domain>. Point it at its API with a variable.
+name: myapp-web
+services:
+  web:
+    image: ghcr.io/your-org/myapp-web
+    port: 80
+    health_path: /healthz
+    required_env: [API_URL]

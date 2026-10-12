@@ -12,11 +12,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR=${1:?repo dir}; EVENT=${2:?push|pr|close}; N=${3:-}
 REPO_DIR=$(cd "$REPO_DIR" && pwd)
-M="$REPO_DIR/.deploy/manifest.env"
-[[ -f $M ]] || { echo "no .deploy/manifest.env in $REPO_DIR"; exit 1; }
+M="$REPO_DIR/.infradeploy/infra.yml"
+[[ -f $M ]] || { echo "no .infradeploy/infra.yml in $REPO_DIR"; exit 1; }
 
-val() { sed -nE "s/^[[:space:]]*$1=['\"]?([^'\"#[:space:]]*).*/\1/p" "$M" | head -1; }
-APP=$(val APP_NAME); TYPE=$(val TYPE); IMG=$(val IMAGE_REPO)
+val() { python3 "$HERE/../scripts/parse-manifest.py" "$M" | sed -nE "s/^$1='(.*)'$/\1/p"; }
+APP=$(val APP_NAME); SERVICES=$(val SERVICES)
 set -a; . /etc/infra/infra.env; set +a
 S=""; if [[ ${TLS_MODE:-selfsigned} != external && ${TRAEFIK_HTTPS_PORT:-443} != 443 ]]; then S=":$TRAEFIK_HTTPS_PORT"; fi
 export INFRA_WEBHOOK_URL="https://hooks.$DOMAIN$S/webhook"
@@ -28,6 +28,9 @@ if [[ -z $INFRA_WEBHOOK_SECRET ]]; then
 fi
 [[ -n $INFRA_WEBHOOK_SECRET ]] || { echo "project $APP is not registered — add it in the console (Projects tab) first"; exit 1; }
 
+# the repo the project is registered with (the webhook only accepts that one); override with INFRA_REPO
+REPO=${INFRA_REPO:-$(sed -nE "s/^REPO='(.*)'$/\1/p" "${STATE_DIR:-/var/lib/infra}/projects/$APP.env" 2>/dev/null || true)}
+REPO=${REPO:-local/$APP}
 git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
 branch=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)
 sha=$(git -C "$REPO_DIR" rev-parse HEAD); tag="sha-${sha:0:12}"
@@ -42,20 +45,21 @@ case $EVENT in
   *) echo "event must be push, pr or close"; exit 1 ;;
 esac
 
-send=(bash "$HERE/../scripts/webhook-send.sh" --insecure --app "$APP" --repo "local/$APP" --manifest-dir "$REPO_DIR/.deploy")
+send=(bash "$HERE/../scripts/webhook-send.sh" --insecure --app "$APP" --repo "$REPO" --manifest-dir "$REPO_DIR/.infradeploy")
 if [[ $EVENT == close ]]; then
   echo "▶ PR #$N closed → destroying $APP/$env"
   "${send[@]}" --action destroy --env "$env" | jq -r '.status'
   exit
 fi
 
-case $TYPE in monolith) comps=app ;; frontend) comps=web ;; backend) comps=api ;; split) comps="web api" ;; esac
-for c in $comps; do
-  ctx=$(val "${c^^}_CONTEXT"); ctx=${ctx:-.}
-  echo "▶ build $IMG/$c:$tag  ($branch @ ${sha:0:8})"
-  docker build -q -t "$IMG/$c:$tag" "$REPO_DIR/$ctx" >/dev/null
+for svc in $SERVICES; do
+  S=${svc^^}; S=${S//-/_}
+  img=$(val "${S}_IMAGE"); ctx=$(val "${S}_BUILD_CONTEXT"); ctx=${ctx:-.}
+  df=$(val "${S}_DOCKERFILE"); df=${df:-$ctx/Dockerfile}
+  echo "▶ build $img:$tag  ($branch @ ${sha:0:8})"
+  docker build -q -t "$img:$tag" -f "$REPO_DIR/$df" "$REPO_DIR/$ctx" >/dev/null
 done
 echo "▶ signed webhook → deploy $APP/$env"
 result=$("${send[@]}" --action deploy --env "$env" --tag "$tag" --branch "$branch" --commit "$sha") || {
   echo "$result" | jq -r '.output // .' 2>/dev/null || echo "$result"; exit 1; }
-echo "$result" | jq -r '"✔ \(.status): \(.url)" + (if .upstream_api_url != "" then "   (uses API \(.upstream_api_url))" else "" end)'
+echo "$result" | jq -r '"✔ \(.status): \(.url)"'

@@ -39,12 +39,12 @@ Traefik learns routes from container labels, which it reads through `socket-prox
 ## What `infra deploy` does
 
 ```
-1. validate env name, load manifest            8. write runtime/<component>.env   (injected < repo env < secrets)
+1. validate env name, load manifest            8. write runtime/<service>.env   (injected < repo env < secrets)
 2. lock <app>-<env> (flock)                    9. write stack.env + compose-files
 3. enforce MAX_PREVIEWS for new previews      10. compose config  (fail fast)
-4. snapshot .deploy/ into the stack dir        11. registry login, pull
+4. snapshot .infradeploy/ into the stack dir        11. registry login, pull
 5. compute hosts / images / limits / mw        12. MIGRATE_CMD in a one-off container
-6. use a database only if explicitly provisioned and wired
+6. provision databases declared in infra.yml (own role + generated password)
                                                 13. compose up --wait (healthchecks)
 7. assemble runtime env from platform metadata, repo env and server secrets
                                                 14. write meta.env
@@ -54,21 +54,21 @@ On-disk state per environment (`/srv/deployments/<app>/<env>/`):
 
 | File | Purpose |
 |---|---|
-| `deploy/` | Snapshot of the repo's `.deploy/`, used by `redeploy`/`rollback` without the repo |
+| `deploy/` | Snapshot of the repo's `.infradeploy/`, used by `redeploy`/`rollback` without the repo |
 | `stack.env` | Variables for the compose templates (images, hosts, limits) |
-| `compose-files` | Which templates plus extra file make up this stack |
+| `generated/<service>.yml` + `compose-files` | One generated compose file per service, and the list that makes up this stack |
 | `runtime/*.env` | Final container env per component (0600) |
 | `meta.env` | Tag, previous tag, branch, platform URLs, deploy time and actor |
-| `.db_password` | Generated per environment (0600) |
+| `.db_password_<db>` | Generated per database declared in infra.yml (0600) |
 
 ## Frontend → backend configuration
 
 ```
 frontend deployment
-   └─ API endpoint comes from the app's own .deploy/env/ or server-side variables
+   └─ API endpoint comes from the app's own .infradeploy/env/ or server-side variables
 ```
 
-The platform does not discover backend repositories, match branches, or relink frontends when backend environments appear or disappear. Set the API URL explicitly for each environment or preview that needs one. Use server-side variables for secrets and `.deploy/env/` for non-secret defaults.
+The platform does not discover backend repositories, match branches, or relink frontends when backend environments appear or disappear. Set the API URL explicitly for each environment or preview that needs one. Use server-side variables for secrets and `.infradeploy/env/` for non-secret defaults.
 
 Frontends must read their API URL **at runtime** (see `app-kit/dockerfiles/spa/`). A value baked in at build time cannot vary by environment. `API_URL` is not injected by the platform.
 

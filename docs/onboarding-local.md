@@ -70,7 +70,7 @@ Click **Add project**.
 **1.3** Repeat 1.1–1.2 for `shop-web` with repo `local/shop-web`.
 - [ ] both projects listed under *Registered projects*, with "none yet" running
 
-> The app name must match `APP_NAME` in each repo's `.deploy/manifest.env`. Look in `Desktop\infra-demo-projects\shop-api\.deploy\manifest.env` to see what the team ships.
+> The app name must match `name` in each repo's `.infradeploy/infra.yml`. Look in `Desktop\infra-demo-projects\shop-api\.infradeploy\infra.yml` to see what the team ships.
 
 ---
 

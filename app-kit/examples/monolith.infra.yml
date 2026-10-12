@@ -1,0 +1,12 @@
+# One service, one container. Served at myapp.<domain>.
+name: myapp
+services:
+  app:
+    image: ghcr.io/your-org/myapp
+    port: 3000
+    health_path: /health
+    databases:
+      - inject_as: DATABASE_URL
+migrate:
+  service: app
+  cmd: npm run migrate

@@ -1,7 +1,7 @@
 # Copy to your repo root as .dockerignore — smaller contexts, no leaked secrets.
 .git
 .github
-.deploy
+.infradeploy
 node_modules
 **/node_modules
 dist

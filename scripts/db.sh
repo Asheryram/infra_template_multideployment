@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 # Database operations on the shared Postgres.
 #
-#   Per-environment database — provisioned on demand, never wired automatically.
-#   DevOps creates a DB when a branch needs one, then sets the connection URL as whatever
-#   variable name the app reads (DB_URL, PG_DSN, POSTGRES_URI, …) in the console.
-#   infra db info   <app> <env> [--json]
-#   infra db create <app> <env>
-#   infra db wipe   <app> <env>
-#   infra db url    <app> <env>                print the connection URL to paste into the console
-#   infra db use    <app> <env> --key <VAR> [--from <app>/<env>] [--scope <scope>] [--allow-prod]
-#                                              set <VAR> on <app>/<env> to point at a DB
+# Databases are DECLARED in the repo's .infradeploy/infra.yml (per service) and CREATED on demand —
+# deploying never creates one. Each declared database has an id "<service>:<inject_as>".
 #
+#   infra db info   <app> <env> [--json]          every declared database and whether it exists
+#   infra db create <app> <env> [--db <id>]       create declared databases (all not-yet-created, or one)
+#   infra db wipe   <app> <env> [--db <id>]       drop the data; stays gone until created again
+#   infra db url    <app> <env> [--db <id>]       print a created database's connection URL
+#   infra db use    <app> <env> --key <VAR> [--from <app>/<env>] [--db <id>] [--scope <scope>] [--allow-prod]
+#                                                  set <VAR> to point at another environment's database
 #   infra db list
-#   infra db psql     <app> <env>
-#   infra db dump     <app> <env> [out-file]       custom-format dump (pg_restore-able)
-#   infra db restore  <app> <env> <dump-file>      OVERWRITES that environment's data
+#   infra db psql     <app> <env> [--db <id>]
+#   infra db dump     <app> <env> [out-file] [--db <id>]
+#   infra db restore  <app> <env> <dump-file> [--db <id>]     OVERWRITES that database's data
 #   infra db template <app> <dump-file>            set the seed previews are cloned from
 #   infra db drop-template <app>
 #
-# The template must come from a SANITISED dump (no real user data). Previews get
-# `CREATE DATABASE ... TEMPLATE <app>__template`, which is near-instant.
+# After create/wipe, apply with `infra redeploy <app> <env>` (the console does this for you).
+# The template must come from a SANITISED dump (no real user data).
 SCRIPT_NAME=db
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
@@ -32,17 +31,39 @@ shift
 load_infra_env
 pg_wait
 
-env_db() { validate_name app "$1"; validate_name env "$2"; db_ident "${1}_${2}"; }
+# --db <id> may appear anywhere; strip it into DBID
+DBID=""; _args=()
+while (( $# )); do
+  case $1 in
+    --db) DBID=${2:?--db needs <service>:<inject_as>}; shift 2 ;;
+    *) _args+=("$1"); shift ;;
+  esac
+done
+set -- ${_args[@]+"${_args[@]}"}
+[[ -z $DBID || $DBID =~ ^[a-z0-9-]+:[A-Za-z_][A-Za-z0-9_]*$ ]] || die "bad --db id: $DBID"
 
 need_stack() { # app env → sets SD (stack dir); the environment must have been deployed
+  validate_name app "$1"; validate_name env "$2"
   SD=$(stack_dir "$1" "$2")
   [[ -d $SD ]] || die "$1/$2 is not deployed — deploy it first"
 }
-db_url_of() { # app env → URL (needs the env's password file)
-  local db; db=$(env_db "$1" "$2")
-  local pw="$(stack_dir "$1" "$2")/.db_password"
-  [[ -s $pw ]] || die "$1/$2 has never had a database (create it first)"
-  echo "postgres://$db:$(<"$pw")@$PG_CONTAINER:5432/$db"
+declared_of() { declared_dbs "$(stack_dir "$1" "$2")/deploy" "$1" "$2"; }   # app env
+pick_row() { # app env → first declared row matching $DBID (or the first created one when no --db)
+  local row sd; sd=$(stack_dir "$1" "$2")
+  while IFS= read -r row; do
+    [[ -n $row ]] || continue
+    if [[ -n $DBID ]]; then [[ ${row%%|*} == "$DBID" ]] && { echo "$row"; return 0; }
+    else IFS='|' read -r _ _ _ n _ <<< "$row"; db_is_created "$sd" "$n" && { echo "$row"; return 0; }; fi
+  done < <(declared_of "$1" "$2")
+  return 1
+}
+db_name_of() { local row; row=$(pick_row "$1" "$2") || die "$1/$2 has no ${DBID:-created} database (see: infra db info $1 $2)"; IFS='|' read -r _ _ _ n _ <<< "$row"; echo "$n"; }
+db_url_of() { # app env → URL of a CREATED database
+  local row n sd; sd=$(stack_dir "$1" "$2")
+  row=$(pick_row "$1" "$2") || die "$1/$2 has no ${DBID:-created} database — create it first"
+  IFS='|' read -r _ _ _ n _ <<< "$row"
+  db_is_created "$sd" "$n" || die "database ${DBID:-$n} of $1/$2 is not created yet"
+  db_url_for "$sd" "$n"
 }
 attach_pg() { # connect Postgres to the env's private network so its containers can reach it
   local net; net=$(stack_network "$1" "$2")
@@ -58,40 +79,58 @@ set_var() { # app scope key value → console variable file
 
 case $action in
   info)
-    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"; db=$(env_db "$app" "$env")
-    exists=false size="" url=""
-    if db_exists "$db"; then exists=true; size=$(sql_scalar "SELECT pg_size_pretty(pg_database_size('$db'))"); fi
-    if [[ -s $SD/.db_password ]]; then url=$(db_url_of "$app" "$env"); fi
-    connected=$(meta_get "$SD/meta.env" DB_CONNECTED 2>/dev/null || true)
-    wiped=false; [[ -f $SD/.db_wiped ]] && wiped=true
-    if [[ ${3:-} == --json ]]; then
-      jq -cn --arg db "$db" --argjson exists "$exists" --arg size "$size" --arg url "$url" \
-        --arg connected "${connected:-none}" --argjson wiped "$wiped" --argjson provisioned "$([[ -n $url ]] && echo true || echo false)" \
-        '{name:$db, exists:$exists, size:$size, url:$url, connected:$connected, wiped:$wiped, provisioned:$provisioned}'
+    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"
+    rows=$(declared_of "$app" "$env"); items=()
+    while IFS='|' read -r id svc inject name fixed; do
+      [[ -n $id ]] || continue
+      created=false; exists=false wiped=false; size=""
+      db_is_created "$SD" "$name" && created=true
+      [[ -e $SD/.db_wiped_$name ]] && wiped=true
+      if db_exists "$name"; then exists=true; size=$(sql_scalar "SELECT pg_size_pretty(pg_database_size('$name'))"); fi
+      items+=("$(jq -cn --arg id "$id" --arg service "$svc" --arg inject_as "$inject" --arg name "$name" --arg size "$size" \
+        --arg url "$([[ $created == true ]] && db_url_for "$SD" "$name" || true)" \
+        --argjson created "$created" --argjson exists "$exists" --argjson wiped "$wiped" \
+        '{id:$id, service:$service, inject_as:$inject_as, name:$name, created:$created, exists:$exists, wiped:$wiped, size:$size, url:$url}')")
+    done <<< "$rows"
+    json=$(printf '%s\n' "${items[@]:-}" | jq -cs '[ .[] | select(. != null) ]')
+    if [[ ${3:-} == --json ]]; then jq -cn --argjson databases "$json" '{databases:$databases}'
     else
-      echo "database:  $db ($([[ $exists == true ]] && echo "exists, $size" || echo "does not exist${wiped:+}"))"
-      echo "url:       ${url:+${url%%:*}://$db:••••@$PG_CONTAINER:5432/$db}"
-      echo "app uses:  ${connected:-none}   (set the DB connection variable in the console, or: infra db use $app $env --key YOUR_VAR_NAME)"
+      jq -r '.[] | "\(.id)  \(.name)  " + (if .created then "created" + (if .exists then ", " + .size else ", MISSING in postgres" end) elif .wiped then "wiped" else "not created" end)' <<< "$json"
+      [[ $json != "[]" ]] || echo "no databases declared in infra.yml"
     fi
     ;;
 
   create)
-    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"; db=$(env_db "$app" "$env")
-    if [[ ! -s $SD/.db_password ]]; then ( umask 077; openssl rand -hex 24 > "$SD/.db_password" ); fi
-    db_ensure "$db" "$db" "$(<"$SD/.db_password")"
-    rm -f "$SD/.db_wiped"
+    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"
+    rows=$(declared_of "$app" "$env"); n=0
+    [[ -n $rows ]] || die "infra.yml declares no databases for $app"
+    while IFS='|' read -r id svc inject name fixed; do
+      [[ -n $id ]] || continue
+      [[ -z $DBID || $DBID == "$id" ]] || continue
+      if [[ -z $DBID ]] && db_is_created "$SD" "$name"; then continue; fi    # all: only the missing ones
+      log "creating $id → $name"
+      db_provision "$SD" "$name" "$fixed" "$(env_class "$env")"
+      n=$((n + 1))
+    done <<< "$rows"
+    (( n )) || { [[ -z $DBID ]] && { log "all declared databases already exist"; exit 0; }; die "no declared database '$DBID'"; }
     attach_pg "$app" "$env"
-    log "database $db ready — copy the URL into your app's DB connection variable in the console: infra db url $app $env"
-    log "then: infra db use $app $env --key YOUR_VAR_NAME  (e.g. --key DB_URL or --key PG_DSN)"
+    log "$n database(s) ready — apply with: infra redeploy $app $env"
     ;;
 
   wipe)
-    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"; db=$(env_db "$app" "$env")
+    app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"
     if [[ $env == prod && ${3:-} != --i-really-mean-prod ]]; then die "refusing to wipe prod without --i-really-mean-prod"; fi
     acquire_lock "$(stack_name "$app" "$env")"
-    if db_exists "$db"; then psql_admin -c "DROP DATABASE \"$db\" WITH (FORCE)"; fi
-    touch "$SD/.db_wiped"            # later deploys must NOT bring it back — only `create` does
-    log "database $db wiped — the app keeps running without it. Recreate (empty, same URL): infra db create $app $env"
+    rows=$(declared_of "$app" "$env"); n=0
+    while IFS='|' read -r id svc inject name fixed; do
+      [[ -n $id ]] || continue
+      [[ -z $DBID || $DBID == "$id" ]] || continue
+      db_is_created "$SD" "$name" || continue
+      if db_exists "$name"; then psql_admin -c "DROP DATABASE \"$name\" WITH (FORCE)"; fi
+      touch "$SD/.db_wiped_$name"        # later deploys must NOT bring it back — only `create` does
+      n=$((n + 1))
+    done <<< "$rows"
+    log "$n database(s) wiped — apply with: infra redeploy $app $env (the URL is no longer injected)"
     ;;
 
   url)
@@ -112,8 +151,9 @@ case $action in
     done
     [[ -n $key ]] || die "--key is required: the variable name the app reads its DB URL from (e.g. --key DB_URL)"
     [[ $from =~ ^[a-z0-9-]+/[a-z0-9-]+$ ]] || die "--from must be <app>/<env>"
+    [[ -d $(stack_dir "${from%%/*}" "${from#*/}") ]] || die "$from is not deployed"
     [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "bad key"
-    [[ $scope =~ ^[a-z0-9-]+(\.(app|web|api))?$ ]] || die "bad scope"
+    [[ $scope =~ ^[a-z0-9-]+(\.[a-z0-9-]+)?$ ]] || die "bad scope"
     if [[ ${from#*/} == prod && $from != "$app/$env" && $allow_prod != true ]]; then
       die "$from is a PROD database — add --allow-prod if you really mean to point $app/$env at it"
     fi
@@ -131,19 +171,19 @@ case $action in
     ;;
 
   psql)
-    db=$(env_db "${1:?app}" "${2:?env}")
+    db=$(db_name_of "${1:?app}" "${2:?env}")
     exec docker exec -it "$PG_CONTAINER" psql -U postgres -d "$db"
     ;;
 
   dump)
-    db=$(env_db "${1:?app}" "${2:?env}")
+    db=$(db_name_of "${1:?app}" "${2:?env}")
     out=${3:-$db-$(date +%Y%m%d-%H%M%S).dump}
     docker exec "$PG_CONTAINER" pg_dump -U postgres -Fc "$db" > "$out"
     log "wrote $out ($(du -h "$out" | cut -f1))"
     ;;
 
   restore)
-    db=$(env_db "${1:?app}" "${2:?env}")
+    db=$(db_name_of "${1:?app}" "${2:?env}")
     file=${3:?dump file required}
     [[ -f $file ]] || die "no such file: $file"
     db_exists "$db" || die "database $db does not exist (deploy the environment first)"

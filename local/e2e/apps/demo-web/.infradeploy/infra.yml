@@ -1,0 +1,6 @@
+# demo-web — frontend repo, talks to demo-api through API_URL (an ordinary variable)
+name: demo-web
+services:
+  web:
+    image: local/demo-web
+    port: 80

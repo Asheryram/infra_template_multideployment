@@ -1,0 +1,10 @@
+# Backend-only repo. Served at api-myapp.<domain>.
+name: myapp
+services:
+  api:
+    image: ghcr.io/your-org/myapp-api
+    port: 8080
+    health_path: /health
+    required_env: [JWT_SECRET]
+    databases:
+      - inject_as: DATABASE_URL

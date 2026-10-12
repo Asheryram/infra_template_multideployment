@@ -1,0 +1,14 @@
+# Smoke-test app: web + api in one repo, deployed as independent services.
+name: smoke-split
+services:
+  web:
+    image: traefik/whoami:v1.10
+    port: 80
+  api:
+    image: traefik/whoami:v1.10
+    port: 80
+environments:
+  preview:
+    auth: true            # previews sit behind basic-auth ...
+    api:
+      auth: false         # ... except the API, which stays public

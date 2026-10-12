@@ -1,0 +1,6 @@
+# Smoke-test app: standalone frontend.
+name: smoke-web
+services:
+  web:
+    image: traefik/whoami:v1.10
+    port: 80

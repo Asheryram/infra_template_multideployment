@@ -23,13 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .deploy
+          sparse-checkout: .infradeploy
 
       - env:
           ENV_NAME: ${{ inputs.env-name }}
         run: |
           # parse, never source: this runs ON the server and the manifest is repo-controlled
-          app=$(sed -nE "s/^[[:space:]]*APP_NAME=['\"]?([a-z0-9-]+).*/\1/p" .deploy/manifest.env | head -1)
+          app=$(sed -nE "s/^name:[[:space:]]*['\"]?([a-z0-9-]+).*/\1/p" .infradeploy/infra.yml | head -1)
           infra destroy --app "$app" --env "$ENV_NAME"
 
       - if: github.event_name == 'pull_request'

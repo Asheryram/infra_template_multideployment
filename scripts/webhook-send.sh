@@ -4,7 +4,7 @@
 #
 #   INFRA_WEBHOOK_URL=https://hooks.example.com/webhook INFRA_WEBHOOK_SECRET=… \
 #   webhook-send.sh --app shop-api --repo acme/shop-api --action deploy --env pr-12 \
-#                   --tag sha-0123456789ab --branch feature/x --commit 0123abcd --manifest-dir .deploy
+#                   --tag sha-0123456789ab --branch feature/x --commit 0123abcd --manifest-dir .infradeploy
 #
 #   --action destroy --env pr-12          tear a preview down
 #   --no-wait                             print the job id and exit
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 URL=${INFRA_WEBHOOK_URL:-} SECRET=${INFRA_WEBHOOK_SECRET:-}
-APP="" REPO="" ACTION=deploy ENV="" TAG="" BRANCH="" COMMIT="" DIR=".deploy"
+APP="" REPO="" ACTION=deploy ENV="" TAG="" BRANCH="" COMMIT="" DIR=".infradeploy"
 WAIT=1 CURL_OPTS=(-sS --max-time 30) TS="" TAMPER=0 TIMEOUT=${WEBHOOK_WAIT_TIMEOUT:-900}
 while (( $# )); do
   case $1 in
@@ -45,7 +45,7 @@ sign() { # timestamp payload-file → hex
 }
 
 if [[ $ACTION == deploy ]]; then
-  [[ -f $DIR/manifest.env ]] || { echo "no $DIR/manifest.env" >&2; exit 2; }
+  [[ -f $DIR/infra.yml ]] || { echo "no $DIR/infra.yml" >&2; exit 2; }
   tar -C "$DIR" -czf - . | base64 | tr -d '\n' > "$tmp/bundle"
 else
   : > "$tmp/bundle"

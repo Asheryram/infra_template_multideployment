@@ -126,32 +126,35 @@ fire_webhook() {  # secret app repo action env [tag branch sha manifest_dir]
 }
 
 # ── handle one branch/PR change ─────────────────────────────────────────────
-deploy_ref() {  # token app secret repo type img_repo env branch sha
-  local token=$1 app=$2 secret=$3 repo=$4 type=$5 img_repo=$6 env=$7 branch=$8 sha=${9}
+deploy_ref() {  # token app secret repo env branch sha
+  local token=$1 app=$2 secret=$3 repo=$4 env=$5 branch=$6 sha=$7
   local tag="sha-${sha:0:12}"
 
   log "$app: $branch → $env ($tag)"
 
   # fetch manifest from GitHub at this exact sha
-  local manifest; manifest=$(gh_file "$token" "$repo" "$sha" ".deploy/manifest.env")
+  local manifest; manifest=$(gh_file "$token" "$repo" "$sha" ".infradeploy/infra.yml")
   if [[ -z $manifest ]]; then
-    warn "$app: no .deploy/manifest.env at $sha — skipping"
+    warn "$app: no .infradeploy/infra.yml at $sha — skipping"
     return 1
   fi
-
-  # build each component
-  for comp in $(components_for "$type"); do
-    C=${comp^^}
-    local ctx; ctx=$(mval "${C}_CONTEXT" "$manifest"); ctx=${ctx:-.}
-    local df;  df=$(mval "${C}_DOCKERFILE" "$manifest"); df=${df:-$ctx/Dockerfile}
-    build_component "$token" "$repo" "$branch" "$comp" "$ctx" "$df" "$img_repo/$comp:$tag" || return 1
-  done
-
-  # bundle manifest into a temp dir for webhook-send
   local mdir; mdir=$(mktemp -d)
   # shellcheck disable=SC2064
   trap "rm -rf '$mdir'" RETURN
-  echo "$manifest" > "$mdir/manifest.env"
+  echo "$manifest" > "$mdir/infra.yml"
+  local parsed; parsed=$(python3 "$INFRA_ROOT/scripts/parse-manifest.py" "$mdir/infra.yml")     || { err "$app: infra.yml is invalid"; return 1; }
+
+  # build each service (the parsed output is shell-quoted by the validating parser)
+  local SERVICES
+  eval "$parsed"
+  local svc S
+  for svc in $SERVICES; do
+    S=${svc^^}; S=${S//-/_}
+    local img_var="${S}_IMAGE" ctx_var="${S}_BUILD_CONTEXT" df_var="${S}_DOCKERFILE"
+    local ctx=${!ctx_var:-.} df=${!df_var:-}
+    df=${df:-$ctx/Dockerfile}
+    build_component "$token" "$repo" "$branch" "$svc" "$ctx" "$df" "${!img_var}:$tag" || return 1
+  done
 
   local result
   result=$(fire_webhook "$secret" "$app" "$repo" deploy "$env" \
@@ -165,7 +168,7 @@ deploy_ref() {  # token app secret repo type img_repo env branch sha
 poll_project() {
   local pfile=$1
   # parse the project registry file (never source — it contains secrets)
-  local app repo envs prod_branch secret token img_repo type
+  local app repo envs prod_branch secret token
   app=$(sed -nE "s/^APP='?([^'#]+)'?.*/\1/p"              "$pfile" | head -1 | tr -d ' ')
   repo=$(sed -nE "s/^REPO='?([^'#]+)'?.*/\1/p"             "$pfile" | head -1 | tr -d ' ')
   envs=$(sed -nE "s/^ENVS='?([^'#]+)'?.*/\1/p"             "$pfile" | head -1 | tr -d ' ')
@@ -178,16 +181,14 @@ poll_project() {
   [[ -n $app && -n $repo && -n $secret ]] || return 0
   [[ -z $FILTER_APP || $FILTER_APP == "$app" ]] || return 0
 
-  # read TYPE and IMAGE_REPO from the manifest — try prod branch, then develop, then staging,
+  # confirm an infra.yml exists — try prod branch, then develop, then staging,
   # then any open PR branch. This lets projects onboard via a PR before anything lands on main.
   local base_manifest="" ref
   for ref in "$prod_branch" develop staging; do
     local sha; sha=$(gh_branch_sha "$token" "$repo" "$ref" 2>/dev/null || true)
     [[ -n $sha ]] || continue
-    local m; m=$(gh_file "$token" "$repo" "$sha" ".deploy/manifest.env")
-    if [[ -n $(mval TYPE "$m") && -n $(mval IMAGE_REPO "$m") ]]; then
-      base_manifest=$m; break
-    fi
+    local m; m=$(gh_file "$token" "$repo" "$sha" ".infradeploy/infra.yml")
+    if [[ -n $m ]]; then base_manifest=$m; break; fi
   done
   # still empty — try open PR branches
   if [[ -z $base_manifest ]]; then
@@ -196,16 +197,11 @@ poll_project() {
       local pr_sha pr_branch
       pr_sha=$(echo "$pr" | jq -r '.sha')
       pr_branch=$(echo "$pr" | jq -r '.branch')
-      local m; m=$(gh_file "$token" "$repo" "$pr_sha" ".deploy/manifest.env")
-      if [[ -n $(mval TYPE "$m") && -n $(mval IMAGE_REPO "$m") ]]; then
-        base_manifest=$m; break
-      fi
+      local m; m=$(gh_file "$token" "$repo" "$pr_sha" ".infradeploy/infra.yml")
+      if [[ -n $m ]]; then base_manifest=$m; break; fi
     done < <(echo "$prs" | jq -c '.[]' 2>/dev/null || true)
   fi
   if [[ -z $base_manifest ]]; then warn "$app: can't reach $repo — skipping"; return 0; fi
-  type=$(mval TYPE "$base_manifest")
-  img_repo=$(mval IMAGE_REPO "$base_manifest")
-  [[ -n $type && -n $img_repo ]] || { warn "$app: missing TYPE or IMAGE_REPO in manifest"; return 0; }
 
   local state_dir="$POLL_STATE/$app"
   mkdir -p "$state_dir"
@@ -227,7 +223,7 @@ poll_project() {
     local prev; prev=$(cat "$state_file" 2>/dev/null || true)
     [[ $sha != "$prev" ]] || continue
 
-    deploy_ref "$token" "$app" "$secret" "$repo" "$type" "$img_repo" "$env_name" "$branch" "$sha" \
+    deploy_ref "$token" "$app" "$secret" "$repo" "$env_name" "$branch" "$sha" \
       && echo "$sha" > "$state_file" || true
   done
 
@@ -249,7 +245,7 @@ poll_project() {
     local prev; prev=$(cat "$state_file" 2>/dev/null || true)
     [[ $pr_sha != "$prev" ]] || continue
 
-    deploy_ref "$token" "$app" "$secret" "$repo" "$type" "$img_repo" "$env_name" "$pr_branch" "$pr_sha" \
+    deploy_ref "$token" "$app" "$secret" "$repo" "$env_name" "$pr_branch" "$pr_sha" \
       && echo "$pr_sha" > "$state_file" || true
   done < <(echo "$prs_json" | jq -c '.[]')
 

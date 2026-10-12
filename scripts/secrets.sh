@@ -21,7 +21,7 @@ case $action in
   edit)
     app=${1:?app}; name=${2:?name, e.g. prod or prod.api}
     validate_name app "$app"
-    [[ $name =~ ^[a-z0-9-]+(\.(app|web|api))?$ ]] || die "invalid name '$name'"
+    [[ $name =~ ^[a-z0-9-]+(\.[a-z0-9-]+)?$ ]] || die "invalid name '$name'"
     dir="$SECRETS_ROOT/$app"; file="$dir/$name.env"
     install -d -m 2770 -o root -g "$DEPLOY_USER" "$SECRETS_ROOT" "$dir"
     if [[ ! -f $file ]]; then

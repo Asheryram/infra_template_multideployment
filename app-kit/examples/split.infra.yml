@@ -1,0 +1,27 @@
+# Web and API in one repo, deployed as independent services.
+#   web -> myapp.<domain>        api -> api-myapp.<domain>
+# The web service learns where the API lives through an ordinary variable (API_URL), set in the
+# console like any other secret — the platform has no opinion on what it points to.
+name: myapp
+services:
+  api:
+    image: ghcr.io/your-org/myapp-api
+    build_context: ./backend
+    dockerfile: backend/Dockerfile
+    port: 8080
+    health_path: /api/health
+    required_env: [JWT_SECRET]
+    databases:
+      - inject_as: DATABASE_URL
+  web:
+    image: ghcr.io/your-org/myapp-web
+    build_context: ./frontend
+    dockerfile: frontend/Dockerfile
+    port: 80
+    health_path: /healthz
+    required_env: [API_URL]
+environments:
+  preview:
+    auth: true
+    api:
+      auth: false

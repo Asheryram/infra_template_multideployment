@@ -13,11 +13,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR=${1:?repo dir}; STEP=${2:?plan|build|deploy|destroy}
 REPO_DIR=$(cd "$REPO_DIR" && pwd)
-M="$REPO_DIR/.deploy/manifest.env"
-[[ -f $M ]] || { echo "no .deploy/manifest.env in $REPO_DIR"; exit 1; }
+M="$REPO_DIR/.infradeploy/infra.yml"
+[[ -f $M ]] || { echo "no .infradeploy/infra.yml in $REPO_DIR"; exit 1; }
 
-val() { sed -nE "s/^[[:space:]]*$1=['\"]?([^'\"#[:space:]]*).*/\1/p" "$M" | head -1; }
-APP=$(val APP_NAME); TYPE=$(val TYPE); IMG=$(val IMAGE_REPO)
+val() { python3 "$HERE/../scripts/parse-manifest.py" "$M" | sed -nE "s/^$1='(.*)'$/\1/p"; }
+APP=$(val APP_NAME); SERVICES=$(val SERVICES)
 STATE_FILE="/tmp/ci-step-${APP}.env"
 
 set -a; . /etc/infra/infra.env; set +a
@@ -28,6 +28,9 @@ if [[ -z $INFRA_WEBHOOK_SECRET ]]; then
   INFRA_WEBHOOK_SECRET=$(sed -nE "s/^SECRET='([0-9a-f]+)'$/\1/p" "${STATE_DIR:-/var/lib/infra}/projects/$APP.env" 2>/dev/null || true)
 fi
 
+# the repo the project is registered with (the webhook only accepts that one); override with INFRA_REPO
+REPO=${INFRA_REPO:-$(sed -nE "s/^REPO='(.*)'$/\1/p" "${STATE_DIR:-/var/lib/infra}/projects/$APP.env" 2>/dev/null || true)}
+REPO=${REPO:-local/$APP}
 git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
 branch=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)
 sha=$(git -C "$REPO_DIR" rev-parse HEAD); tag="sha-${sha:0:12}"
@@ -52,38 +55,32 @@ plan)
     *) echo "event must be push, pr or close"; exit 1 ;;
   esac
 
-  case $TYPE in
-    monolith) comps="app" ;; frontend) comps="web" ;; backend) comps="api" ;; split) comps="web api" ;;
-    *) echo "TYPE must be monolith|frontend|backend|split"; exit 1 ;;
-  esac
-
   matrix=""
-  for c in $comps; do
-    C=${c^^}
-    ctx=$(val "${C}_CONTEXT"); ctx=${ctx:-.}
+  for c in $SERVICES; do
+    C=${c^^}; C=${C//-/_}
+    img=$(val "${C}_IMAGE")
+    ctx=$(val "${C}_BUILD_CONTEXT"); ctx=${ctx:-.}
     df=$(val "${C}_DOCKERFILE"); df=${df:-$ctx/Dockerfile}
-    matrix="$matrix $c:$ctx:$df"
+    matrix="$matrix $c|$img|$ctx|$df"
   done
 
   cat > "$STATE_FILE" <<EOF
 APP=$APP
-TYPE=$TYPE
-IMG=$IMG
 BRANCH=$branch
 SHA=$sha
 TAG=$tag
 ENV_NAME=$env_name
 ACTION=$action
-COMPS=$comps
-MATRIX=$matrix
+SERVICES=$SERVICES
+MATRIX="$matrix"
 EOF
   echo "── plan ──────────────────────────────────────────"
-  echo "  app       : $APP ($TYPE)"
+  echo "  app       : $APP"
   echo "  branch    : $branch @ ${sha:0:8}"
   echo "  tag       : $tag"
   echo "  env       : $env_name"
   echo "  action    : $action"
-  echo "  components: $comps"
+  echo "  services  : $SERVICES"
   echo "  state     → $STATE_FILE"
   ;;
 
@@ -94,8 +91,8 @@ build)
   [[ $ACTION == deploy ]] || { echo "action is '$ACTION' — nothing to build"; exit 0; }
   echo "── build ─────────────────────────────────────────"
   for entry in $MATRIX; do
-    c=${entry%%:*}; rest=${entry#*:}; ctx=${rest%%:*}; df=${rest#*:}
-    image="$IMG/$c:$TAG"
+    IFS='|' read -r c img ctx df <<< "$entry"
+    image="$img:$TAG"
     echo "  building  $image"
     echo "  context   $REPO_DIR/$ctx"
     echo "  dockerfile $REPO_DIR/$df"
@@ -111,10 +108,10 @@ deploy)
   [[ -n $INFRA_WEBHOOK_SECRET ]] || { echo "project $APP is not registered — add it in the console first"; exit 1; }
   echo "── deploy ────────────────────────────────────────"
   echo "  app : $APP  env : $ENV_NAME  tag : $TAG"
-  send=(bash "$HERE/../scripts/webhook-send.sh" --insecure --app "$APP" --repo "local/$APP" --manifest-dir "$REPO_DIR/.deploy")
+  send=(bash "$HERE/../scripts/webhook-send.sh" --insecure --app "$APP" --repo "$REPO" --manifest-dir "$REPO_DIR/.infradeploy")
   result=$("${send[@]}" --action deploy --env "$ENV_NAME" --tag "$TAG" --branch "$BRANCH" --commit "$SHA") || {
     echo "$result" | jq -r '.output // .' 2>/dev/null || echo "$result"; exit 1; }
-  echo "$result" | jq -r '"  ✔ \(.status): \(.url)" + (if .upstream_api_url != "" then "   (uses API \(.upstream_api_url))" else "" end)'
+  echo "$result" | jq -r '"  ✔ \(.status): \(.url)"'
   ;;
 
 # ── Step 3b: destroy ────────────────────────────────────────────────────────────
@@ -124,7 +121,7 @@ destroy)
   [[ -n $INFRA_WEBHOOK_SECRET ]] || { echo "project $APP is not registered — add it in the console first"; exit 1; }
   echo "── destroy ───────────────────────────────────────"
   echo "  app : $APP  env : $ENV_NAME"
-  send=(bash "$HERE/../scripts/webhook-send.sh" --insecure --app "$APP" --repo "local/$APP" --manifest-dir "$REPO_DIR/.deploy")
+  send=(bash "$HERE/../scripts/webhook-send.sh" --insecure --app "$APP" --repo "$REPO" --manifest-dir "$REPO_DIR/.infradeploy")
   result=$("${send[@]}" --action destroy --env "$ENV_NAME") || {
     echo "$result" | jq -r '.output // .' 2>/dev/null || echo "$result"; exit 1; }
   echo "$result" | jq -r '"  ✔ \(.status)"'

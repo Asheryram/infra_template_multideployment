@@ -83,43 +83,6 @@ write_kv() {
   printf "%s='%s'\n" "$key" "$val" >> "$file"
 }
 
-# Parse a repo's manifest.env WITHOUT executing it. The manifest comes from the app repo — on a
-# multi-tenant host it is untrusted input, so it's never `source`d. Only known keys are accepted,
-# values are taken literally (no $(), no ${}, no backticks), and every value is format-checked.
-MANIFEST_KEYS='^(APP_NAME|TYPE|IMAGE_REPO|MIGRATE_CMD|MIGRATE_SERVICE|PREVIEW_AUTH|API_PREVIEW_AUTH|EXTRA_MIDDLEWARES|MAX_PREVIEWS_PER_APP|(APP|WEB|API)_(IMAGE|PORT|CONTEXT|DOCKERFILE|REQUIRED_ENV)|(APP|WEB|API)_HOST_[A-Z0-9_]+)$'
-load_manifest() {
-  local file=$1 line key val n=0
-  [[ -f $file ]] || die "manifest not found: $file"
-  while IFS= read -r line || [[ -n $line ]]; do
-    n=$((n + 1))
-    line=${line%$'\r'}
-    [[ $line =~ ^[[:space:]]*(#.*)?$ ]] && continue
-    [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] \
-      || die "manifest line $n: not KEY=value: $line"
-    key=${BASH_REMATCH[2]}; val=${BASH_REMATCH[3]}
-    if [[ $val =~ ^\'([^\']*)\'[[:space:]]*(#.*)?$ ]]; then val=${BASH_REMATCH[1]}
-    elif [[ $val =~ ^\"([^\"\$\`\\]*)\"[[:space:]]*(#.*)?$ ]]; then val=${BASH_REMATCH[1]}
-    else
-      val=${val%%[[:space:]]#*}; val=${val%"${val##*[![:space:]]}"}
-      [[ $val != *[\$\`\"\'\\]* ]] || die "manifest line $n ($key): quote values containing special characters with '…'"
-    fi
-    [[ $key =~ $MANIFEST_KEYS ]] \
-      || die "manifest line $n: unsupported key '$key' (see app-kit/.deploy/manifest.env for supported settings)"
-    case $key in
-      APP_NAME)                [[ -z $val || $val =~ ^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$ ]] ;;
-      TYPE)                    [[ $val =~ ^(monolith|frontend|backend|split)$ ]] ;;
-      *_PORT)                  [[ $val =~ ^[0-9]{1,5}$ ]] ;;
-      *_HOST_*)                [[ $val =~ ^[a-z0-9.-]+$ ]] ;;
-      IMAGE_REPO|*_IMAGE)      [[ -z $val || $val =~ ^[a-zA-Z0-9._/:@{}-]+$ ]] ;;
-      EXTRA_MIDDLEWARES)       [[ -z $val || $val =~ ^[a-zA-Z0-9@,_-]+$ ]] ;;
-      PREVIEW_AUTH|API_PREVIEW_AUTH) [[ $val =~ ^(true|false)$ ]] ;;
-      MAX_PREVIEWS_PER_APP) [[ $val =~ ^[0-9]+$ ]] ;;
-      *)                       true ;;
-    esac || die "manifest line $n: invalid value for $key: $val"
-    printf -v "$key" '%s' "$val"
-  done < "$file"
-}
-
 # Resource overrides are plain data, never sourced. Exact env overrides win over the
 # environment class (e.g. all previews), which wins over the app-wide common scope.
 resource_file_value() {
@@ -251,17 +214,16 @@ db_ident() {
   echo "${s:0:63}"
 }
 
-components_for() {
-  case $1 in
-    monolith) echo app ;;
-    frontend) echo web ;;
-    backend)  echo api ;;
-    split)    echo "web api" ;;
-    *) die "unknown TYPE '$1' (expected monolith | frontend | backend | split)" ;;
-  esac
+# Load infra.yml via the Python parser into the current shell environment.
+# Safe: parser validates and never executes repo content.
+load_infra_manifest() {
+  local yml=$1
+  [[ -f $yml ]] || die "infra.yml not found: $yml"
+  local parsed
+  parsed=$(python3 "$INFRA_ROOT/scripts/parse-manifest.py" "$yml") \
+    || die "infra.yml is invalid"
+  eval "$parsed"
 }
-
-default_port() { case $1 in app) echo 3000 ;; web) echo 80 ;; api) echo 8080 ;; esac; }
 
 # --------------------------------------------------------------------------- stacks
 
@@ -277,7 +239,6 @@ load_stack() {
   local line
   while IFS= read -r line; do
     case $line in
-      tpl:*)   COMPOSE+=(-f "$INFRA_ROOT/templates/${line#tpl:}") ;;
       stack:*) COMPOSE+=(-f "$STACK_DIR/${line#stack:}") ;;
       '') ;;
       *) die "bad entry in $STACK_DIR/compose-files: $line" ;;

@@ -130,7 +130,7 @@ check "web still reaches the API through Traefik"         "$(web_api_url pr-11 |
 
 title "5. The feature needs a NEW secret → blocked until DevOps adds it"
 sim commit demo-api feature/checkout "v2 needs NEW_FEATURE_KEY" -- bash -c \
-  "sed -i 's/^VERSION = \"v1\"/VERSION = \"v2\"/' app.py && echo 'API_REQUIRED_ENV=\"NEW_FEATURE_KEY\"' >> .deploy/manifest.env"
+  "sed -i 's/^VERSION = \"v1\"/VERSION = \"v2\"/' app.py && sed -i 's/^    health_path: \/health$/&\n    required_env: [NEW_FEATURE_KEY]/' .infradeploy/infra.yml"
 if sim pr-sync demo-api 7 2>/dev/null; then bad "deploy should have been blocked"; else ok "deploy blocked (missing NEW_FEATURE_KEY)"; fi
 check "console shows pr-7 as blocked"                  "$(cstate demo-api pr-7 .STATE)"   blocked
 check "console names the missing key"                  "$(cstate demo-api pr-7 '.MISSING|join(",")')" "api:NEW_FEATURE_KEY"
@@ -195,7 +195,7 @@ check "web develop unaffected"                         "$(code "$(url demo-web d
 title "10b. Untrusted repos: registered projects, signed webhooks, stack policy"
 HOOK="https://hooks.$DOMAIN$S/webhook"; HD=/var/tmp/e2e-hook-demo
 rm -rf "$HD" "$HD-evil" "$HD-inject"; mkdir -p "$HD"
-cp -r "$HERE/../examples/monolith/." "$HD/"; sed -i 's/APP_NAME=smoke-mono/APP_NAME=hook-demo/' "$HD/manifest.env"
+cp -r "$HERE/../examples/monolith/." "$HD/"; sed -i 's/^name: smoke-mono/name: hook-demo/' "$HD/infra.yml"
 D infra project remove hook-demo >/dev/null 2>&1
 HSECRET=$(D infra project add hook-demo --repo acme/hook-demo --envs preview,develop 2>/dev/null | awk '/INFRA_WEBHOOK_SECRET/ {print $2}')
 check "project registered (secret issued)"            "${#HSECRET}" 64
@@ -214,7 +214,7 @@ rq() { curl -sk -o /dev/null -w '%{http_code}' -X POST "$HOOK" -H "X-Infra-Proje
          -H "X-Infra-Signature: sha256=$sig" -H 'Content-Type: application/json' --data-binary "$body"; }
 check "replayed request → refused"                    "$(rq)/$(rq)" 202/401
 check "hooks host can't reach the console"            "$(code "https://hooks.$DOMAIN$S/api/state")/$(code "https://hooks.$DOMAIN$S/")" 404/404
-cp -r "$HD" "$HD-inject"; echo 'APP_PORT=80; touch /tmp/E2E_PWNED' >> "$HD-inject/manifest.env"
+cp -r "$HD" "$HD-inject"; printf "    health_path: '/x'; touch /tmp/E2E_PWNED\n" >> "$HD-inject/infra.yml"
 rm -f /tmp/E2E_PWNED
 check "manifest with shell code → refused"            "$(HDIR=$HD-inject hsend --action deploy --env pr-43 | jq -r .status)" failed
 check "  …and nothing was executed"                    "$(ls /tmp/E2E_PWNED 2>/dev/null | wc -l)" 0
@@ -232,7 +232,7 @@ Y
 out=$(HDIR=$HD-evil hsend --action deploy --env pr-44 | jq -r .output)
 check "privileged / host mount / secrets / hijack → refused" "$(grep -c -E 'privileged|bind mount /|env_file /etc|traefik labels differ|network_mode' <<<"$out")" 5
 check "  …nothing started for pr-44"                   "$(docker ps -aq --filter label=com.docker.compose.project=infra-hook-demo-pr-44 | wc -l)" 0
-check "hostname of another app → refused"             "$(echo 'APP_HOST_PREVIEW=demo-web-develop.'"$DOMAIN" >> "$HD/manifest.env"; hsend --action deploy --env pr-45 | jq -r .status)" failed
+check "hostname of another app → refused"             "$(printf '    host:\n      preview: demo-web-develop.%s\n' "$DOMAIN" >> "$HD/infra.yml"; hsend --action deploy --env pr-45 | jq -r .status)" failed
 check "signed destroy → preview gone"                 "$(hsend --action destroy --env pr-41 | jq -r .status)/$(code -u "$PREVIEW" "$(url hook-demo pr-41)/")" succeeded/404
 D infra project remove hook-demo >/dev/null; rm -rf "$HD" "$HD-evil" "$HD-inject"
 

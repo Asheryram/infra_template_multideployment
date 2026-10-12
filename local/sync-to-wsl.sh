@@ -16,7 +16,8 @@ cp "$SRC/platform/console/entrypoint.sh" /opt/infra/platform/console/entrypoint.
 cp "$SRC/platform/console/console.py"    /opt/infra/platform/console/console.py
 cp "$SRC/platform/console/access.py"     /opt/infra/platform/console/access.py
 cp "$SRC/platform/console/index.html"    /opt/infra/platform/console/index.html
-cp "$SRC/app-kit/.deploy/manifest.env"   /opt/infra/app-kit/.deploy/manifest.env
-cp "$SRC/app-kit/examples/backend.manifest.env" /opt/infra/app-kit/examples/backend.manifest.env
-cp "$SRC/app-kit/examples/split.manifest.env"   /opt/infra/app-kit/examples/split.manifest.env
+mkdir -p /opt/infra/app-kit/.infradeploy
+cp "$SRC/scripts/parse-manifest.py"            /opt/infra/scripts/parse-manifest.py
+cp "$SRC/app-kit/.infradeploy/infra.yml"       /opt/infra/app-kit/.infradeploy/infra.yml
+cp "$SRC"/app-kit/examples/*.infra.yml         /opt/infra/app-kit/examples/
 echo "deployment files synced to /opt/infra"

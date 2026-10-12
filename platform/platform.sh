@@ -101,6 +101,24 @@ else
   KEYCLOAK_VPN_CIDRS_YAML='          - "127.0.0.1/32"'
   CONSOLE_AUTH_MIDDLEWARE=ops-auth@file,secure-headers@file
 fi
+# Preview access: basic (shared password, default) or keycloak (SSO + project roles, see docs/access-control.md)
+PREVIEW_AUTH_MODE=${PREVIEW_AUTH_MODE:-basic}
+HAS_PREVIEWS_PROFILE=false
+[[ ,$COMPOSE_PROFILES, == *,keycloak-previews,* ]] && HAS_PREVIEWS_PROFILE=true
+case $PREVIEW_AUTH_MODE in
+  basic)
+    $HAS_PREVIEWS_PROFILE && die "PLATFORM_PROFILES includes keycloak-previews but PREVIEW_AUTH_MODE is not keycloak"
+    ;;
+  keycloak)
+    [[ $HAS_KEYCLOAK_PROFILE == true && $HAS_KEYCLOAK_AUTH_PROFILE == true && $CONSOLE_AUTH_MODE == keycloak && $HAS_PREVIEWS_PROFILE == true ]] \
+      || die "PREVIEW_AUTH_MODE=keycloak requires CONSOLE_AUTH_MODE=keycloak and PLATFORM_PROFILES to include keycloak,keycloak-auth,keycloak-previews"
+    [[ -n ${OAUTH2_PREVIEWS_CLIENT_SECRET:-} ]] || die "set OAUTH2_PREVIEWS_CLIENT_SECRET in /etc/infra/platform.secrets.env"
+    [[ ${OAUTH2_PREVIEWS_COOKIE_SECRET:-} =~ ^[A-Za-z0-9+/]{32}$ ]] \
+      || die "set OAUTH2_PREVIEWS_COOKIE_SECRET to a 32-character base64 value (openssl rand -base64 24)"
+    ;;
+  *) die "PREVIEW_AUTH_MODE must be basic or keycloak" ;;
+esac
+export PREVIEW_AUTH_MODE
 export CONSOLE_AUTH_MODE CONSOLE_AUTH_MIDDLEWARE CONSOLE_ROUTER_SERVICE CONSOLE_LOGOUT_MIDDLEWARE AUTHENTIK_VPN_CIDRS_YAML KEYCLOAK_VPN_CIDRS_YAML
 # The console container runs as the deploy user so its files match the CLI's ownership.
 DEPLOY_UID=$(id -u "$DEPLOY_USER"); DEPLOY_GID=$(id -g "$DEPLOY_USER")
@@ -118,7 +136,7 @@ dc() {
 # Refuse to start if anything we'd create already exists and belongs to someone else.
 
 PLATFORM_CONTAINERS=(infra-socket-proxy infra-traefik infra-postgres infra-uptime-kuma infra-dozzle infra-console
-                     infra-authentik-server infra-authentik-worker infra-authentik-redis infra-keycloak infra-oauth2-proxy
+                     infra-authentik-server infra-authentik-worker infra-authentik-redis infra-keycloak infra-oauth2-proxy infra-oauth2-previews
                      infra-prometheus infra-node-exporter infra-cadvisor infra-grafana infra-registry)
 PLATFORM_NETWORKS=(infra_proxy infra_data infra_socket infra_metrics)
 

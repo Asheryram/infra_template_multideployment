@@ -78,3 +78,32 @@ db_drop() {
   fi
   if role_exists "$2"; then psql_admin -c "DROP ROLE \"$2\""; fi
 }
+
+# --- databases declared in infra.yml -----------------------------------------------------------
+# Declaring a database never creates it. It is created on demand (`infra db create`, console button);
+# only then does deploy inject its URL. State lives in the stack dir:
+#   .db_password_<db>   exists  -> created (generated or fixed password, 0600)
+#   .db_wiped_<db>      exists  -> wiped; stays gone until created again
+
+# declared_dbs <deploy_dir> <app> <env>  ->  lines: <svc>:<inject_as>|<svc>|<inject_as>|<dbname>|<fixed pw>
+declared_dbs() {
+  local dir=$1 app=$2 env=$3 svc inject pw
+  [[ -f $dir/infra.yml ]] || return 0
+  python3 "$INFRA_ROOT/scripts/parse-manifest.py" "$dir/infra.yml" --databases | while IFS='|' read -r svc inject pw; do
+    [[ -n $svc ]] || continue
+    echo "$svc:$inject|$svc|$inject|$(db_ident "${app}_${env}_${svc}_${inject}")|$pw"
+  done
+}
+
+db_is_created() { [[ -s $1/.db_password_$2 && ! -e $1/.db_wiped_$2 ]]; }   # stack_dir dbname
+
+db_url_for() { echo "postgres://$2:$(<"$1/.db_password_$2")@$PG_CONTAINER:5432/$2"; }   # stack_dir dbname
+
+# db_provision <stack_dir> <dbname> <fixed_pw|""> <env class>: create role + database (idempotent)
+db_provision() {
+  local sd=$1 db=$2 fixed=$3 cls=$4 pwfile="$1/.db_password_$2"
+  if [[ -n $fixed ]]; then ( umask 077; printf '%s\n' "$fixed" > "$pwfile" )
+  elif [[ ! -s $pwfile ]]; then ( umask 077; openssl rand -hex 24 > "$pwfile" ); fi
+  rm -f "$sd/.db_wiped_$db"
+  db_ensure "$db" "$db" "$(<"$pwfile")" "" "$cls"
+}

@@ -22,7 +22,7 @@ on:
         default: ""
       manifest-dir:
         type: string
-        default: .deploy
+        default: .infradeploy
       github-environment:
         type: string
         default: ""
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           URL=${URL%/}; [[ $URL == */webhook ]] || URL="$URL/webhook"
-          app=$(sed -nE "s/^[[:space:]]*APP_NAME=['\"]?([a-z0-9-]+).*/\1/p" "$DIR/manifest.env" | head -1)
+          app=$(sed -nE "s/^name:[[:space:]]*['\"]?([a-z0-9-]+).*/\1/p" "$DIR/infra.yml" | head -1)
           echo "app=$app" >> "$GITHUB_OUTPUT"
           sign() { { printf '%s.' "$1"; cat "$2"; } | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1; }
 
@@ -94,7 +94,7 @@ jobs:
             case $(jq -r '.status // empty' status.json) in
               succeeded)
                 jq -r '.output' status.json | tail -n 20
-                for k in url api_url upstream_api_url; do echo "$k=$(jq -r ".$k // empty" status.json)" >> "$GITHUB_OUTPUT"; done
+                for k in url urls; do echo "$k=$(jq -r ".$k // empty" status.json)" >> "$GITHUB_OUTPUT"; done
                 exit 0 ;;
               failed)
                 jq -r '.output' status.json
@@ -110,17 +110,18 @@ jobs:
           ACTION: ${{ inputs.action }}
           APP: ${{ steps.send.outputs.app }}
           URL: ${{ steps.send.outputs.url }}
-          API_URL: ${{ steps.send.outputs.api_url }}
-          UPSTREAM: ${{ steps.send.outputs.upstream_api_url }}
+          URLS: ${{ steps.send.outputs.urls }}
           TAG: ${{ inputs.tag }}
         with:
           script: |
-            const { ACTION, APP, URL, API_URL, UPSTREAM, TAG } = process.env;
+            const { ACTION, APP, URL, URLS, TAG } = process.env;
+            const rows = (URLS || URL).split(/\s+/).filter(Boolean)
+              .map(p => p.includes('=') ? p.split('=') : ['app', p])
+              .map(([svc, u]) => `| ${svc} | ${u.replace(/^[a-z-]+=/, '')} |`);
             const marker = `<!-- infra-preview:${APP} -->`;
             const body = ACTION === 'destroy'
               ? `${marker}\n### Preview removed: \`${APP}\`\n_The environment, its database and its PR-only variables were deleted._`
-              : [marker, `### Preview ready: \`${APP}\``, '| | |', '|---|---|', `| App | ${URL} |`,
-                 API_URL && API_URL !== URL ? `| API | ${API_URL} |` : '', UPSTREAM ? `| Uses API | ${UPSTREAM} |` : '',
+              : [marker, `### Preview ready: \`${APP}\``, '| | |', '|---|---|', ...rows,
                  `| Image tag | \`${TAG}\` |`, '', '_Updated on every push. Removed automatically when the PR closes._']
                 .filter(Boolean).join('\n');
             const { owner, repo } = context.repo, issue_number = context.issue.number;

@@ -1,12 +1,16 @@
-# Reusable: build one component image and push it to GHCR.
+# Reusable: build one service image and push it to GHCR.
 # Called by app repos (see app-kit/.github/workflows/deploy.yml). Runs on GitHub-hosted runners.
 name: build-image
 
 on:
   workflow_call:
     inputs:
-      component:
-        description: app | web | api
+      service:
+        description: service name from infra.yml (used for the cache scope)
+        type: string
+        required: true
+      image:
+        description: image repository from infra.yml, without a tag (e.g. ghcr.io/org/app-api)
         type: string
         required: true
       context:
@@ -39,12 +43,9 @@ jobs:
 
       - id: ref
         env:
-          REGISTRY: ${{ inputs.registry }}
-          COMPONENT: ${{ inputs.component }}
+          IMAGE: ${{ inputs.image }}
           TAG: ${{ inputs.tag }}
-        run: |
-          repo="${GITHUB_REPOSITORY,,}"
-          echo "image=$REGISTRY/$repo/$COMPONENT:$TAG" >> "$GITHUB_OUTPUT"
+        run: echo "image=${IMAGE,,}:$TAG" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -63,6 +64,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=${{ inputs.component }}
-          cache-to: type=gha,mode=max,scope=${{ inputs.component }}
+          cache-from: type=gha,scope=${{ inputs.service }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.service }}
           provenance: false

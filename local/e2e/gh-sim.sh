@@ -12,7 +12,7 @@
 #   gh-sim merge    <repo> <from> <into>              merge branches and push <into> (e.g. develop → main = release)
 #
 # Each deploy does what CI does: build every component image FROM THAT COMMIT, tag it sha-<12>,
-# then `infra deploy --manifest <repo>/.deploy --env … --tag … --branch … --commit …`.
+# then `infra deploy --manifest <repo>/.infradeploy --env … --tag … --branch … --commit …`.
 set -Eeuo pipefail
 WORK=${E2E_WORK:-/var/tmp/infra-e2e}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,31 +20,28 @@ INFRA_ROOT="$(cd "$HERE/../.." && pwd)"
 
 say() { printf '  \033[36mgh-sim\033[0m %s\n' "$*" >&2; }
 g()   { local r=$1; shift; git -C "$WORK/$r" -c user.name=gh-sim -c user.email=gh-sim@local "$@"; }
-mval() { ( set +u; set -a; . "$WORK/$1/.deploy/manifest.env"; eval "printf '%s' \"\${$2:-}\"" ); }
+mval() { python3 "$INFRA_ROOT/scripts/parse-manifest.py" "$WORK/$1/.infradeploy/infra.yml" | sed -nE "s/^$2='(.*)'$/\1/p"; }
 
 env_for_branch() {
   case $1 in main) echo prod ;; staging) echo staging ;; develop) echo develop ;; *) echo "" ;; esac
 }
 
-components() {
-  case $1 in monolith) echo app ;; frontend) echo web ;; backend) echo api ;; split) echo "web api" ;; esac
-}
-
 build_and_deploy() { # repo branch env
-  local repo=$1 branch=$2 env=$3 sha tag type img c ctx df
+  local repo=$1 branch=$2 env=$3 sha tag svc S img ctx df
   g "$repo" checkout -q "$branch"
   sha=$(g "$repo" rev-parse HEAD); tag="sha-${sha:0:12}"
-  type=$(mval "$repo" TYPE); img=$(mval "$repo" IMAGE_REPO)
-  for c in $(components "$type"); do
-    ctx=$(mval "$repo" "${c^^}_CONTEXT"); ctx=${ctx:-.}
-    df=$(mval "$repo" "${c^^}_DOCKERFILE"); df=${df:-$ctx/Dockerfile}
-    if ! docker image inspect "$img/$c:$tag" >/dev/null 2>&1; then
-      say "build  $img/$c:$tag  ($repo@$branch)"
-      docker build -q -t "$img/$c:$tag" -f "$WORK/$repo/$df" "$WORK/$repo/$ctx" >/dev/null
+  for svc in $(mval "$repo" SERVICES); do
+    S=${svc^^}; S=${S//-/_}
+    img=$(mval "$repo" "${S}_IMAGE")
+    ctx=$(mval "$repo" "${S}_BUILD_CONTEXT"); ctx=${ctx:-.}
+    df=$(mval "$repo" "${S}_DOCKERFILE"); df=${df:-$ctx/Dockerfile}
+    if ! docker image inspect "$img:$tag" >/dev/null 2>&1; then
+      say "build  $img:$tag  ($repo@$branch)"
+      docker build -q -t "$img:$tag" -f "$WORK/$repo/$df" "$WORK/$repo/$ctx" >/dev/null
     fi
   done
   say "deploy $repo → $env  ($branch @ ${sha:0:8})"
-  infra deploy --manifest "$WORK/$repo/.deploy" --env "$env" --tag "$tag" \
+  infra deploy --manifest "$WORK/$repo/.infradeploy" --env "$env" --tag "$tag" \
     --branch "$branch" --commit "$sha" --no-pull >/dev/null
 }
 
