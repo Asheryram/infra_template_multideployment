@@ -466,6 +466,32 @@ function matchesFilter(d) {
   return true;
 }
 
+function grantLabel(g) {
+  const where = !g.scope ? 'the whole project' : g.scope.replace(/^env:/, 'environment ').replace(/^class:/, 'all ').replace(/^branch:/, 'branch ');
+  return `${esc(g.role)} on <b>${esc(g.app)}</b> · ${esc(where)}`;
+}
+function invitationsBanner() {
+  const mine = STATE.access?.my_invitations || [];
+  if (!mine.length) return '';
+  return mine.map(i => `<div class="attention" style="border-color:var(--accent)">
+    <div class="attention-head" style="background:var(--accent-soft)"><span class="dot up"></span>You're invited to <b>&nbsp;${esc(i.organization_name)}</b>
+      <span class="muted" style="font-weight:400">&nbsp;· expires ${esc(new Date(i.expires_at * 1000).toLocaleDateString())}</span></div>
+    <div style="padding:12px 16px">
+      <div class="muted" style="font-size:12.5px;margin-bottom:8px">Accepting makes you a member of ${esc(i.organization_name)}${i.member_role === 'org_admin' ? ' <b>as an organization administrator</b>' : ''}${i.grants.length ? ' and gives you:' : '.'}</div>
+      ${i.grants.length ? `<ul style="margin:0 0 10px 18px;font-size:13px">${i.grants.map(g => `<li>${grantLabel(g)}</li>`).join('')}</ul>` : ''}
+      <button class="btn primary" data-inv="accept|${esc(i.id)}">Accept</button>
+      <button class="btn" data-inv="decline|${esc(i.id)}">Decline</button>
+    </div></div>`).join('');
+}
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-inv]');
+  if (!b) return;
+  const [op, id] = b.dataset.inv.split('|');
+  b.disabled = true;
+  try { await api('/api/invitations', { op, id }); toast(op === 'accept' ? 'Invitation accepted' : 'Invitation declined'); await load(); }
+  catch (err) { toast(err.message); b.disabled = false; }
+});
+
 function renderEnvs() {
   const all = STATE.deployments;
   const apps = byApp(), names = Object.keys(apps).sort();
@@ -474,7 +500,7 @@ function renderEnvs() {
     const message = hasTenantIdentity
       ? 'No projects are assigned to your account yet. Ask your organization administrator to grant you a project role.'
       : 'Nothing deployed yet. Open a PR in an app repo, or run <span class="mono">infra deploy</span>.';
-    $('#tab-envs').innerHTML = `<div class="card"><div class="empty">${message}</div></div>`;
+    $('#tab-envs').innerHTML = invitationsBanner() + `<div class="card"><div class="empty">${message}</div></div>`;
     return;
   }
   const up = all.filter(d => d.STATE === 'up').length;
@@ -531,7 +557,7 @@ function renderEnvs() {
   }).join('');
 
   const keepFocus = document.activeElement?.id === 'envSearch';
-  $('#tab-envs').innerHTML = toolbar + attention + (cards || '<div class="card"><div class="empty">No environments match this filter.</div></div>');
+  $('#tab-envs').innerHTML = invitationsBanner() + toolbar + attention + (cards || '<div class="card"><div class="empty">No environments match this filter.</div></div>');
   const box = $('#envSearch');
   box.oninput = () => { FILTER.q = box.value; const pos = box.selectionStart; renderEnvs(); const nb = $('#envSearch'); nb.focus(); nb.setSelectionRange(pos, pos); };
   if (keepFocus) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
@@ -1041,6 +1067,7 @@ async function renderVarsFor(app) {
   });
 }
 
+let ACCESS_RESULT_HTML = '';
 async function renderAccess() {
   const response = await api('/api/access');
   const access = response.access, platformAdmin = access.platform_admin;
@@ -1076,14 +1103,31 @@ async function renderAccess() {
     <div class="card">
       <div class="card-header"><h2>Organization membership</h2></div>
       <div style="padding:16px 18px">
-        <p class="muted">Create or invite accounts in ${identityProvider} first. The console manages organization membership and project access; users must sign in once before they appear here. Organization admins can add existing identities to their organization; only the platform admin can appoint another organization admin.</p>
-        <div class="row"><select id="memberOrg" aria-label="Organization">${orgOptions}</select>
-          <input id="memberEmail" type="email" aria-label="User email" placeholder="user@example.org" style="min-width:220px">
-          <select id="memberRole">${platformAdmin ? '<option value="member">Member</option><option value="org_admin">Organization admin</option>' : '<option value="member">Member</option>'}<option value="none">Remove membership</option></select>
-          <button class="btn primary" id="memberAdd" ${!organizations.length ? 'disabled' : ''}>Add to organization</button></div>
-        <div class="scroll"><table><tr><th>Organization</th><th>User</th><th>Role</th></tr>
-          ${access.members.map(member => `<tr><td>${esc(member.organization)}</td><td>${esc(member.email)}</td><td>${esc(member.role)}</td></tr>`).join('') ||
-            '<tr><td colspan="3" class="empty">No members assigned.</td></tr>'}</table></div>
+        <p class="muted">Invite someone by email: they get a pending invitation (membership plus the first grants you choose) that they accept themselves after signing in with that address.${STATE.settings.invite_accounts ? ' If they have no account yet, one is created in ' + identityProvider + ' and they are emailed to set a password — or you are shown a one-time password to pass on, when no mail server is configured.' : ' Accounts are created in ' + identityProvider + ' by a platform administrator (or come from the client\'s own login); the invitation waits for that sign-in.'} Only a platform administrator can invite an organization administrator.</p>
+        <div class="row"><select id="invOrg" aria-label="Organization">${orgOptions}</select>
+          <input id="invEmail" type="email" aria-label="Email" placeholder="person@client.com" style="min-width:240px">
+          <input id="invName" aria-label="Name (optional)" placeholder="Name (optional)" style="min-width:160px">
+          ${platformAdmin ? '<select id="invRole" aria-label="Membership"><option value="member">Member</option><option value="org_admin">Organization admin</option></select>' : ''}</div>
+        <div class="row"><span class="muted" style="font-size:12.5px">First access:</span>
+          <select id="invProject" aria-label="Project"><option value="">no grant yet</option></select>
+          <select id="invKind" aria-label="Applies to"><option value="">whole project</option><option value="env">one environment</option><option value="class">all of a class</option><option value="branch">branch pattern</option></select>
+          <input id="invValue" aria-label="Scope value" class="mono" placeholder="develop / preview / feature/checkout*" style="min-width:230px" hidden>
+          <select id="invRole2" aria-label="Role"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="maintainer">Maintainer</option></select>
+          ${STATE.settings.invite_accounts ? '<label class="muted" style="font-size:12.5px"><input type="checkbox" id="invCreate" checked> create their account if missing</label>' : ''}
+          <button class="btn primary" id="invSend" ${!organizations.length ? 'disabled' : ''}>Send invitation</button></div>
+        <div id="invResult"></div>
+        <h3 style="margin:16px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em" class="muted">Pending invitations</h3>
+        <div class="scroll"><table><tr><th>Organization</th><th>Email</th><th>Will receive</th><th>Expires</th><th></th></tr>
+          ${(access.invitations || []).map(i => `<tr><td>${esc(i.organization)}</td><td>${esc(i.email)}</td>
+            <td style="font-size:12.5px">${esc(i.member_role === 'org_admin' ? 'organization admin' : 'member')}${i.grants.map(g => '<br>' + grantLabel(g)).join('')}</td>
+            <td>${esc(new Date(i.expires_at * 1000).toLocaleDateString())}</td>
+            <td style="text-align:right"><button class="btn danger" data-invrevoke="${esc(i.id)}">Revoke</button></td></tr>`).join('') ||
+            '<tr><td colspan="5" class="empty">No pending invitations.</td></tr>'}</table></div>
+        <h3 style="margin:16px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em" class="muted">Members</h3>
+        <div class="scroll"><table><tr><th>Organization</th><th>User</th><th>Role</th><th></th></tr>
+          ${access.members.map(member => `<tr><td>${esc(member.organization)}</td><td>${esc(member.email)}</td><td>${esc(member.role)}</td>
+            <td style="text-align:right">${platformAdmin || member.role !== 'org_admin' ? `<button class="btn danger" data-memberremove="${esc(member.organization)}|${esc(member.email)}">Remove</button>` : ''}</td></tr>`).join('') ||
+            '<tr><td colspan="4" class="empty">No members yet — invite someone above.</td></tr>'}</table></div>
       </div>
     </div>
     <div class="card">
@@ -1121,9 +1165,10 @@ async function renderAccess() {
         ${identities.map(identity => `<tr><td>${esc(identity.display_name)}</td><td>${esc(identity.email)}</td><td class="mono">${esc(identity.uid)}</td><td>${ago(identity.last_seen)}</td></tr>`).join('') ||
           '<tr><td colspan="4" class="empty">No users have signed in yet.</td></tr>'}</table></div></div>` : ''}`;
 
+  if (ACCESS_RESULT_HTML && $('#invResult', el)) { $('#invResult', el).innerHTML = ACCESS_RESULT_HTML; $('#otpCopy', el)?.addEventListener('click', async () => toast((await copyText($('#otp', el)?.textContent || '')) ? 'Copied' : 'Copy failed')); }
   const postAccess = async body => {
     const output = $('#accessOut', el);
-    try { await api('/api/access', body); toast('Access updated'); await renderAccess(); await load(); }
+    try { await api('/api/access', body); toast('Access updated'); ACCESS_RESULT_HTML = ''; await renderAccess(); await load(); }
     catch (e) { if (output) output.textContent = e.message; else toast(e.message); }
   };
   $('#orgCreate', el)?.addEventListener('click', () =>
@@ -1132,9 +1177,48 @@ async function renderAccess() {
   $('#orgLink', el)?.addEventListener('click', () =>
     postAccess({ op: 'project-link', organization: $('#orgLinkOrg', el).value,
       app: $('#orgLinkProject', el).value }));
-  $('#memberAdd', el)?.addEventListener('click', () =>
-    postAccess({ op: 'member', organization: $('#memberOrg', el).value,
-      email: $('#memberEmail', el).value.trim(), role: $('#memberRole', el).value }));
+  // invitations: the project list follows the chosen organization; scope value only when a scope is chosen
+  const invProjects = () => {
+    const org = $('#invOrg', el)?.value;
+    const apps = [...new Set(projects.filter(p => p.organization === org).map(p => p.app))];
+    $('#invProject', el).innerHTML = '<option value="">no grant yet</option>' + apps.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
+  };
+  $('#invOrg', el)?.addEventListener('change', invProjects);
+  $('#invKind', el)?.addEventListener('change', () => { $('#invValue', el).hidden = !$('#invKind', el).value; });
+  invProjects();
+  $('#invSend', el)?.addEventListener('click', async () => {
+    const out = $('#invResult', el), btn = $('#invSend', el);
+    const grants = [];
+    if ($('#invProject', el).value) {
+      const kind = $('#invKind', el).value, value = $('#invValue', el).value.trim();
+      if (kind && !value) return toast('Enter the environment, class or branch pattern');
+      grants.push({ app: $('#invProject', el).value, role: $('#invRole2', el).value, scope: kind ? `${kind}:${value}` : '' });
+    }
+    btn.disabled = true;
+    try {
+      const r = await api('/api/access', { op: 'invite', organization: $('#invOrg', el).value, email: $('#invEmail', el).value.trim(),
+        name: $('#invName', el).value.trim(), member_role: $('#invRole', el)?.value || 'member', grants,
+        create_account: $('#invCreate', el) ? $('#invCreate', el).checked : false });
+      const acct = r.account || {};
+      out.innerHTML = acct.delivery === 'one-time-password'
+        ? `<div class="banner" style="margin-top:12px"><b>Invitation created, account created.</b> Pass this one-time password to ${esc($('#invEmail', el).value.trim())} <b>through a private channel</b> — it is shown only now; they must change it at first sign-in.
+            <div class="db-url revealed" style="margin-top:8px"><code id="otp">${esc(acct.password)}</code><button class="btn" id="otpCopy">Copy</button></div></div>`
+        : acct.account === 'error'
+          ? `<div class="banner" style="margin-top:12px"><b>Invitation created, but the account could not be created:</b> ${esc(acct.error)}. A platform administrator can create it in Keycloak; the invitation stays pending.</div>`
+          : `<div class="banner" style="margin-top:12px;background:var(--ok-soft)"><b>Invitation created.</b> They will see it in the console after signing in${acct.delivery === 'email' ? ' (an email to set up their account was sent)' : ''}.</div>`;
+      $('#otpCopy', out)?.addEventListener('click', async () => toast((await copyText(acct.password)) ? 'Copied' : 'Copy failed'));
+      $('#invEmail', el).value = ''; $('#invName', el).value = '';
+      ACCESS_RESULT_HTML = out.innerHTML;        // keep the result panel (it may hold the one-time password) across the re-render
+      await renderAccess();
+    } catch (e) { out.innerHTML = `<div class="banner" style="margin-top:12px">${esc(e.message)}</div>`; }
+    finally { btn.disabled = false; }
+  });
+  el.querySelectorAll('[data-invrevoke]').forEach(b => b.onclick = () => postAccess({ op: 'invitation-revoke', id: b.dataset.invrevoke }));
+  el.querySelectorAll('[data-memberremove]').forEach(b => b.onclick = () => {
+    const [organization, email] = b.dataset.memberremove.split('|');
+    if (!window.confirm(`Remove ${email} from ${organization}? Their grants in this organization are removed too.`)) return;
+    postAccess({ op: 'member', organization, email, role: 'none' });
+  });
   $('#grantSave', el)?.addEventListener('click', () =>
     postAccess({ op: 'project-grant', app: $('#grantProject', el).value,
       uid: $('#grantUser', el).value, role: $('#grantRole', el).value }));

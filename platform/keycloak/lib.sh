@@ -60,3 +60,20 @@ ensure_client() {
   _add_mapper "$cid-audience" oidc-audience-mapper \
     "{\"included.client.audience\":\"$cid\",\"id.token.claim\":\"true\",\"access.token.claim\":\"true\"}"
 }
+
+# ensure_user_admin_client <client_id> <secret>
+# A confidential, service-account-only client (no login flows). Its service account gets just the realm-management
+# roles needed to create and look up users in THIS realm. Keycloak cannot narrow these further (no per-group
+# delegation), so the console is deliberately create-only: it never edits or resets an account it did not just create
+# and never touches the platform-admin group. Disable the feature entirely with INVITE_CREATE_ACCOUNTS=false.
+ensure_user_admin_client() {
+  local cid=$1 secret=$2 existing id
+  existing=$(kcadm get clients -r "$REALM" -q "clientId=$cid" --fields id --format csv --noquotes | kc_csv | head -1)
+  local args=(-r "$REALM" -s "clientId=$cid" -s protocol=openid-connect -s publicClient=false -s standardFlowEnabled=false
+              -s directAccessGrantsEnabled=false -s implicitFlowEnabled=false -s serviceAccountsEnabled=true -s "secret=$secret")
+  if [[ -n $existing ]]; then kcadm update "clients/$existing" "${args[@]}"; id=$existing; echo "updated client $cid"
+  else id=$(kcadm create clients "${args[@]}" -i | kc_csv); echo "created client $cid"; fi
+  kcadm add-roles -r "$REALM" --uusername "service-account-$cid" --cclientid realm-management \
+    --rolename manage-users --rolename view-users --rolename query-users
+  echo "  service account may create/look up users in realm $REALM"
+}

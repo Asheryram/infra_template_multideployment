@@ -49,6 +49,7 @@ echo "console client:   $CONSOLE_CLIENT  → https://console.${DOMAIN}${PUBLIC_S
 if [[ -n ${OAUTH2_PREVIEWS_CLIENT_SECRET:-} ]]; then
   echo "previews client:  $PREVIEWS_CLIENT  → https://sso.${DOMAIN}${PUBLIC_SUFFIX}/oauth2/callback"
 fi
+[[ -z ${KEYCLOAK_USER_ADMIN_SECRET:-} ]] || echo "user-admin client: ${KEYCLOAK_USER_ADMIN_CLIENT:-infra-user-admin}  (service account: create/look up users)"
 [[ -z $ADMIN_USER ]] || echo "first admin:      $ADMIN_USER <$ADMIN_EMAIL>"
 if (( DRY )); then echo "(dry run — nothing changed)"; exit 0; fi
 
@@ -76,6 +77,10 @@ fi
 ensure_client "$CONSOLE_CLIENT" "$OAUTH2_PROXY_CLIENT_SECRET" "https://console.${DOMAIN}${PUBLIC_SUFFIX}/oauth2/callback"
 if [[ -n ${OAUTH2_PREVIEWS_CLIENT_SECRET:-} ]]; then
   ensure_client "$PREVIEWS_CLIENT" "$OAUTH2_PREVIEWS_CLIENT_SECRET" "https://sso.${DOMAIN}${PUBLIC_SUFFIX}/oauth2/callback"
+fi
+# invitations: lets org admins create the invitee's account from the console (optional)
+if [[ -n ${KEYCLOAK_USER_ADMIN_SECRET:-} ]]; then
+  ensure_user_admin_client "${KEYCLOAK_USER_ADMIN_CLIENT:-infra-user-admin}" "$KEYCLOAK_USER_ADMIN_SECRET"
 fi
 
 # --- first admin user

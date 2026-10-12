@@ -1,8 +1,10 @@
 """Organization and project authorization for the infra console."""
 
 import fnmatch
+import json
 import os
 import re
+import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -16,6 +18,10 @@ ENV_CLASSES = ("prod", "staging", "develop", "preview")
 #   class:<class>     every environment of a class (class:preview = all previews)
 #   branch:<pattern>  every environment deployed from a matching branch (branch:feature/checkout*)
 ENV_SCOPE = re.compile(r"^(env:[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?|class:(prod|staging|develop|preview)|branch:[A-Za-z0-9._/*-]{1,100})$")
+
+
+EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,255}\.[^@\s]{2,}$")
+INVITE_TTL = 14 * 86400
 
 
 def env_class_of(env):
@@ -75,6 +81,17 @@ class AccessStore:
                     role TEXT NOT NULL CHECK (role IN ('viewer', 'operator', 'maintainer')),
                     created_at INTEGER NOT NULL,
                     PRIMARY KEY (app, uid)
+                );
+                CREATE TABLE IF NOT EXISTS invitations (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    organization TEXT NOT NULL REFERENCES organizations(slug) ON DELETE CASCADE,
+                    member_role TEXT NOT NULL CHECK (member_role IN ('member', 'org_admin')),
+                    invited_by TEXT NOT NULL,
+                    grants TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    UNIQUE (email, organization)
                 );
                 CREATE TABLE IF NOT EXISTS environment_grants (
                     app TEXT NOT NULL REFERENCES organization_projects(app) ON DELETE CASCADE,
@@ -192,6 +209,102 @@ class AccessStore:
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(app, uid) DO UPDATE SET role=excluded.role
             """, (app, uid, role, int(time.time())))
+
+    # ---- invitations: membership + initial grants for an email that has not (necessarily) signed in yet.
+    # Nothing is applied until the invited person accepts while signed in with that (verified) email, so an
+    # organization admin never learns whether an account exists and nobody is added without their consent.
+
+    def create_invitation(self, organization, email, invited_by, grants=(), member_role="member"):
+        email = (email or "").strip().lower()
+        if not EMAIL.fullmatch(email):
+            raise ValueError("enter a valid email address")
+        if member_role not in ("member", "org_admin"):
+            raise ValueError("bad membership role")
+        clean = []
+        with self.connect() as db:
+            if not db.execute("SELECT 1 FROM organizations WHERE slug=?", (organization,)).fetchone():
+                raise ValueError("unknown organization")
+            for g in list(grants)[:20]:
+                app, role, scope = g.get("app", ""), g.get("role", ""), g.get("scope", "") or ""
+                if role not in PROJECT_ROLES:
+                    raise ValueError("grant role must be viewer, operator or maintainer")
+                if scope and not ENV_SCOPE.fullmatch(scope):
+                    raise ValueError("scope must be env:<name>, class:<class> or branch:<pattern>")
+                if not db.execute("SELECT 1 FROM organization_projects WHERE organization=? AND app=?", (organization, app)).fetchone():
+                    raise ValueError(f"{app or 'project'} does not belong to this organization")
+                clean.append({"app": app, "role": role, "scope": scope})
+            now = int(time.time())
+            ident = secrets.token_hex(8)
+            db.execute("""
+                INSERT INTO invitations (id, email, organization, member_role, invited_by, grants, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(email, organization) DO UPDATE SET member_role=excluded.member_role, invited_by=excluded.invited_by,
+                    grants=excluded.grants, created_at=excluded.created_at, expires_at=excluded.expires_at
+            """, (ident, email, organization, member_role, invited_by, json.dumps(clean), now, now + INVITE_TTL))
+            return db.execute("SELECT id FROM invitations WHERE email=? AND organization=?", (email, organization)).fetchone()["id"]
+
+    def pending_for_email(self, email):
+        with self.connect() as db:
+            rows = db.execute("""
+                SELECT i.id, i.organization, o.name AS organization_name, i.member_role, i.grants, i.created_at, i.expires_at
+                FROM invitations i JOIN organizations o ON o.slug=i.organization
+                WHERE i.email=? AND i.expires_at>? ORDER BY i.created_at
+            """, ((email or "").strip().lower(), int(time.time()))).fetchall()
+        return [{**dict(r), "grants": json.loads(r["grants"])} for r in rows]
+
+    def accept_invitation(self, uid, email, invitation_id):
+        """Apply an invitation for the signed-in person. The invitation's email must be the account's email."""
+        email = (email or "").strip().lower()
+        with self.connect() as db:
+            inv = db.execute("SELECT * FROM invitations WHERE id=? AND email=? AND expires_at>?",
+                             (invitation_id, email, int(time.time()))).fetchone()
+        if not inv:
+            raise ValueError("no such pending invitation for this account")
+        current = self.organization_member_role(inv["organization"], uid)
+        if current is None or (current == "member" and inv["member_role"] == "org_admin"):
+            self.set_member(inv["organization"], uid, inv["member_role"])      # never downgrade an existing org admin
+        for g in json.loads(inv["grants"]):
+            if g["scope"]:
+                self.grant_environment(g["app"], uid, g["scope"], g["role"])
+            else:
+                self.grant_project(g["app"], uid, g["role"])
+        with self.connect() as db:
+            db.execute("DELETE FROM invitations WHERE id=?", (invitation_id,))
+        return inv["organization"]
+
+    def decline_invitation(self, email, invitation_id):
+        with self.connect() as db:
+            db.execute("DELETE FROM invitations WHERE id=? AND email=?", (invitation_id, (email or "").strip().lower()))
+
+    def revoke_invitation(self, invitation_id, organization):
+        with self.connect() as db:
+            db.execute("DELETE FROM invitations WHERE id=? AND organization=?", (invitation_id, organization))
+
+    def invitation_organization(self, invitation_id):
+        with self.connect() as db:
+            row = db.execute("SELECT organization FROM invitations WHERE id=?", (invitation_id,)).fetchone()
+            return row["organization"] if row else None
+
+    def member_uid_by_email(self, organization, email):
+        """Resolve an email to a uid ONLY among the members of one organization (no global account lookup)."""
+        with self.connect() as db:
+            row = db.execute("""
+                SELECT i.uid FROM organization_members om JOIN identities i ON i.uid=om.uid
+                WHERE om.organization=? AND lower(i.email)=lower(?)
+            """, (organization, (email or "").strip())).fetchone()
+            return row["uid"] if row else None
+
+    def list_invitations(self, uid, platform_admin=False):
+        with self.connect() as db:
+            if platform_admin:
+                rows = db.execute("""SELECT id, email, organization, member_role, grants, created_at, expires_at, invited_by
+                                     FROM invitations WHERE expires_at>? ORDER BY organization, email""", (int(time.time()),)).fetchall()
+            else:
+                rows = db.execute("""SELECT i.id, i.email, i.organization, i.member_role, i.grants, i.created_at, i.expires_at, i.invited_by
+                                     FROM invitations i JOIN organization_members me ON me.organization=i.organization
+                                     WHERE me.uid=? AND me.role='org_admin' AND i.expires_at>? ORDER BY i.organization, i.email""",
+                                  (uid, int(time.time()))).fetchall()
+        return [{**dict(r), "grants": json.loads(r["grants"])} for r in rows]
 
     def grant_environment(self, app, uid, scope, role):
         """Give <uid> a role on part of a project (see ENV_SCOPE). role 'none' removes that one grant."""
@@ -334,6 +447,7 @@ class AccessStore:
                 "projects": [dict(row) for row in projects],
                 "members": [dict(row) for row in members],
                 "environment_grants": [dict(row) for row in env_rows],
+                "invitations": self.list_invitations(uid, platform_admin),
             }
 
     def project_roles(self, uid, platform_admin=False):

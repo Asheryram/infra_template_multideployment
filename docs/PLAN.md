@@ -2,7 +2,7 @@
 
 Living to-do list for this repo. **To resume in a new session:** say *"continue with docs/PLAN.md"*. Work top to bottom, tick items off here, and commit after each one.
 
-_Last updated: 2026-10-11 · next up: item 3_
+_Last updated: 2026-10-12 · next up: item 3 (item 5 is done)_
 
 ---
 
@@ -64,16 +64,15 @@ Each deployment environment has its own `<stack>_net`. Traefik joins networks fo
 - [ ] `infra project report`: which projects, owners, envs, last deploy, disk/RAM. Print in the CLI and show in the console.
 - [ ] Validate the tenant identity-provider integrations end-to-end: Keycloak/OIDC and Authentik login, role isolation, account lifecycle, recovery, backup/restore, and VPN-only routing. See `docs/access-control.md`.
 
-### 5. infra.yml follow-ups (new format landed untested on a live host)
+### 5. infra.yml, Keycloak, access and invitations ✅ DONE (2026-10-12)
 
-- [ ] Run `local/smoke-test.sh` and `local/e2e/run.sh` on WSL/Docker and fix whatever the format change broke (e2e still contains assertions written for the old API_URL auto-linking and may need rewriting).
-- [ ] `infra db create|use|info|wipe` (scripts/db.sh) and the console Database tab still assume one DB per environment; update for per-service databases (`DB_LIST` in meta.env).
-- [ ] Console: show per-service URLs (`URLS` in meta.env) and per-service required/missing keys in the UI; docs/onboarding-local.md still describes manifest.env.
-- [x] **Fresh-install path validated 2026-10-12** (wipe → `wsl-up.ps1` → `install.sh` → `platform up` → `bootstrap-realm.sh --apply`): [runbook-fresh-install.md](runbook-fresh-install.md). Found and fixed on the way: console proxy requested a non-existent `groups` scope (login `invalid_scope`), `uninstall.sh` left platform volumes behind (compose `down` can't parse without every required secret) and blocked reinstall via `/srv/backups`, `platform up` failed when it couldn't restart the root-owned `infra-gitops` unit, install didn't fill the previews secrets.
-- [x] **Granular access:** organization → projects → members → project-wide role OR `env:`/`class:`/`branch:` grants (highest wins); enforced on every environment endpoint, variable scopes and the preview gate; Access tab UI. 41-case test (`/auth/preview` + endpoints) passed.
-- [x] No basic auth left with Keycloak on: console, previews, any class via `auth:`, and ops tools (`OPS_AUTH_MODE`: Traefik dashboard, logs, status, Grafana) — platform-admin gate `/auth/platform`. 50-case test + live redirect checks passed. Intentionally not Keycloak: signed webhooks, Keycloak itself.
-- [ ] Not yet exercised on the live host: environment/branch grants through real Keycloak sign-ins, previews SSO after the fresh install (needs a deployed preview + a second Keycloak user), the GitOps watcher on the fresh install.
-- [ ] **Preview SSO (built 2026-10-12, not yet exercised against a live Keycloak):** `PREVIEW_AUTH_MODE=keycloak` + `keycloak-previews` profile + `platform/keycloak/create-previews-client.sh`; see docs/access-control.md. Live test: create the `infra-previews` client, switch the mode, redeploy a preview, confirm sign-in → viewer sees it, a user without a role gets the 403 page, `auth: false` services stay public. Console gate is unit-tested (`/auth/preview`, 13 cases with a stub oauth2-proxy).
+- [x] **infra.yml model**: independent services, URL convention, databases declared and created on demand (console button / `infra db create [--db svc:VAR]`), `required_env` blocks, explicit variables instead of auto-linking. Console shows per-service endpoints and database state.
+- [x] **Fresh-install path validated** (wipe → `wsl-up.ps1` → `install.sh` → `platform up` → `bootstrap-realm.sh --apply`): [runbook-fresh-install.md](runbook-fresh-install.md). Fixed on the way: `groups` scope (`invalid_scope`), `uninstall.sh` volumes + `/srv/backups`, `platform up` vs the root-owned `infra-gitops` unit, unfilled previews secrets.
+- [x] **Keycloak everywhere, no basic auth**: console, environment gates (previews by default; any class via `auth:`), ops tools (`OPS_AUTH_MODE`, platform admins only). Signed webhooks stay HMAC by design.
+- [x] **Granular access**: organization → projects → members → project-wide role OR `env:`/`class:`/`branch:` grants (highest wins), enforced on every environment endpoint, variable scopes and the gates. Matrix in `docs/access-control.md`.
+- [x] **Invitations + account creation**: invite by email (nothing applied until the invitee accepts; no account lookup by org admins), console creates the Keycloak account through a create-only service account (email, or a one-time password shown once). Tested: 34 cases with a stub Keycloak admin API, and live against the real Keycloak (account created with no groups, throwaway user deleted).
+- [x] **e2e rewritten** for the new model (`local/e2e/run.sh`, 72 assertions): develop → prod, DB on demand, explicit `API_URL`, gated preview, blocked deploy → variable → retry, rollback, organizations + scoped grants + invitations through the real console, signed webhooks, isolation. Removes everything it creates (`--cleanup-only` for interrupted runs). `docs/onboarding-local.md`, `README.md`, `docs/runbook.md`, `docs/architecture.md` brought in line.
+- [ ] Still to exercise by hand with real people: scoped grants through actual Keycloak sign-ins (the logic is covered by 50 + 34 automated cases and the e2e, but not with a browser login), invitation emails once an SMTP server is configured in Keycloak, the GitOps watcher against a real GitHub repo.
 - [ ] Remove the `python3` assumption on non-Linux dev machines (Windows Git Bash only has `python`).
 
 ### 6. Real-world rollout (after 1–3)

@@ -4,7 +4,7 @@
 
 1. **An environment is data, not config.** `(app, env, tag, manifest)` fully describes a deployment. `infra deploy` turns it into a compose project named `<app>-<env>`. Nothing is hand-edited on the server.
 2. **Build once, run anywhere.** Images are built in CI, tagged `sha-<12>`, and the same image runs in every environment. Environment-specific values arrive at runtime as env vars, never at build time.
-3. **The server pulls, CI never pushes in.** A self-hosted runner on the server picks up deploy jobs, so there is no inbound SSH and no deploy keys in GitHub.
+3. **The server pulls, CI never pushes in.** Deploys arrive as signed webhooks or are pulled by the GitOps watcher, so there is no inbound SSH and no deploy keys in GitHub.
 4. **Laptop VM and VPS run identical code.** Only `inventory/*.env` differs: domain, TLS mode and sizes.
 5. **Everything has a limit.** Every log, container, preview count, backup and alert has one.
 
@@ -15,12 +15,12 @@ browser ──https──▶ Traefik ──(Host header)──▶ shop-pr-7 cont
                      │                       ▶ shop-prod containers      on infra-shop-prod_net
                      │                       ▶ blog-develop containers   on infra-blog-develop_net
      middlewares: secure-headers, compress,          │
-     preview-auth + noindex (previews only)          └─▶ infra-postgres, attached ONLY to the
+     access gate + noindex (previews; any class that opts in)  └─▶ infra-postgres, attached ONLY to the
                                                          networks of environments that use the DB
 ```
 
 **Every environment has its own private network** (`<stack>_net`). Only these containers are on it:
-- the environment's own containers (including sidecars from `compose.extra.yml`)
+- the environment's own containers (one per service declared in `infra.yml`)
 - Traefik
 - Postgres, but only if the environment uses the platform DB
 
@@ -74,10 +74,10 @@ Frontends must read their API URL **at runtime** (see `app-kit/dockerfiles/spa/`
 
 ## Databases
 
-- One shared Postgres container. Databases are optional and explicitly created per environment with `infra db create <app> <env>`; each gets a database and role named `<app>_<env>` (dashes become underscores).
-- `infra db use <app> <env> --key <VAR>` wires the generated URL into an app variable. Preview databases can be cloned from `<app>__template`; load that template from a **sanitised** dump with `infra db template`. Never clone prod data into previews.
-- Roles get a generated password and `REVOKE ALL … FROM PUBLIC`, so one app's credentials can't open another app's DB.
-- Postgres sits on an internal network with no published port. Reach it with `infra db psql` or an SSH tunnel.
+- One shared Postgres container. Databases are **declared** per service in `infra.yml` and **created on demand** (console button, or `infra db create <app> <env>`); deploying never creates one. Each gets its own role and database named `<app>_<env>_<service>_<var>` (lower-cased, non-alphanumerics become underscores) and a generated password (`.db_password_<db>`, 0600), or a fixed one if `infra.yml` pins `password:`. Once created, deploys re-sync the role and inject the URL into the declaring service; wiping stops the injection.
+- `infra db use <app> <env> --key <VAR> --from <app>/<env>` points a variable at another environment's database (never prod without `--allow-prod`). Preview databases can be cloned from `<app>__template`; load that template from a **sanitised** dump with `infra db template`. Never clone prod data into previews.
+- Roles are namespaced per database and get `REVOKE ALL … FROM PUBLIC`, so one app's credentials can't open another app's DB. Destroying an environment drops every database it created.
+- Postgres sits on an internal network with no published port. Reach it with `infra db psql` or an SSH tunnel. Platform admins can reveal a full connection URL in the console (audited).
 
 ## Security model
 
@@ -87,22 +87,23 @@ Frontends must read their API URL **at runtime** (see `app-kit/dockerfiles/spa/`
 | Docker | Only Traefik publishes ports (Docker bypasses ufw). Socket proxy, `no-new-privileges`, pid/mem/cpu limits |
 | Access | `deploy` user has no sudo but is in the `docker` group, which is root-equivalent, so protect it like root |
 | Secrets | `/etc/infra` is root:deploy 0750. Per-app secrets live outside git. Containers only see their own app's files |
-| Previews | Basic-auth plus `noindex`. Fork PRs never deploy |
-| CI | The runner is org-level and private-repo only, and runs the deploy job only (builds happen on GitHub-hosted runners) |
+| Previews | Access gate (Keycloak login + a role that covers that environment; shared basic-auth is an opt-in fallback) plus `noindex`. Fork PRs never deploy |
+| Ops tools | Traefik dashboard, logs, status and Grafana: Keycloak, platform admins only (`OPS_AUTH_MODE`) |
+| CI | Signed webhooks (HMAC, replay-protected, per-project repo + environment allow-list) or the GitOps watcher; an optional self-hosted runner runs the deploy job only |
 
 ### Console identities and tenant access
 
-The console supports a transitional `basic` mode for existing operator-only installs and `authentik` or `keycloak` identity-provider modes for tenant access. Keycloak runs on the `keycloak` Compose profile with oauth2-proxy handling OIDC and proxying authenticated requests to the console; its browser/admin host is restricted to configured VPN client CIDRs. oauth2-proxy reaches Keycloak through an internal TLS endpoint on the Docker network. Authentik is available as an alternative and uses the `authentik` Compose profile. Verify the actual client source addresses Traefik sees before enabling either provider.
+The console supports a transitional `basic` mode for operator-only installs and `authentik` or `keycloak` identity-provider modes for tenant access. Keycloak runs on the `keycloak` Compose profile with oauth2-proxy handling OIDC for the console; a second proxy (`keycloak-previews`, host `sso.<domain>`) logs people in for **environment gates and ops tools** with a cookie shared across `*.<domain>`. Traefik asks the console before every gated request (`/auth/preview` per environment, `/auth/platform` for ops tools); identity comes only from the proxy's answer for the browser's session. `auth.` and `sso.` are restricted to the configured VPN CIDRs. [runbook-fresh-install.md](runbook-fresh-install.md) sets all of this up with one script.
 
-The console persists provider-scoped user IDs and access grants in `$STATE_DIR/console-access.sqlite3`. Organizations group projects, but organization membership does not implicitly grant project visibility: each user needs an explicit project role. A user may belong to multiple organizations. The provider's configured platform-admin group is global authority; organization admins can manage membership and project grants only inside their own organization, but cannot appoint or change organization admins.
+The console persists provider-scoped user IDs, organizations, invitations and grants in `$STATE_DIR/console-access.sqlite3`. A client is an **organization** that owns projects; membership alone exposes nothing. A role is granted **project-wide** or on **one environment, a class, or a branch pattern** (highest matching role wins). People are added by **invitation** (accepted by the invitee), and the console can create the invitee's Keycloak account through a service-account client (create-only by design). The platform-admin group is global authority; organization admins manage invitations and grants only inside their own organization. Full matrix: [access-control.md](./access-control.md#permission-matrix).
 
-| Role | Access |
+| Role | Access (in the environments it covers) |
 |---|---|
-| Viewer | View assigned project deployments and read-only project information |
-| Operator | Viewer access plus deploy, restart, and rollback actions |
-| Maintainer | Operator access plus project runtime-variable management |
-| Organization admin | Manage membership and explicit project grants in their organization; no implicit project access |
-| Platform admin | Global console and organization administration; privileged platform operations |
+| Viewer | See, open, read logs and masked variables |
+| Operator | Viewer plus redeploy, restart, rollback |
+| Maintainer | Operator plus edit variables (that environment's scopes; project-wide scopes need a project-wide role), create databases |
+| Organization admin | Invite people and grant/revoke access in their organization; no implicit environment access |
+| Platform admin | Everything, including destroy, database wipe/reveal, resource limits, projects, ops tools |
 
 The web console still runs as the Docker-capable `deploy` user and mounts the Docker socket for CLI operations. Application-level authorization is not a sandbox against a compromised console process; only trusted platform administrators should control the host, and isolating the deployment executor from the web process remains a hardening requirement.
 

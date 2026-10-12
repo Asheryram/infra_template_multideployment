@@ -60,6 +60,35 @@ A client is an **organization**; it owns any number of **projects**. Beyond a pr
 
 Roles are `viewer`, `operator`, `maintainer`. In an environment a person's effective role is the **highest** of their project-wide role and every matching grant; people only see environments they can access. Variables follow the same rule per scope: a maintainer of one environment may edit that environment's scopes (`pr-7`, `pr-7.api`) but never project-wide ones (`common`, a class). Granting requires the person to already belong to the project's organization; removing someone from the organization removes all their grants. Manage everything in the console's **Access** tab. Platform-admin-only actions are unchanged (resource limits, project registration, destroy, database wipe/reveal).
 
+## Permission matrix
+
+Actors: **platform admin** (Keycloak group `infra-platform-admins`) · **organization admin** (manages one client's people and grants; sees no environments by that role alone) · **organization member** (nothing until granted) · and a role of **viewer / operator / maintainer**, which is cumulative and comes from a grant (project-wide or scoped, see above).
+
+| Action (inside an environment the role covers) | viewer | operator | maintainer | platform admin only |
+|---|:-:|:-:|:-:|:-:|
+| See the environment; open it when its gate is on | ✓ | ✓ | ✓ | |
+| Read logs; see variables (values masked) | ✓ | ✓ | ✓ | |
+| See variable **values** | | | ✓ | |
+| Redeploy, restart, roll back | | ✓ | ✓ | |
+| Edit variables · create a database · point a variable at a database | | | ✓ | |
+| Edit resource limits | | | | ✓ |
+| Wipe a database · reveal a database URL or secret value | | | | ✓ |
+| Destroy an environment | | | | ✓ |
+| Register projects · GitOps · activity log · Traefik / logs / status | | | | ✓ |
+
+Variable scopes: `common` or a class (`preview`) need a **project-wide** maintainer; one environment's scopes (`pr-7`, `pr-7.api`, `develop`) need a maintainer **covering that environment**. People management: a platform admin creates organizations, assigns projects and appoints organization admins; an organization admin invites people, grants and revokes access **within their own organization** only. There are no deny rules — grants only add.
+
+## Inviting people
+
+Nobody is added to an organization by looking up their account. An organization admin (or a platform admin) **invites by email** in **Access → Organization membership**: the organization, the email, an optional name and, optionally, the first grant (a role on a project, narrowed to an environment, class or branch pattern). Nothing is applied yet; the invitation is **pending** (14 days) and the admin never learns whether an account for that address exists.
+
+- **If the person has no account**, and `KEYCLOAK_USER_ADMIN_SECRET` is set (default on a fresh install), the console creates it in Keycloak: with a mail server configured the person is emailed to verify the address and choose a password; without one the admin is shown a **one-time password once** (never logged or stored) to pass on privately, and the address is marked verified because the admin vouches for it. The account gets **no groups and no roles** — never the platform-admin group.
+- **If they already have an account** (or arrive through the client's own identity provider) nothing is created.
+- **Acceptance:** when the person signs in with that (Keycloak-verified) email, the console shows *"You're invited to …"* with exactly what accepting gives them, and **Accept / Decline**. Accepting applies the membership and the grants; declining or revoking deletes the invitation. A preview link opened first shows a hint pointing at the console. An existing organization admin stays an admin when accepting a plain member invitation.
+- **Limits:** only platform admins can invite an *organization admin*; 30 invitations per admin per hour; grants can only target projects of the inviting organization.
+- **Trust model:** Keycloak cannot restrict a service account to "create only", so the `infra-user-admin` client technically may manage every account in the realm. The console only ever *creates* an account that does not exist yet and sets its password; it never edits, resets or groups anything else. To switch account creation off entirely set `INVITE_CREATE_ACCOUNTS=false` (or leave `KEYCLOAK_USER_ADMIN_SECRET` empty); invitations keep working and accounts then come from a platform admin or the client's own login.
+- **Client logins (recommended for larger clients):** in Keycloak add the client's Azure AD / Google as an identity provider; people sign in with their own accounts and the invitation attaches their access on first sign-in.
+
 ## Preview environments with Keycloak (optional)
 
 By default every preview sits behind one shared basic-auth password (`PREVIEW_AUTH_PLAIN`). With `PREVIEW_AUTH_MODE=keycloak`, previews use the same Keycloak identities and project roles as the console instead.

@@ -143,6 +143,12 @@ services:
       DOCKER_SOCKET_GID: ${DOCKER_SOCKET_GID:?run via 'infra platform up'}
       INFRA_GITOPS_WEBHOOK_BASE: http://infra-console:8000
       CONSOLE_AUTH_MODE: ${CONSOLE_AUTH_MODE:-basic}
+      # Invitations can create the invitee's Keycloak account (service-account client; empty secret = feature off)
+      KEYCLOAK_ADMIN_URL: http://infra-keycloak:8080
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-infra}
+      KEYCLOAK_USER_ADMIN_CLIENT: ${KEYCLOAK_USER_ADMIN_CLIENT:-infra-user-admin}
+      KEYCLOAK_USER_ADMIN_SECRET: ${KEYCLOAK_USER_ADMIN_SECRET:-}
+      INVITE_CREATE_ACCOUNTS: ${INVITE_CREATE_ACCOUNTS:-true}
       AUTHENTIK_PLATFORM_ADMIN_GROUP: ${AUTHENTIK_PLATFORM_ADMIN_GROUP:-infra-platform-admins}
       KEYCLOAK_PLATFORM_ADMIN_GROUP: ${KEYCLOAK_PLATFORM_ADMIN_GROUP:-infra-platform-admins}
     volumes:

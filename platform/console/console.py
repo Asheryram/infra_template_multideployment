@@ -22,10 +22,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import secrets as token_source
 import uuid
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from access import AccessStore, ENV_SCOPE, PROJECT_ROLES, ROLE_ORDER
 
@@ -47,6 +48,19 @@ PLATFORM_MANAGED_KEYS = {
 PREVIEW_AUTH_URL = os.environ.get("INFRA_PREVIEW_AUTH_URL", "http://oauth2-previews:4180/oauth2/auth")
 PREVIEW_SESSIONS = {}          # sha256(cookie) -> (expires, identity); short TTL so revoked access bites within seconds
 PREVIEW_SEEN = set()           # uids already recorded in the access store (first sight registers the person)
+# Account creation for invitations (optional). A dedicated Keycloak service-account client (infra-user-admin) lets the
+# console CREATE accounts in the realm. Keycloak has no per-group delegation for this, so the console itself is
+# deliberately create-only: it never reads, edits, resets or groups an account it did not just create, and it never
+# touches the platform-admin group. Without KEYCLOAK_USER_ADMIN_SECRET invitations still work (accounts come from
+# elsewhere: a platform admin, or the client's own identity provider).
+KC_ADMIN_URL = os.environ.get("KEYCLOAK_ADMIN_URL", "http://infra-keycloak:8080").rstrip("/")
+KC_ADMIN_CLIENT = os.environ.get("KEYCLOAK_USER_ADMIN_CLIENT", "infra-user-admin")
+KC_ADMIN_SECRET = os.environ.get("KEYCLOAK_USER_ADMIN_SECRET", "")
+KC_REALM = os.environ.get("KEYCLOAK_REALM", "infra")
+INVITE_CREATE_ACCOUNTS = os.environ.get("INVITE_CREATE_ACCOUNTS", "true").lower() != "false"
+KC_TOKEN = {"value": "", "exp": 0.0}
+INVITE_LOG = {}                      # actor uid -> timestamps of recent invitations (rate limit)
+INVITE_PER_HOUR = 30
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -91,6 +105,7 @@ def settings():
         "console_auth_mode": get("CONSOLE_AUTH_MODE", "basic"),
         "authentik_platform_admin_group": get("AUTHENTIK_PLATFORM_ADMIN_GROUP", "infra-platform-admins"),
         "keycloak_platform_admin_group": get("KEYCLOAK_PLATFORM_ADMIN_GROUP", "infra-platform-admins"),
+        "invite_accounts": kc_enabled(),
     }
 
 
@@ -178,6 +193,94 @@ def require_scope_role(actor, store, s, app, scope, minimum="maintainer"):
         if env is None:
             raise
         return require_env_role(actor, store, s, app, env, minimum)
+
+
+def kc_enabled():
+    return bool(KC_ADMIN_SECRET) and INVITE_CREATE_ACCOUNTS
+
+
+def kc_call(method, path, body=None, form=None, token=True, timeout=10):
+    """→ (status, json-or-None, headers). Raises only on network errors."""
+    headers = {}
+    data = None
+    if form is not None:
+        data = urlencode(form).encode()
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    elif body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = "Bearer " + kc_token()
+    request = urllib.request.Request(KC_ADMIN_URL + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as r:
+            raw, status, hdrs = r.read(), r.status, dict(r.headers.items())
+    except urllib.error.HTTPError as e:
+        raw, status, hdrs = e.read(), e.code, dict(e.headers.items())
+    try:
+        parsed = json.loads(raw) if raw else None
+    except ValueError:
+        parsed = None
+    return status, parsed, hdrs
+
+
+def kc_token():
+    if KC_TOKEN["value"] and KC_TOKEN["exp"] > time.time() + 30:
+        return KC_TOKEN["value"]
+    status, body, _ = kc_call("POST", f"/realms/{KC_REALM}/protocol/openid-connect/token", token=False,
+                              form={"grant_type": "client_credentials", "client_id": KC_ADMIN_CLIENT, "client_secret": KC_ADMIN_SECRET})
+    if status != 200 or not body or "access_token" not in body:
+        raise RuntimeError(f"Keycloak refused the user-admin client (HTTP {status})")
+    KC_TOKEN.update(value=body["access_token"], exp=time.time() + int(body.get("expires_in", 60)))
+    return KC_TOKEN["value"]
+
+
+def kc_create_account(email, name, console_url):
+    """Create the Keycloak account for an invited email, create-only.
+    → {"account": "existing"|"created", "delivery": None|"email"|"one-time-password", "password": <only for the fallback>}"""
+    email = email.strip().lower()
+    status, found, _ = kc_call("GET", f"/admin/realms/{KC_REALM}/users?" + urlencode({"email": email, "exact": "true"}))
+    if status != 200:
+        raise RuntimeError(f"could not look up the account (HTTP {status})")
+    if found:
+        return {"account": "existing", "delivery": None}
+    status, realm, _ = kc_call("GET", f"/admin/realms/{KC_REALM}")
+    smtp = bool(status == 200 and realm and (realm.get("smtpServer") or {}).get("host"))
+    first, _, last = (name or email.split("@")[0]).strip().partition(" ")
+    user = {"username": email, "email": email, "enabled": True, "emailVerified": not smtp,
+            "firstName": first[:60] or "User", "lastName": (last.strip() or "-")[:60],
+            "requiredActions": (["VERIFY_EMAIL", "UPDATE_PASSWORD"] if smtp else ["UPDATE_PASSWORD"])}
+    status, _, headers = kc_call("POST", f"/admin/realms/{KC_REALM}/users", body=user)
+    if status == 409:
+        return {"account": "existing", "delivery": None}
+    location = headers.get("Location") or headers.get("location") or ""
+    if status != 201 or "/users/" not in location:
+        raise RuntimeError(f"Keycloak did not create the account (HTTP {status})")
+    uid = location.rsplit("/", 1)[1]
+    if smtp:
+        status, _, _ = kc_call("PUT", f"/admin/realms/{KC_REALM}/users/{uid}/execute-actions-email?" +
+                               urlencode({"client_id": "infra-console", "redirect_uri": console_url, "lifespan": 7 * 86400}),
+                               body=["VERIFY_EMAIL", "UPDATE_PASSWORD"])
+        if status in (200, 204):
+            return {"account": "created", "delivery": "email"}
+    # No mail server (or it failed): a one-time password, shown once to the inviting admin, who vouches for the address.
+    password = token_source.token_urlsafe(15).replace("-", "x").replace("_", "y")[:20]
+    status, _, _ = kc_call("PUT", f"/admin/realms/{KC_REALM}/users/{uid}/reset-password",
+                           body={"type": "password", "value": password, "temporary": True})
+    if status not in (200, 204):
+        raise RuntimeError(f"account created but its password could not be set (HTTP {status})")
+    kc_call("PUT", f"/admin/realms/{KC_REALM}/users/{uid}", body={**user, "emailVerified": True, "requiredActions": ["UPDATE_PASSWORD"]})
+    return {"account": "created", "delivery": "one-time-password", "password": password}
+
+
+def invite_allowed(uid):
+    now = time.time()
+    recent = [t for t in INVITE_LOG.get(uid, []) if now - t < 3600]
+    if len(recent) >= INVITE_PER_HOUR:
+        INVITE_LOG[uid] = recent
+        return False
+    INVITE_LOG[uid] = recent + [now]
+    return True
 
 
 def mask(key, value):
@@ -815,12 +918,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def no_access_page(self, s, ident, what):
         sso = f"https://sso.{s['domain']}{s['suffix']}"
+        pending = access_store(s).pending_for_email(ident["email"])
+        invite_hint = (f"<p><b>You have a pending invitation.</b> <a href='https://console.{html.escape(s['domain'])}{html.escape(s['suffix'])}/'>"
+                       "Open the console to accept it</a>, then come back.</p>") if pending else ""
         page = (
             "<!doctype html><html lang='en'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'><title>No access</title>"
             "<body style='font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:1rem;color:#17181c'>"
             f"<h1 style='font-size:1.4rem'>You don't have access to {html.escape(what[0])}</h1>"
-            f"<p>You are signed in as <b>{html.escape(ident['email'])}</b>. {what[1]}</p>"
+            f"<p>You are signed in as <b>{html.escape(ident['email'])}</b>. {what[1]}</p>{invite_hint}"
             f"<p><a href='{html.escape(sso)}/oauth2/sign_out'>Sign out</a></p></body></html>"
         )
         return self.send(403, page.encode(), "text/html; charset=utf-8")
@@ -932,6 +1038,7 @@ class Handler(BaseHTTPRequestHandler):
                 access["platform_admin"] = is_platform_admin(actor)
                 access["project_roles"] = roles
                 access["environment_grants_mine"] = [] if is_platform_admin(actor) else store.environment_grants_for(actor["uid"])
+                access["my_invitations"] = store.pending_for_email(actor.get("email", ""))
                 access["auth_mode"] = s["console_auth_mode"]
                 return self.send(200, {"settings": s, "user": actor["display_name"],
                                        "access": access, "deployments": rows})
@@ -1114,7 +1221,14 @@ class Handler(BaseHTTPRequestHandler):
                     if not store.can_admin_organization(actor["uid"], organization,
                                                         is_platform_admin(actor)):
                         return self.send(403, {"error": "organization administrator required"})
-                    uid = body.get("uid") or store.identity_uid(body.get("email", ""))
+                    if role == "none":                       # removal: resolve the person ONLY among this organization's members
+                        uid = body.get("uid") or store.member_uid_by_email(organization, body.get("email", ""))
+                        if not uid:
+                            return self.send(400, {"error": "that person is not a member of this organization"})
+                    elif not is_platform_admin(actor):
+                        return self.send(400, {"error": "use Invite to add people: the invitee accepts it themselves"})
+                    else:                                    # platform admin: direct add of a known account
+                        uid = body.get("uid") or store.identity_uid(body.get("email", ""))
                     if not may_change_org_member_role(actor, store, organization, uid, role):
                         return self.send(403, {"error": "only a platform administrator may assign or change organization administrators"})
                     store.set_member(organization, uid, role)
@@ -1129,6 +1243,39 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(403, {"error": "organization administrator required"})
                     store.grant_project(app, uid, role)
                     self.audit(s, "project:grant", f"{app} uid={uid} role={role}")
+                elif operation == "invite":
+                    organization = body.get("organization", "")
+                    if not store.can_admin_organization(actor["uid"], organization, is_platform_admin(actor)):
+                        return self.send(403, {"error": "organization administrator required"})
+                    member_role = body.get("member_role", "member")
+                    if member_role == "org_admin" and not is_platform_admin(actor):
+                        return self.send(403, {"error": "only a platform administrator may invite an organization administrator"})
+                    if not invite_allowed(actor["uid"]):
+                        return self.send(429, {"error": f"invitation limit reached ({INVITE_PER_HOUR} per hour)"})
+                    email = body.get("email", "")
+                    grants = body.get("grants", [])
+                    if not isinstance(grants, list):
+                        return self.send(400, {"error": "grants must be a list"})
+                    invitation = store.create_invitation(organization, email, actor["uid"], grants, member_role)
+                    account = {"account": "skipped", "delivery": None}
+                    if body.get("create_account", True) and kc_enabled():
+                        try:
+                            account = kc_create_account(email, body.get("name", ""),
+                                                        f"https://console.{s['domain']}{s['suffix']}/")
+                        except Exception as e:                 # the invitation stands; the admin sees why no account was made
+                            account = {"account": "error", "delivery": None, "error": str(e)[:200]}
+                    self.audit(s, "organization:invite", f"{organization} email={email.strip().lower()} "
+                                                          f"role={member_role} grants={len(grants)} account={account['account']}")
+                    return self.send(200, {"ok": True, "id": invitation, "account": account})
+                elif operation == "invitation-revoke":
+                    invitation_id = body.get("id", "")
+                    organization = store.invitation_organization(invitation_id)
+                    if not organization:
+                        return self.send(404, {"error": "no such invitation"})
+                    if not store.can_admin_organization(actor["uid"], organization, is_platform_admin(actor)):
+                        return self.send(403, {"error": "organization administrator required"})
+                    store.revoke_invitation(invitation_id, organization)
+                    self.audit(s, "organization:invite-revoke", f"{organization} id={invitation_id}")
                 elif operation == "environment-grant":
                     app, uid, role, scope = body.get("app", ""), body.get("uid", ""), body.get("role", ""), body.get("scope", "")
                     organization = store.organization_for_project(app)
@@ -1140,6 +1287,20 @@ class Handler(BaseHTTPRequestHandler):
                     self.audit(s, "environment:grant", f"{app} {scope} uid={uid} role={role}")
                 else:
                     return self.send(400, {"error": "unknown access operation"})
+                return self.send(200, {"ok": True})
+
+            if u == "/api/invitations":
+                invitation_id = body.get("id", "")
+                if not actor.get("email"):
+                    return self.send(400, {"error": "your account has no email address"})
+                if body.get("op") == "accept":
+                    organization = store.accept_invitation(actor["uid"], actor["email"], invitation_id)
+                    self.audit(s, "organization:invite-accept", f"{organization} uid={actor['uid']}")
+                elif body.get("op") == "decline":
+                    store.decline_invitation(actor["email"], invitation_id)
+                    self.audit(s, "organization:invite-decline", f"id={invitation_id}")
+                else:
+                    return self.send(400, {"error": "op must be accept or decline"})
                 return self.send(200, {"ok": True})
 
             if u == "/api/gitops":

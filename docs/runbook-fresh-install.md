@@ -136,9 +136,9 @@ Do this once, in the console → **Access** (everything is audited):
 
 1. **Create the client organization** (Organizations card): name `Acme Corp`, slug `acme`.
 2. **Register the projects** (step 7), then **assign** each to the organization (Organizations card, "Assign registered project").
-3. **People must sign in once** before they can be granted anything (Keycloak creates the account; the console learns it on first sign-in — for previews, first visit counts). Create the accounts in Keycloak (admin console → realm `infra` → Users; set **Email verified**).
-4. **Add them to the organization** ("Organization membership"). Organization admins can add more members themselves; only a platform admin can appoint another organization admin.
-5. **Grant access** — pick the narrowest thing that fits:
+3. **Invite people** (Organization membership card): email, optional name, and their first grant. They get a pending invitation, accept it themselves after signing in, and — if they have no account — the console creates one (an email to set a password, or a one-time password shown to you once when no mail server is configured). You never need the Keycloak admin console for this. See `docs/access-control.md` → *Inviting people*.
+4. **More grants later** — see the table below; the invitation can already carry the first one.
+   Grants — pick the narrowest thing that fits (Project access / Environment & branch access cards):
 
 | Person | Grant | Result |
 |---|---|---|
@@ -148,7 +148,8 @@ Do this once, in the console → **Access** (everything is audited):
 | Product owner | `env:develop` **viewer** | can open develop only |
 | DevOps contractor | `env:staging` **operator** | can redeploy/restart staging only |
 
-- [ ] a test user with only `class:preview` sees just previews in the console, and a user with no grant sees nothing.
+- [ ] invite a test email with `class:preview` viewer: after they accept they see just previews; a person with no grant sees nothing.
+- [ ] the full permission matrix is in `docs/access-control.md`.
 
 ---
 
@@ -244,7 +245,8 @@ bash /opt/infra/local/verify-isolation.sh              # your containers/volumes
 | `infra-console` / `infra-socket-proxy` exit 127 after Docker Desktop restarted | Bind mounts weren't ready: `sudo -u deploy infra platform up`, then `docker restart infra-traefik`. |
 | Traefik unhealthy after the socket-proxy was recreated | `docker restart infra-traefik`. |
 | `platform up` → `…require CONSOLE_AUTH_MODE=keycloak…` | The settings must agree: `PLATFORM_PROFILES` has `keycloak,keycloak-auth,keycloak-previews` ⇔ `CONSOLE_AUTH_MODE=keycloak` and at least one of `PREVIEW_AUTH_MODE` / `OPS_AUTH_MODE` is `keycloak`. |
-| A new person can't be granted access | They must have signed in to the console (or opened a preview) once, and be a member of the project's organization. |
+| An invited person sees nothing | They must **accept** the invitation in the console (banner on the Environments tab) while signed in with the invited email; grants apply on acceptance. Check Access → Pending invitations (expires after 14 days). |
+| Invite says the account could not be created | See the message; a platform admin can create it in Keycloak. The invitation stays pending. Check `KEYCLOAK_USER_ADMIN_SECRET` and that `bootstrap-realm.sh` created the `infra-user-admin` client. |
 | A deploy says `preview limit reached` | `MAX_PREVIEWS` (inventory) counts every environment named `pr-*`; destroy old ones or raise it. |
 | Deploy blocked: missing variables | Set them in **Variables** (scope matters: `pr-7` = one preview, `preview` = all previews, `common` = everything), then *Retry deploy*. |
 | Forgot the Keycloak admin password | `grep KEYCLOAK_ADMIN_PASSWORD /etc/infra/platform.secrets.env` |

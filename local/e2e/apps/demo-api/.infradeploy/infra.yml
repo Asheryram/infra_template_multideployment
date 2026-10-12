@@ -10,3 +10,9 @@ services:
 migrate:
   service: api
   cmd: python migrate.py
+# A backend's previews stay reachable by the frontend preview (browsers can't do the SSO dance for XHR),
+# so this API opts out of the gate; the frontend previews stay gated by default.
+environments:
+  preview:
+    api:
+      auth: false
