@@ -120,35 +120,32 @@ Open `https://console.127-0-0-1.sslip.io:8443` (accept the self-signed certifica
 
 ```
 Platform admin  (member of the Keycloak group infra-platform-admins — everything)
- └─ Organization  = one client / tenant ("acme")
-     ├─ Project  = one registered app (shop-api, shop-web); belongs to exactly one organization
-     ├─ Members  = people of that client (member | organization admin)
-     └─ Access   = what a member can do — and where
-          • project-wide role      → all environments of that project
-          • environment grant      → one environment            env:develop, env:pr-12
-          • class grant            → every env of a class       class:preview, class:staging
-          • branch grant           → every env built from a branch   branch:feature/checkout*
+ └─ Organization  = one client / tenant ("acme")      a role here covers every project below, now and later
+     ├─ Members   = people of that client (member | organization admin)
+     └─ Project   = one registered app (shop-api …)   a role here covers all its environments
+         └─ Environment (develop, prod, pr-12 …)       a role here covers just this one
+             └─ patterns: "all previews", "feature/*", an environment name   (cover future environments too)
 ```
 
-Roles: **viewer** (read, and open previews) · **operator** (+ redeploy, restart, roll back) · **maintainer** (+ edit variables, create databases). An environment's **effective role is the highest** of the person's project-wide role and every grant that matches it, and people only *see* environments they can access. Resource limits, project registration, database wipes, destroying environments and revealing secrets stay **platform-admin-only**. The same rules decide who may open a **preview** (step 8).
+Roles: **viewer** (read, and open previews) · **operator** (+ redeploy, restart, roll back) · **maintainer** (+ edit variables, create databases). A role set on a level applies to **everything below it**; an environment's **effective role is the highest** role set on any level above it or on the environment itself, and people only *see* environments they can access. Resource limits, project registration, database wipes, destroying environments and revealing secrets stay **platform-admin-only**. The same rules decide who may open a **preview** (step 8).
 
 Do this once, in the console → **Access** (everything is audited):
 
 1. **Create the client organization** (Organizations card): name `Acme Corp`, slug `acme`.
 2. **Register the projects** (step 7), then **assign** each to the organization (Organizations card, "Assign registered project").
-3. **Invite people** (Organization membership card): email, optional name, and their first grant. They get a pending invitation, accept it themselves after signing in, and — if they have no account — the console creates one (an email to set a password, or a one-time password shown to you once when no mail server is configured). You never need the Keycloak admin console for this. See `docs/access-control.md` → *Inviting people*.
-4. **More grants later** — see the table below; the invitation can already carry the first one.
-   Grants — pick the narrowest thing that fits (Project access / Environment & branch access cards):
+3. **Invite people** (Organization membership card): email, optional name, and the groups to put them in. They get a pending invitation, accept it themselves after signing in, and — if they have no account — the console creates one (an email to set a password, or a one-time password shown to you once when no mail server is configured). You never need the Keycloak admin console for this. See `docs/access-control.md` → *Inviting people*.
+4. **Policies and groups** — console → **Access**: write a policy (Visual or JSON editor; start from a preset and narrow its resources), create a group, attach the policy to the group, add people. Examples:
 
-| Person | Grant | Result |
+| Person | Policy / group | Result |
 |---|---|---|
-| Client's tech lead | Project access: `shop-web` **maintainer** | everything in shop-web except platform-admin actions |
-| Client's developer Alice | Environment & branch access: `branch:feature/checkout*` **maintainer** on shop-web | sees/edits only the previews built from her feature branches |
-| QA team | `class:preview` **viewer** on shop-api and shop-web | can open every preview, nothing else |
-| Product owner | `env:develop` **viewer** | can open develop only |
-| DevOps contractor | `env:staging` **operator** | can redeploy/restart staging only |
+| Client's tech lead | make them an **organization admin** | runs every project of the client |
+| Client's developer Alice | group *shop-web-devs* with the Maintainer preset on `acme/shop-web/*`, condition branch `feature/checkout*` | sees/edits only the previews built from her feature branches |
+| QA team | group *qa* with the Viewer preset on `acme/*`, condition class `preview` | can open every preview, nothing else |
+| Product owner | policy: `environment:List`, `environment:View`, `environment:Open` on `acme/shop-web/develop` | opens develop only |
+| DevOps contractor | Operator preset on `acme/shop-web/staging`, expires `2026-12-31` | can redeploy/restart staging until the date |
+| A reviewer who may see but not open | `environment:List` + `environment:View` on `acme/*` | sees every environment, opens none |
 
-- [ ] invite a test email with `class:preview` viewer: after they accept they see just previews; a person with no grant sees nothing.
+- [ ] invite a test email into a group whose policy is the Viewer preset on `acme/*` with condition class `preview`: after they accept they see just previews; a member with no group or policy sees nothing.
 - [ ] the full permission matrix is in `docs/access-control.md`.
 
 ---

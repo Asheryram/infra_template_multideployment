@@ -8,7 +8,7 @@ RUN apt-get update \
 # Docker CLI + compose plugin, so the console runs the exact same scripts as the CLI and CI.
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
-COPY entrypoint.sh console.py access.py index.html /app/
+COPY entrypoint.sh console.py access.py policy.py index.html /app/
 RUN chmod +x /app/entrypoint.sh
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --retries=3 \

@@ -103,9 +103,9 @@ Push a broken commit to the PR. The preview now serves it. Open the environment 
 
 ## 9. Give the client scoped access (🛠 DevOps)
 
-Console → **Access** → *Organization membership* → **Invite**: the client's email, an optional name, and the first grant — for example `branch:feature/login*` **maintainer** on `shop-web`. The person gets a pending invitation, accepts it themselves after signing in, and — if they have no account — one is created for them (an email to set a password, or a one-time password shown to you once). Add more grants later in *Environment & branch access*.
+Console → **Access** → *Organization membership* → **Invite**: the client's email, an optional name and the groups to put them in (create a group first — for example one whose policy is the Maintainer preset on `acme/shop-web/*` with condition branch `feature/login*`). The person gets a pending invitation, accepts it themselves after signing in, and — if they have no account — one is created for them (an email to set a password, or a one-time password shown to you once). Change access later by editing the group's policies or moving the person between groups (**Access → Groups / Policies**); the simulator shows the result.
 
-- [ ] the invitee sees only the environments their grants cover; everyone else sees nothing
+- [ ] the invitee sees only the environments their groups' policies cover; everyone else sees nothing
 - [ ] the permission matrix (who can do what, where) is in [access-control.md](access-control.md#permission-matrix)
 
 ## 10. Release (👩‍💻 Developer)

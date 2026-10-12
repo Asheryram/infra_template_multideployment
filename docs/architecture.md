@@ -97,12 +97,12 @@ The console supports a transitional `basic` mode for operator-only installs and 
 
 The console persists provider-scoped user IDs, organizations, invitations and grants in `$STATE_DIR/console-access.sqlite3`. A client is an **organization** that owns projects; membership alone exposes nothing. A role is granted **project-wide** or on **one environment, a class, or a branch pattern** (highest matching role wins). People are added by **invitation** (accepted by the invitee), and the console can create the invitee's Keycloak account through a service-account client (create-only by design). The platform-admin group is global authority; organization admins manage invitations and grants only inside their own organization. Full matrix: [access-control.md](./access-control.md#permission-matrix).
 
-| Role | Access (in the environments it covers) |
+| Preset | Actions (a policy can mix any) |
 |---|---|
 | Viewer | See, open, read logs and masked variables |
 | Operator | Viewer plus redeploy, restart, rollback |
 | Maintainer | Operator plus edit variables (that environment's scopes; project-wide scopes need a project-wide role), create databases |
-| Organization admin | Invite people and grant/revoke access in their organization; no implicit environment access |
+| Organization admin | Every action inside their organization, plus its people, groups and policies |
 | Platform admin | Everything, including destroy, database wipe/reveal, resource limits, projects, ops tools |
 
 The web console still runs as the Docker-capable `deploy` user and mounts the Docker socket for CLI operations. Application-level authorization is not a sandbox against a compromised console process; only trusted platform administrators should control the host, and isolating the deployment executor from the web process remains a hardening requirement.

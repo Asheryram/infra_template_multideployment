@@ -265,6 +265,25 @@ pre { background: #0c0d10; color: #d6d9de; padding: 14px 16px; border-radius: va
 #overlay { display: none; position: fixed; inset: 0; background: rgba(12,13,16,.42); z-index: 25; backdrop-filter: blur(1.5px); }
 #overlay.on { display: block; }
 
+/* ── Access tree ── */
+.tree { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; margin-top: 12px; }
+.tree-row { display: grid; grid-template-columns: minmax(0, 1fr) 170px 210px; gap: 12px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); }
+.tree-row:first-child { border-top: 0; }
+.tree-row .lbl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tree-row .lbl .sub { color: var(--faint); font: 11.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-row.l0 { background: var(--panel-2); font-weight: 600; }
+.tree-row.l1 { padding-left: 34px; }
+.tree-row.l2 { padding-left: 62px; }
+.tree-row.l3 { padding-left: 62px; background: var(--panel-2); }
+.tree-row select { width: 100%; }
+.tree-row .eff { font-size: 12.5px; color: var(--muted); }
+.tree-row .eff b { color: var(--text); }
+.faint { color: var(--faint); }
+.tree-toggle { border: 0; background: none; color: var(--muted); cursor: pointer; width: 18px; padding: 0; font-size: 13px; }
+.tree-head { display: grid; grid-template-columns: minmax(0, 1fr) 170px 210px; gap: 12px; padding: 8px 14px; background: var(--panel-2); font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.tree-add { padding: 8px 14px 10px 62px; border-top: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: var(--muted); }
+@media (max-width: 860px) { .tree-row, .tree-head { grid-template-columns: 1fr; } .tree-head { display: none; } .tree-row.l1, .tree-row.l2, .tree-row.l3 { padding-left: 14px; } .tree-add { padding-left: 14px; } }
+
 /* ── Responsive ── */
 @media (max-width: 1100px) {
   .env-grid { grid-template-columns: 16px 104px minmax(180px, 1.4fr) minmax(120px, 1fr) 100px 84px; }
@@ -357,6 +376,10 @@ let STATE = { deployments: [], settings: {} };
 let current = null;
 let lastOut = { key: '', html: '' };
 
+// What this person may do in one environment: the server sends the exact list of allowed actions per row.
+const can = (d, action) => !!STATE.access?.platform_admin || !!(d && (d.ALLOW || []).includes(action));
+const roleLabel = d => STATE.access?.platform_admin ? 'platform admin' : (d.ROLE || 'custom policy').replace('_', ' ');
+
 async function api(path, body) {
   const opts = body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Infra-Console': '1' }, body: JSON.stringify(body) } : {};
   const r = await fetch(path, opts);
@@ -400,7 +423,7 @@ async function load() {
   $('#sidebarUser').textContent = STATE.user || 'unknown';
   const platformAdmin = STATE.access?.platform_admin;
   const orgAdmin = STATE.access?.organizations?.some(org => org.role === 'org_admin');
-  const canManageVars = platformAdmin || STATE.deployments.some(d => d.ROLE === 'maintainer');
+  const canManageVars = platformAdmin || STATE.deployments.some(d => can(d, 'variables:Write'));
   document.querySelector('#sidebar nav button[data-tab=projects]').hidden = !platformAdmin;
   document.querySelector('#sidebar nav button[data-tab=activity]').hidden = !platformAdmin;
   document.querySelector('#sidebar nav button[data-tab=access]').hidden =
@@ -467,6 +490,7 @@ function matchesFilter(d) {
 }
 
 function grantLabel(g) {
+  if (g.group) return `member of group <b>${esc(g.group)}</b>`;
   const where = !g.scope ? 'the whole project' : g.scope.replace(/^env:/, 'environment ').replace(/^class:/, 'all ').replace(/^branch:/, 'branch ');
   return `${esc(g.role)} on <b>${esc(g.app)}</b> · ${esc(where)}`;
 }
@@ -594,7 +618,8 @@ async function openDrawer(app, env, refresh) {
   if (!d) { closeDrawer(); return; }
   const dr = $('#drawer'), isPreview = env.startsWith('pr-');
   const platformAdmin = STATE.access?.platform_admin;
-  const canOperate = platformAdmin || ['operator', 'maintainer'].includes(d.ROLE);
+  const canOperate = can(d, 'environment:Redeploy') || can(d, 'environment:Restart');
+  const canView = can(d, 'environment:View'), canOpen = can(d, 'environment:Open');
   const dbSources = STATE.deployments.filter(x => x.HAS_OWN_DB);
 
   const urls = serviceUrls(d);
@@ -602,39 +627,41 @@ async function openDrawer(app, env, refresh) {
   <div class="drawer-header">
     <h2>${esc(app)}</h2>${envBadge(env)}
     <span class="dot ${d.STATE}" title="${esc(d.STATE)}"></span><span class="muted" style="font-size:12.5px">${esc(d.STATE)}</span>
-    <span class="badge">${esc((d.ROLE || 'platform admin').replace('_', ' '))}</span>
+    <span class="badge">${esc(roleLabel(d))}</span>
     <button class="btn ghost close-btn" id="drawerClose" aria-label="Close">✕</button>
   </div>
   <section class="flat" style="margin-bottom:0">
     <div class="actions-bar">
-      ${canOperate ? '<button class="btn primary" data-act="redeploy">Redeploy</button><button class="btn" data-act="restart">Restart</button>' : ''}
-      ${canOperate && d.PREV_TAG ? `<button class="btn" data-act="rollback">Roll back to <span class="mono">${esc(d.PREV_TAG.slice(0, 16))}</span></button>` : ''}
-      ${platformAdmin ? '<button class="btn danger" data-act="destroy" style="margin-left:auto">Destroy…</button>' : ''}
-      ${!canOperate && !platformAdmin ? '<span class="muted">Read-only project access</span>' : ''}
+      ${can(d, 'environment:Redeploy') ? '<button class="btn primary" data-act="redeploy">Redeploy</button>' : ''}
+      ${can(d, 'environment:Restart') ? '<button class="btn" data-act="restart">Restart</button>' : ''}
+      ${can(d, 'environment:Rollback') && d.PREV_TAG ? `<button class="btn" data-act="rollback">Roll back to <span class="mono">${esc(d.PREV_TAG.slice(0, 16))}</span></button>` : ''}
+      ${can(d, 'environment:Destroy') ? '<button class="btn danger" data-act="destroy" style="margin-left:auto">Destroy…</button>' : ''}
+      ${!canOperate && !can(d, 'environment:Rollback') && !can(d, 'environment:Destroy') ? '<span class="muted">You can look, not change anything here</span>' : ''}
     </div>
   </section>
   ${d.MISSING?.length ? `<section style="border-color:var(--warn)"><div class="banner" style="border:0;padding:0;background:none"><b>${d.STATE === 'blocked' ? 'Deploy blocked' : 'Required variables missing'}:</b>
     <span class="mono"> ${d.MISSING.map(esc).join(', ')}</span><br>
     Add them under <a href="#" id="goVars">Variables → ${esc(app)}</a>, then
-    ${canOperate ? '<button class="btn primary" data-act="redeploy" style="margin-top:8px">Retry deploy</button>' : ''}</div></section>` : ''}
-  <section>
+    ${can(d, 'environment:Redeploy') ? '<button class="btn primary" data-act="redeploy" style="margin-top:8px">Retry deploy</button>' : ''}</div></section>` : ''}
+  ${canView ? `<section>
     <h3>Endpoints</h3>
-    <div class="svc-links">${urls.length ? urls.map(u => `<div class="url-line"><span class="svc-name">${esc(u.svc)}</span><a href="${esc(u.url)}" target="_blank" rel="noopener">${esc(urlHost(u.url))} ↗</a></div>`).join('') : '<span class="muted">—</span>'}</div>
+    <div class="svc-links">${urls.length ? urls.map(u => `<div class="url-line"><span class="svc-name">${esc(u.svc)}</span>${canOpen ? `<a href="${esc(u.url)}" target="_blank" rel="noopener">${esc(urlHost(u.url))} ↗</a>` : `<span class="mono muted" title="You may see this environment but not open it">${esc(urlHost(u.url))}</span>`}</div>`).join('') : '<span class="muted">—</span>'}</div>
+    ${canOpen ? '' : '<div class="muted" style="font-size:12.5px;margin-top:6px">You can see this environment but are not allowed to open it.</div>'}
     <div class="facts">
       <div class="fact"><div class="k">Branch</div><div class="v">${esc(d.BRANCH || '—')}</div></div>
       <div class="fact"><div class="k">Image tag</div><div class="v">${esc(d.TAG || '—')}</div></div>
       <div class="fact"><div class="k">Commit</div><div class="v">${esc((d.COMMIT || '').slice(0, 10) || '—')}</div></div>
       <div class="fact"><div class="k">Deployed</div><div class="v">${ago(d.DEPLOYED_AT || d.BLOCKED_AT) || '—'}${d.DEPLOYED_BY ? ' · ' + esc(d.DEPLOYED_BY) : ''}</div></div>
     </div>
-    ${isPreview ? '<div class="muted" style="margin-top:12px;font-size:12.5px">Preview login: use the preview basic-auth credentials from the inventory.</div>' : ''}
-  </section>
-  <section><h3>Databases</h3><div id="dbBox" class="muted">loading…</div></section>
-  <section><h3>Container resources</h3><div id="resourcesBox" class="muted">loading…</div></section>
-  <section><h3>Environment variables</h3><div id="varsBox" class="muted">loading…</div></section>
-  <section>
+    ${isPreview ? '<div class="muted" style="margin-top:12px;font-size:12.5px">Previews are behind the platform sign-in: you need an account with access to this environment.</div>' : ''}
+  </section>` : ''}
+  ${can(d, 'database:Describe') ? '<section><h3>Databases</h3><div id="dbBox" class="muted">loading…</div></section>' : ''}
+  ${can(d, 'resources:Read') ? '<section><h3>Container resources</h3><div id="resourcesBox" class="muted">loading…</div></section>' : ''}
+  ${can(d, 'variables:List') ? '<section><h3>Environment variables</h3><div id="varsBox" class="muted">loading…</div></section>' : ''}
+  ${can(d, 'logs:Read') ? `<section>
     <h3>Logs <button class="btn" id="loadLogs" style="margin-left:auto;font-size:12px">Load last 200 lines</button></h3>
     <div id="logOut"></div>
-  </section>
+  </section>` : ''}
   <section>
     <h3>Output</h3>
     <div id="out" class="muted" style="font-size:13px">${lastOut.key === app + '/' + env ? lastOut.html : 'Results of actions appear here.'}</div>
@@ -651,10 +678,10 @@ async function openDrawer(app, env, refresh) {
     $('#varApp').value = app; renderVarsFor(app);
   });
   dr.querySelectorAll('[data-act]').forEach(b => b.onclick = () => act(b, app, env, b.dataset.act));
-  renderEnvVars(dr, app, env);
-  renderDatabase(dr, app, env, dbSources);
-  renderResources(dr, app, env);
-  $('#loadLogs', dr).onclick = async e => {
+  if ($('#varsBox', dr)) renderEnvVars(dr, app, env);
+  if ($('#dbBox', dr)) renderDatabase(dr, app, env, dbSources);
+  if ($('#resourcesBox', dr)) renderResources(dr, app, env);
+  if ($('#loadLogs', dr)) $('#loadLogs', dr).onclick = async e => {
     e.target.disabled = true;
     try { const j = await api(`/api/logs?app=${app}&env=${env}&n=200`); $('#logOut', dr).innerHTML = `<pre>${esc(j.output)}</pre>`; }
     finally { e.target.disabled = false; }
@@ -943,7 +970,7 @@ async function act(btn, app, env, action) {
 // ── Variables tab ─────────────────────────────────────────────────────────────
 function renderVars() {
   const apps = Object.keys(byApp()).filter(app => STATE.access?.platform_admin
-    || byApp()[app].some(d => d.ROLE === 'maintainer')).sort();
+    || byApp()[app].some(d => can(d, 'variables:Write'))).sort();
   const el = $('#tab-vars');
   if (!el.dataset.ready) {
     el.innerHTML = `<div class="card">
@@ -1103,16 +1130,12 @@ async function renderAccess() {
     <div class="card">
       <div class="card-header"><h2>Organization membership</h2></div>
       <div style="padding:16px 18px">
-        <p class="muted">Invite someone by email: they get a pending invitation (membership plus the first grants you choose) that they accept themselves after signing in with that address.${STATE.settings.invite_accounts ? ' If they have no account yet, one is created in ' + identityProvider + ' and they are emailed to set a password — or you are shown a one-time password to pass on, when no mail server is configured.' : ' Accounts are created in ' + identityProvider + ' by a platform administrator (or come from the client\'s own login); the invitation waits for that sign-in.'} Only a platform administrator can invite an organization administrator.</p>
+        <p class="muted">Invite someone by email: they get a pending invitation (membership plus the groups you choose) that they accept themselves after signing in with that address.${STATE.settings.invite_accounts ? ' If they have no account yet, one is created in ' + identityProvider + ' and they are emailed to set a password — or you are shown a one-time password to pass on, when no mail server is configured.' : ' Accounts are created in ' + identityProvider + ' by a platform administrator (or come from the client\'s own login); the invitation waits for that sign-in.'} Only a platform administrator can invite an organization administrator.</p>
         <div class="row"><select id="invOrg" aria-label="Organization">${orgOptions}</select>
           <input id="invEmail" type="email" aria-label="Email" placeholder="person@client.com" style="min-width:240px">
           <input id="invName" aria-label="Name (optional)" placeholder="Name (optional)" style="min-width:160px">
           ${platformAdmin ? '<select id="invRole" aria-label="Membership"><option value="member">Member</option><option value="org_admin">Organization admin</option></select>' : ''}</div>
-        <div class="row"><span class="muted" style="font-size:12.5px">First access:</span>
-          <select id="invProject" aria-label="Project"><option value="">no grant yet</option></select>
-          <select id="invKind" aria-label="Applies to"><option value="">whole project</option><option value="env">one environment</option><option value="class">all of a class</option><option value="branch">branch pattern</option></select>
-          <input id="invValue" aria-label="Scope value" class="mono" placeholder="develop / preview / feature/checkout*" style="min-width:230px" hidden>
-          <select id="invRole2" aria-label="Role"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="maintainer">Maintainer</option></select>
+        <div class="row"><span class="muted" style="font-size:12.5px">Add to groups:</span><span id="invGroupBox" class="muted" style="font-size:12.5px">loading…</span>
           ${STATE.settings.invite_accounts ? '<label class="muted" style="font-size:12.5px"><input type="checkbox" id="invCreate" checked> create their account if missing</label>' : ''}
           <button class="btn primary" id="invSend" ${!organizations.length ? 'disabled' : ''}>Send invitation</button></div>
         <div id="invResult"></div>
@@ -1124,42 +1147,14 @@ async function renderAccess() {
             <td style="text-align:right"><button class="btn danger" data-invrevoke="${esc(i.id)}">Revoke</button></td></tr>`).join('') ||
             '<tr><td colspan="5" class="empty">No pending invitations.</td></tr>'}</table></div>
         <h3 style="margin:16px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em" class="muted">Members</h3>
-        <div class="scroll"><table><tr><th>Organization</th><th>User</th><th>Role</th><th></th></tr>
+        <div class="scroll"><table><tr><th>Organization</th><th>User</th><th>Role</th><th>Groups &amp; policies</th><th></th></tr>
           ${access.members.map(member => `<tr><td>${esc(member.organization)}</td><td>${esc(member.email)}</td><td>${esc(member.role)}</td>
-            <td style="text-align:right">${platformAdmin || member.role !== 'org_admin' ? `<button class="btn danger" data-memberremove="${esc(member.organization)}|${esc(member.email)}">Remove</button>` : ''}</td></tr>`).join('') ||
-            '<tr><td colspan="4" class="empty">No members yet — invite someone above.</td></tr>'}</table></div>
+            <td style="font-size:12.5px" data-memacc="${esc(member.organization)}|${esc(member.uid)}" class="muted">…</td>
+            <td style="text-align:right;white-space:nowrap">${platformAdmin || member.role !== 'org_admin' ? `<button class="btn danger" data-memberremove="${esc(member.organization)}|${esc(member.email)}">Remove</button>` : ''}</td></tr>`).join('') ||
+            '<tr><td colspan="5" class="empty">No members yet — invite someone above.</td></tr>'}</table></div>
       </div>
     </div>
-    <div class="card">
-      <div class="card-header"><h2>Project access</h2></div>
-      <div style="padding:16px 18px">
-        <p class="muted">Project grants are explicit and do not inherit across an organization. Viewer is read-only; Operator can deploy, restart and roll back; Maintainer can also edit runtime variables. Resource limits, project registration, database wipes and secret reveal remain platform-admin-only.</p>
-        <div class="row"><select id="grantProject" aria-label="Project">${projectOptions}</select><select id="grantUser" aria-label="User">${identityOptions}</select>
-          <select id="grantRole"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="maintainer">Maintainer</option><option value="none">Remove access</option></select>
-          <button class="btn primary" id="grantSave" ${!projects.length || !identities.length ? 'disabled' : ''}>Save project access</button></div>
-        <div class="scroll"><table><tr><th>Organization</th><th>Project</th><th>User</th><th>Role</th></tr>
-          ${projects.filter(project => project.uid).map(project =>
-            `<tr><td>${esc(project.organization)}</td><td>${esc(project.app)}</td><td>${esc(project.email)}</td><td>${esc(project.role)}</td></tr>`).join('') ||
-            '<tr><td colspan="4" class="empty">No project grants assigned.</td></tr>'}</table></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><h2>Environment &amp; branch access</h2></div>
-      <div style="padding:16px 18px">
-        <p class="muted">Narrower than project access: give someone a role on <b>one environment</b> (<span class="mono">develop</span>, <span class="mono">pr-12</span>), on <b>every environment of a class</b> (all previews), or on <b>every environment built from a branch</b> (<span class="mono">feature/checkout*</span>). Their effective role in an environment is the highest of their project role and any matching grant here, and they only see the environments they can access. The person must already be a member of the project's organization.</p>
-        <div class="row"><select id="egProject" aria-label="Project">${projectOptions}</select><select id="egUser" aria-label="User">${identityOptions}</select></div>
-        <div class="row"><select id="egKind" aria-label="Scope type"><option value="env">One environment</option><option value="class">All of a class</option><option value="branch">Branch pattern</option></select>
-          <input id="egValue" aria-label="Scope value" list="egSuggest" placeholder="develop" class="mono" style="min-width:300px">
-          <datalist id="egSuggest"></datalist>
-          <select id="egRole"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="maintainer">Maintainer</option></select>
-          <button class="btn primary" id="egSave" ${!projects.length || !identities.length ? 'disabled' : ''}>Grant</button></div>
-        <div class="scroll"><table><tr><th>Organization</th><th>Project</th><th>User</th><th>Applies to</th><th>Role</th><th></th></tr>
-          ${(access.environment_grants || []).map(g => `<tr><td>${esc(g.organization)}</td><td>${esc(g.app)}</td><td>${esc(g.email)}</td>
-            <td class="mono">${esc(g.scope.replace(/^env:/, 'environment ').replace(/^class:/, 'all ').replace(/^branch:/, 'branch '))}</td><td>${esc(g.role)}</td>
-            <td style="text-align:right"><button class="btn danger" data-egrevoke="${esc(g.app)}|${esc(g.uid)}|${esc(g.scope)}">Remove</button></td></tr>`).join('') ||
-            '<tr><td colspan="6" class="empty">No environment-level grants.</td></tr>'}</table></div>
-      </div>
-    </div>
+    <div id="policyBox"></div>
     ${platformAdmin ? `<div class="card"><div class="card-header"><h2>Known ${identityProvider} identities</h2><span class="card-meta">users who have signed in at least once</span></div>
       <div class="scroll"><table><tr><th>Name</th><th>Email</th><th>Identity ID</th><th>Last seen</th></tr>
         ${identities.map(identity => `<tr><td>${esc(identity.display_name)}</td><td>${esc(identity.email)}</td><td class="mono">${esc(identity.uid)}</td><td>${ago(identity.last_seen)}</td></tr>`).join('') ||
@@ -1177,23 +1172,9 @@ async function renderAccess() {
   $('#orgLink', el)?.addEventListener('click', () =>
     postAccess({ op: 'project-link', organization: $('#orgLinkOrg', el).value,
       app: $('#orgLinkProject', el).value }));
-  // invitations: the project list follows the chosen organization; scope value only when a scope is chosen
-  const invProjects = () => {
-    const org = $('#invOrg', el)?.value;
-    const apps = [...new Set(projects.filter(p => p.organization === org).map(p => p.app))];
-    $('#invProject', el).innerHTML = '<option value="">no grant yet</option>' + apps.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
-  };
-  $('#invOrg', el)?.addEventListener('change', invProjects);
-  $('#invKind', el)?.addEventListener('change', () => { $('#invValue', el).hidden = !$('#invKind', el).value; });
-  invProjects();
   $('#invSend', el)?.addEventListener('click', async () => {
     const out = $('#invResult', el), btn = $('#invSend', el);
-    const grants = [];
-    if ($('#invProject', el).value) {
-      const kind = $('#invKind', el).value, value = $('#invValue', el).value.trim();
-      if (kind && !value) return toast('Enter the environment, class or branch pattern');
-      grants.push({ app: $('#invProject', el).value, role: $('#invRole2', el).value, scope: kind ? `${kind}:${value}` : '' });
-    }
+    const grants = [...el.querySelectorAll('#invGroupBox input:checked')].map(c => ({ group: c.value }));
     btn.disabled = true;
     try {
       const r = await api('/api/access', { op: 'invite', organization: $('#invOrg', el).value, email: $('#invEmail', el).value.trim(),
@@ -1219,33 +1200,7 @@ async function renderAccess() {
     if (!window.confirm(`Remove ${email} from ${organization}? Their grants in this organization are removed too.`)) return;
     postAccess({ op: 'member', organization, email, role: 'none' });
   });
-  $('#grantSave', el)?.addEventListener('click', () =>
-    postAccess({ op: 'project-grant', app: $('#grantProject', el).value,
-      uid: $('#grantUser', el).value, role: $('#grantRole', el).value }));
-
-  // environment / class / branch grants
-  const egHints = () => {
-    const app = $('#egProject', el)?.value, kind = $('#egKind', el)?.value;
-    const envs = STATE.deployments.filter(d => d.APP === app);
-    const options = kind === 'env' ? envs.map(d => d.ENV_NAME)
-      : kind === 'class' ? ['prod', 'staging', 'develop', 'preview']
-      : [...new Set(envs.map(d => d.BRANCH).filter(Boolean))];
-    $('#egSuggest', el).innerHTML = options.map(o => `<option value="${esc(o)}">`).join('');
-    $('#egValue', el).placeholder = kind === 'env' ? 'develop or pr-12' : kind === 'class' ? 'preview' : 'feature/checkout* (* = anything)';
-  };
-  $('#egProject', el)?.addEventListener('change', egHints);
-  $('#egKind', el)?.addEventListener('change', egHints);
-  egHints();
-  $('#egSave', el)?.addEventListener('click', () => {
-    const value = $('#egValue', el).value.trim();
-    if (!value) return toast('Enter the environment, class or branch pattern');
-    postAccess({ op: 'environment-grant', app: $('#egProject', el).value, uid: $('#egUser', el).value,
-      scope: `${$('#egKind', el).value}:${value}`, role: $('#egRole', el).value });
-  });
-  el.querySelectorAll('[data-egrevoke]').forEach(btn => btn.onclick = () => {
-    const [app, uid, scope] = btn.dataset.egrevoke.split('|');
-    postAccess({ op: 'environment-grant', app, uid, scope, role: 'none' });
-  });
+  renderPolicies(access, response).catch(e => { $('#policyBox', el).innerHTML = `<div class="card"><div class="empty">${esc(e.message)}</div></div>`; });
 }
 
 // ── Projects tab ──────────────────────────────────────────────────────────────
@@ -1402,6 +1357,232 @@ async function renderActivity() {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 load().catch(e => { $('#tab-envs').innerHTML = `<div class="card"><div class="empty">Could not load: ${esc(e.message)}</div></div>`; });
 setInterval(() => { if (!document.hidden && !current) load().catch(() => {}); }, 15000);
+</script>
+<script>
+// ── Policies (AWS-style: Allow/Deny, actions by access level, resources, conditions) ──────────────────
+let POL = { data: null, edit: null, mode: 'visual', access: null, orgs: [] };
+
+const polSummary = doc => (doc.Statement || []).map(st => {
+  const acts = [].concat(st.Action), res = [].concat(st.Resource);
+  return `${st.Effect}: ${acts.length > 2 ? acts.length + ' actions' : acts.join(', ')} on ${res.length > 1 ? res.length + ' resources' : res[0]}`;
+});
+
+function polBlankStatement(org) { return { Effect: 'Allow', Action: [], Resource: [`${org}/*`], Condition: {} }; }
+
+function polStatementHtml(st, i, d, isAdmin) {
+  const picked = new Set([].concat(st.Action));
+  const levels = d.levels.map(level => {
+    const acts = d.actions.filter(a => a.level === level);
+    const locked = level === 'Privileged' && !isAdmin && st.Effect === 'Allow';
+    return `<div style="margin:6px 0"><div class="muted" style="font-size:11.5px;text-transform:uppercase;letter-spacing:.06em">${esc(level)}
+        ${locked ? ' — only a platform administrator can allow these' : `<a href="#" data-polall="${i}|${esc(level)}" style="margin-left:8px;text-transform:none;letter-spacing:0">select all</a>`}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px 14px">${acts.map(a => `<label title="${esc(a.description)}" style="font-size:12.5px;white-space:nowrap">
+        <input type="checkbox" data-polact="${i}|${esc(a.name)}" ${picked.has(a.name) ? 'checked' : ''} ${locked ? 'disabled' : ''}> ${esc(a.name)}</label>`).join('')}</div></div>`;
+  }).join('');
+  const cond = st.Condition || {};
+  const envs = (POL.access.environments || []).filter(e => POL.orgOf(e.app) === POL.edit.organization);
+  const suggestions = [`${POL.edit.organization}/*`, ...[...new Set(envs.map(e => e.app))].map(a => `${POL.edit.organization}/${a}/*`),
+    ...envs.map(e => `${POL.edit.organization}/${e.app}/${e.env}`)];
+  return `<div class="card" style="margin:10px 0;padding:12px 14px;background:var(--panel-2)">
+    <div class="row" style="margin-top:0"><b style="font-size:12.5px">Statement ${i + 1}</b>
+      <select data-poleffect="${i}"><option ${st.Effect === 'Allow' ? 'selected' : ''}>Allow</option><option ${st.Effect === 'Deny' ? 'selected' : ''}>Deny</option></select>
+      <select data-polpreset="${i}"><option value="">Fill actions from preset…</option>${Object.entries(d.presets).map(([k, p]) => `<option value="${esc(k)}">${esc(p.name)} — ${esc(p.description)}</option>`).join('')}</select>
+      <button class="btn danger" data-poldel="${i}" style="margin-left:auto">Remove statement</button></div>
+    <div style="font-size:12px;font-weight:650;margin-top:6px">Actions</div>${levels}
+    <div style="font-size:12px;font-weight:650;margin-top:8px">Resources <span class="muted" style="font-weight:400">— one per line: <span class="mono">organization/project/environment</span>, wildcards allowed</span></div>
+    <textarea data-polres="${i}" rows="3" class="mono" style="width:100%;font-size:12.5px;padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)">${esc([].concat(st.Resource).join('\n'))}</textarea>
+    <div class="row"><select data-polsuggest="${i}"><option value="">Add a resource…</option>${suggestions.map(r => `<option>${esc(r)}</option>`).join('')}</select></div>
+    <div style="font-size:12px;font-weight:650;margin-top:4px">Conditions <span class="muted" style="font-weight:400">(optional — all must hold)</span></div>
+    <div class="row">
+      <label class="muted" style="font-size:12.5px">branch <input data-polbranch="${i}" class="mono" placeholder="feature/*, release/*" value="${esc([].concat(cond.branch || []).join(', '))}" style="width:200px"></label>
+      <label class="muted" style="font-size:12.5px">class ${['prod', 'staging', 'develop', 'preview'].map(c => `<label style="margin-left:4px"><input type="checkbox" data-polclass="${i}|${c}" ${[].concat(cond.class || []).includes(c) ? 'checked' : ''}> ${c}</label>`).join('')}</label>
+      <label class="muted" style="font-size:12.5px">expires <input type="date" data-polexp="${i}" value="${esc(cond.expires || '')}"></label>
+    </div></div>`;
+}
+
+function polReadForm(el) {      // form → document (visual mode)
+  const doc = POL.edit.document;
+  doc.Statement.forEach((st, i) => {
+    st.Effect = $(`[data-poleffect="${i}"]`, el).value;
+    st.Action = [...el.querySelectorAll(`[data-polact^="${i}|"]:checked`)].map(c => c.dataset.polact.split('|')[1]);
+    st.Resource = $(`[data-polres="${i}"]`, el).value.split('\n').map(x => x.trim()).filter(Boolean);
+    const cond = {};
+    const br = $(`[data-polbranch="${i}"]`, el).value.split(',').map(x => x.trim()).filter(Boolean);
+    if (br.length) cond.branch = br;
+    const cl = [...el.querySelectorAll(`[data-polclass^="${i}|"]:checked`)].map(c => c.dataset.polclass.split('|')[1]);
+    if (cl.length) cond.class = cl;
+    const ex = $(`[data-polexp="${i}"]`, el).value;
+    if (ex) cond.expires = ex;
+    st.Condition = cond;
+  });
+}
+
+function drawPolicyEditor() {
+  const box = $('#polEditor'), d = POL.data, e = POL.edit;
+  if (!e) { box.innerHTML = ''; return; }
+  const isAdmin = STATE.access?.platform_admin;
+  const body = POL.mode === 'json'
+    ? `<textarea id="polJson" rows="18" class="mono" style="width:100%;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)">${esc(JSON.stringify(e.document, null, 2))}</textarea>`
+    : e.document.Statement.map((st, i) => polStatementHtml(st, i, d, isAdmin)).join('') +
+      `<div class="row"><button class="btn" id="polAddSt">+ Add statement</button></div>`;
+  box.innerHTML = `<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+    <h3 style="font-size:13px;margin:12px 0 6px">${e.id ? 'Edit policy' : 'New policy'}</h3>
+    <div class="row">
+      ${e.id ? `<span class="chip quiet">${esc(e.organization)}</span>` : `<select id="polOrg">${POL.orgs.map(o => `<option value="${esc(o.slug)}" ${o.slug === e.organization ? 'selected' : ''}>${esc(o.name)} (${esc(o.slug)})</option>`).join('')}</select>`}
+      <input id="polName" placeholder="Policy name" value="${esc(e.name)}" style="min-width:220px">
+      <input id="polDesc" placeholder="Description (optional)" value="${esc(e.description)}" style="min-width:280px">
+      <span style="margin-left:auto" class="row"><button class="btn ${POL.mode === 'visual' ? 'primary' : ''}" data-polmode="visual">Visual</button><button class="btn ${POL.mode === 'json' ? 'primary' : ''}" data-polmode="json">JSON</button></span></div>
+    ${body}
+    <div class="row"><button class="btn primary" id="polSave">Save policy</button><button class="btn" id="polCancel">Cancel</button><span class="muted" id="polNote" style="font-size:12.5px"></span></div></div>`;
+
+  const sync = () => { if (POL.mode === 'json') return; polReadForm(box); };
+  const redraw = () => { sync(); drawPolicyEditor(); };
+  box.querySelectorAll('[data-polmode]').forEach(b => b.onclick = () => {
+    try {
+      if (POL.mode === 'json') POL.edit.document = JSON.parse($('#polJson', box).value);
+      else polReadForm(box);
+    } catch (err) { $('#polNote', box).textContent = 'JSON error: ' + err.message; return; }
+    e.name = $('#polName', box).value; e.description = $('#polDesc', box).value;
+    POL.mode = b.dataset.polmode; drawPolicyEditor();
+  });
+  $('#polAddSt', box)?.addEventListener('click', () => { sync(); e.document.Statement.push(polBlankStatement(e.organization)); drawPolicyEditor(); });
+  box.querySelectorAll('[data-poldel]').forEach(b => b.onclick = () => { sync(); e.document.Statement.splice(+b.dataset.poldel, 1); if (!e.document.Statement.length) e.document.Statement.push(polBlankStatement(e.organization)); drawPolicyEditor(); });
+  box.querySelectorAll('[data-poleffect]').forEach(s => s.onchange = redraw);
+  box.querySelectorAll('[data-polall]').forEach(a => a.onclick = ev => {
+    ev.preventDefault(); sync();
+    const [i, level] = a.dataset.polall.split('|');
+    const names = d.actions.filter(x => x.level === level).map(x => x.name);
+    const st = e.document.Statement[+i]; st.Action = [...new Set([...[].concat(st.Action), ...names])]; drawPolicyEditor();
+  });
+  box.querySelectorAll('[data-polpreset]').forEach(s => s.onchange = () => {
+    if (!s.value) return; sync();
+    e.document.Statement[+s.dataset.polpreset].Action = [...d.presets[s.value].actions]; drawPolicyEditor();
+  });
+  box.querySelectorAll('[data-polsuggest]').forEach(s => s.onchange = () => {
+    if (!s.value) return; const t = $(`[data-polres="${s.dataset.polsuggest}"]`, box);
+    t.value = (t.value.trim() ? t.value.trim() + '\n' : '') + s.value; s.value = '';
+  });
+  $('#polCancel', box).onclick = () => { POL.edit = null; drawPolicyEditor(); };
+  $('#polSave', box).onclick = async () => {
+    try {
+      if (POL.mode === 'json') e.document = JSON.parse($('#polJson', box).value); else polReadForm(box);
+      const org = e.id ? e.organization : $('#polOrg', box).value;
+      await api('/api/access', { op: 'policy-save', id: e.id || '', organization: org, name: $('#polName', box).value.trim(),
+        description: $('#polDesc', box).value.trim(), document: e.document });
+      toast('Policy saved'); POL.edit = null; await renderAccess();
+    } catch (err) { $('#polNote', box).textContent = err.message; toast(err.message); }
+  };
+}
+
+async function renderPolicies(access, response) {
+  const host = $('#policyBox');
+  if (!host) return;
+  POL.access = access; POL.orgs = access.organizations;
+  POL.orgOf = app => (access.projects.find(p => p.app === app) || {}).organization;
+  const d = POL.data = await api('/api/policies');
+  const members = access.members;
+  host.innerHTML = `<div class="card">
+    <div class="card-header"><h2>Groups</h2><span class="card-meta">people who share the same policies</span></div>
+    <div style="padding:16px 18px">
+      <p class="muted">An organization has two kinds of people: <b>organization admins</b> (run everything inside the organization: all projects, environments, databases, variables, policies and groups) and <b>members</b>, who can do <b>nothing</b> until they are in a <b>group</b> or have a <b>policy</b> attached. Put people in groups (QA, Backend, Client X…) and attach the policies to the group.</p>
+      <div class="row"><select id="grpOrg" aria-label="Organization">${POL.orgs.map(o => `<option value="${esc(o.slug)}">${esc(o.name)}</option>`).join('')}</select>
+        <input id="grpName" placeholder="Group name (e.g. QA)" style="min-width:200px"><input id="grpDesc" placeholder="Description (optional)" style="min-width:260px">
+        <button class="btn primary" id="grpCreate" ${POL.orgs.length ? '' : 'disabled'}>Create group</button></div>
+      <div class="scroll"><table><tr><th>Group</th><th>Members</th><th>Policies</th><th></th></tr>
+      ${d.groups.map(g => `<tr><td><b>${esc(g.name)}</b><div class="muted" style="font-size:12px">${esc(g.organization)}${g.description ? ' · ' + esc(g.description) : ''}</div></td>
+        <td>${g.members.map(m => `<span class="chip info" style="margin:1px">${esc(m.email)} <a href="#" data-grpmrm="${esc(g.id)}|${esc(m.uid)}" title="Remove" style="text-decoration:none">✕</a></span>`).join(' ')}
+          <div class="row" style="margin:4px 0 0"><select data-grpmsel="${esc(g.id)}"><option value="">Add member…</option>${members.filter(m => m.organization === g.organization && !g.members.some(x => x.uid === m.uid)).map(m => `<option value="${esc(m.uid)}">${esc(m.email)}</option>`).join('')}</select><button class="btn" data-grpmadd="${esc(g.id)}">Add</button></div></td>
+        <td>${g.policies.map(p => `<span class="chip ok" style="margin:1px">${esc(p.name)} <a href="#" data-grppdet="${esc(g.id)}|${esc(p.id)}" title="Detach" style="text-decoration:none">✕</a></span>`).join(' ')}
+          <div class="row" style="margin:4px 0 0"><select data-grppsel="${esc(g.id)}"><option value="">Attach policy…</option>${d.policies.filter(p => p.organization === g.organization && !g.policies.some(x => x.id === p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select><button class="btn" data-grppatt="${esc(g.id)}">Attach</button></div></td>
+        <td style="text-align:right"><button class="btn danger" data-grpdel="${esc(g.id)}">Delete</button></td></tr>`).join('')
+        || '<tr><td colspan="4" class="empty">No groups yet.</td></tr>'}</table></div>
+    </div></div>
+    <div class="card">
+    <div class="card-header"><h2>Policies</h2><button class="btn primary" id="polNew" style="margin-left:auto" ${POL.orgs.length ? '' : 'disabled'}>New policy</button></div>
+    <div style="padding:16px 18px">
+      <p class="muted">A <b>policy</b> says exactly what AWS lets you say: allow or <b>deny</b> individual <b>actions</b> — for instance <i>see</i> every environment (<span class="mono">environment:List</span>) but not <i>open</i> them (<span class="mono">environment:Open</span>) — on chosen <b>resources</b> (<span class="mono">organization/project/environment</span>), optionally only for certain branches or until a date. Everything is denied by default; an explicit <b>Deny</b> always wins. People never see what they cannot list.</p>
+      <div class="scroll"><table><tr><th>Name</th><th>Organization</th><th>Statements</th><th>Attached to</th><th></th></tr>
+      ${d.policies.map(p => `<tr><td><b>${esc(p.name)}</b><div class="muted" style="font-size:12px">${esc(p.description)}</div></td><td>${esc(p.organization)}</td>
+        <td style="font-size:12px">${polSummary(p.document).map(esc).join('<br>')}</td>
+        <td>${p.attached.map(a => `<span class="chip info" style="margin:1px">${esc(a.email)} <a href="#" data-poldetach="${esc(p.id)}|${esc(a.uid)}" title="Detach" style="text-decoration:none">✕</a></span>`).join(' ')}
+          <div class="row" style="margin:4px 0 0"><select data-polattachsel="${esc(p.id)}"><option value="">Attach to…</option>${members.filter(m => m.organization === p.organization && !p.attached.some(a => a.uid === m.uid)).map(m => `<option value="${esc(m.uid)}">${esc(m.email)}</option>`).join('')}</select>
+          <button class="btn" data-polattach="${esc(p.id)}">Attach</button></div></td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn" data-poledit="${esc(p.id)}">Edit</button> <button class="btn danger" data-poldelete="${esc(p.id)}">Delete</button></td></tr>`).join('')
+        || '<tr><td colspan="5" class="empty">No policies yet. Presets are available inside the editor.</td></tr>'}</table></div>
+      <div id="polEditor"></div>
+    </div></div>
+    <div class="card"><div class="card-header"><h2>Policy simulator</h2><span class="card-meta">what can this person do here, and why?</span></div>
+    <div style="padding:16px 18px">
+      <div class="row"><select id="simOrg">${POL.orgs.map(o => `<option value="${esc(o.slug)}">${esc(o.name)}</option>`).join('')}</select>
+        <select id="simUser"></select><select id="simApp"></select><select id="simEnv"></select>
+        <select id="simAct"><option value="">All actions</option>${d.actions.map(a => `<option>${esc(a.name)}</option>`).join('')}</select>
+        <button class="btn primary" id="simRun">Simulate</button></div>
+      <div id="simOut"></div></div></div>`;
+
+  // members table + invite form read from the same data
+  const memberWhat = (org, uid) => {
+    const gs = d.groups.filter(g => g.organization === org && g.members.some(m => m.uid === uid)).map(g => `<span class="chip quiet">group ${esc(g.name)}</span>`);
+    const ps = d.policies.filter(p => p.organization === org && p.attached.some(a => a.uid === uid)).map(p => `<span class="chip ok">${esc(p.name)}</span>`);
+    return [...gs, ...ps].join(' ') || 'nothing yet';
+  };
+  document.querySelectorAll('[data-memacc]').forEach(td => { const [org, uid] = td.dataset.memacc.split('|'); td.innerHTML = memberWhat(org, uid); });
+  const fillInvGroups = () => {
+    const box = $('#invGroupBox'); if (!box) return;
+    const org = $('#invOrg')?.value;
+    const gs = d.groups.filter(g => g.organization === org);
+    box.innerHTML = gs.length ? gs.map(g => `<label style="margin-right:10px"><input type="checkbox" value="${esc(g.name)}"> ${esc(g.name)}</label>`).join('') : 'none yet — create a group below';
+  };
+  $('#invOrg')?.addEventListener('change', fillInvGroups); fillInvGroups();
+  const post = async (body, msg) => { try { await api('/api/access', body); toast(msg); await renderAccess(); } catch (e) { toast(e.message); } };
+  $('#grpCreate', host)?.addEventListener('click', () => post({ op: 'group-create', organization: $('#grpOrg', host).value, name: $('#grpName', host).value.trim(), description: $('#grpDesc', host).value.trim() }, 'Group created'));
+  host.querySelectorAll('[data-grpdel]').forEach(b => b.onclick = () => { if (confirm('Delete this group? Its members lose what its policies granted.')) post({ op: 'group-delete', id: b.dataset.grpdel }, 'Group deleted'); });
+  host.querySelectorAll('[data-grpmrm]').forEach(a => a.onclick = ev => { ev.preventDefault(); const [id, uid] = a.dataset.grpmrm.split('|'); post({ op: 'group-member-remove', id, uid }, 'Removed'); });
+  host.querySelectorAll('[data-grpmadd]').forEach(b => b.onclick = () => { const uid = $(`[data-grpmsel="${b.dataset.grpmadd}"]`, host).value; if (uid) post({ op: 'group-member-add', id: b.dataset.grpmadd, uid }, 'Added'); });
+  host.querySelectorAll('[data-grppdet]').forEach(a => a.onclick = ev => { ev.preventDefault(); const [id, policy] = a.dataset.grppdet.split('|'); post({ op: 'group-policy-detach', id, policy }, 'Detached'); });
+  host.querySelectorAll('[data-grppatt]').forEach(b => b.onclick = () => { const policy = $(`[data-grppsel="${b.dataset.grppatt}"]`, host).value; if (policy) post({ op: 'group-policy-attach', id: b.dataset.grppatt, policy }, 'Attached'); });
+  $('#polNew', host)?.addEventListener('click', () => {
+    POL.mode = 'visual';
+    POL.edit = { id: '', organization: POL.orgs[0]?.slug || '', name: '', description: '', document: { Statement: [polBlankStatement(POL.orgs[0]?.slug || '')] } };
+    drawPolicyEditor();
+    $('#polOrg')?.addEventListener('change', ev => { POL.edit.organization = ev.target.value; POL.edit.document.Statement = [polBlankStatement(ev.target.value)]; drawPolicyEditor(); });
+  });
+  host.querySelectorAll('[data-poledit]').forEach(b => b.onclick = () => {
+    const p = d.policies.find(x => x.id === b.dataset.poledit); POL.mode = 'visual';
+    POL.edit = { id: p.id, organization: p.organization, name: p.name, description: p.description, document: JSON.parse(JSON.stringify(p.document)) };
+    drawPolicyEditor(); $('#polEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+  host.querySelectorAll('[data-poldelete]').forEach(b => b.onclick = () => { if (confirm('Delete this policy? Everyone it is attached to loses what it granted.')) post({ op: 'policy-delete', id: b.dataset.poldelete }, 'Policy deleted'); });
+  host.querySelectorAll('[data-poldetach]').forEach(a => a.onclick = ev => { ev.preventDefault(); const [id, uid] = a.dataset.poldetach.split('|'); post({ op: 'policy-detach', id, uid }, 'Detached'); });
+  host.querySelectorAll('[data-polattach]').forEach(b => b.onclick = () => {
+    const uid = $(`[data-polattachsel="${b.dataset.polattach}"]`, host).value; if (uid) post({ op: 'policy-attach', id: b.dataset.polattach, uid }, 'Attached');
+  });
+
+  // simulator
+  const fillSim = () => {
+    const org = $('#simOrg', host).value;
+    $('#simUser', host).innerHTML = members.filter(m => m.organization === org).map(m => `<option value="${esc(m.uid)}">${esc(m.email)}</option>`).join('') || '<option value="">no members</option>';
+    const apps = [...new Set((access.environments || []).filter(e => POL.orgOf(e.app) === org).map(e => e.app))];
+    $('#simApp', host).innerHTML = apps.map(a => `<option>${esc(a)}</option>`).join('') || '<option value="">no environments</option>';
+    fillEnv();
+  };
+  const fillEnv = () => {
+    const app = $('#simApp', host).value;
+    $('#simEnv', host).innerHTML = (access.environments || []).filter(e => e.app === app).map(e => `<option>${esc(e.env)}</option>`).join('');
+  };
+  $('#simOrg', host)?.addEventListener('change', fillSim); $('#simApp', host)?.addEventListener('change', fillEnv); fillSim();
+  $('#simRun', host).onclick = async () => {
+    const out = $('#simOut', host);
+    try {
+      const j = await api('/api/simulate', { organization: $('#simOrg', host).value, uid: $('#simUser', host).value, app: $('#simApp', host).value, env: $('#simEnv', host).value, action: $('#simAct', host).value });
+      const allowed = new Set(j.allowed_actions);
+      const byLevel = d.levels.map(l => `<div style="margin:6px 0"><div class="muted" style="font-size:11.5px;text-transform:uppercase;letter-spacing:.06em">${esc(l)}</div>
+        ${d.actions.filter(a => a.level === l).map(a => `<span class="chip ${allowed.has(a.name) ? 'ok' : 'quiet'}" style="margin:2px" title="${esc(a.description)}">${allowed.has(a.name) ? '✓' : '✕'} ${esc(a.name)}</span>`).join('')}</div>`).join('');
+      out.innerHTML = (j.action ? `<p style="margin:12px 0 4px"><span class="chip ${j.allowed ? 'ok' : 'bad'}">${j.allowed ? 'Allowed' : 'Denied'}</span> <b class="mono">${esc(j.action)}</b> — ${esc({ 'explicit-deny': 'an explicit Deny matches', allow: 'an Allow matches', 'implicit-deny': 'nothing allows it (denied by default)', 'platform-admin': 'platform administrator' }[j.reason] || j.reason)}</p>
+        ${(j.matches || []).map(m => `<div class="muted" style="font-size:12.5px">${esc(m.source)}</div><pre style="margin:4px 0">${esc(JSON.stringify(m.statement, null, 2))}</pre>`).join('')}` : '')
+        + `<p class="muted" style="margin:12px 0 0;font-size:12.5px">Effective on this environment${j.branch ? ' (branch ' + esc(j.branch) + ')' : ''}:</p>${byLevel}`;
+    } catch (e) { out.textContent = e.message; }
+  };
+}
 </script>
 </body>
 </html>

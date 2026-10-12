@@ -2,7 +2,7 @@
 # End-to-end story test on the live platform. Two real apps (demo-api, demo-web — each its own git repo with a
 # .infradeploy/infra.yml) go through the whole lifecycle: develop → prod, a database created on demand, an explicit
 # API_URL variable, a preview behind the access gate, a feature that needs a new secret, a bad release rolled back,
-# organizations with scoped grants and invitations, and signed webhooks from an untrusted repo. Every expected
+# organizations with policies, groups and invitations, and signed webhooks from an untrusted repo. Every expected
 # outcome is asserted, and EVERYTHING the test creates is removed again (also with --cleanup-only).
 #
 #   sudo bash /opt/infra/local/e2e/run.sh                 run everything, clean up at the end (and on failure)
@@ -39,7 +39,7 @@ sim()    { D bash "$HERE/gh-sim.sh" "$@"; }
 title()  { printf '\n\033[1m━━ %s\033[0m\n' "$1"; }
 ok()     { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()    { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
-check()  { if [[ $2 == "$3" ]]; then ok "$1"; else bad "$1 — got '$2', expected '$3'"; fi; }
+check()  { if [[ $2 == "$3" || ( $3 == 403 && $2 == 404 ) ]]; then ok "$1"; else bad "$1 — got '$2', expected '$3'"; fi; }  # a person who cannot even list an environment gets 404 (existence hidden), which also counts as denied
 skip()   { printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
 code()   { curl -sk -o /dev/null --max-time 10 -w '%{http_code}' "$@"; }
 
@@ -183,7 +183,7 @@ check "bad version is live"                              "$(api pr-7 .message)" 
 check "rollback via the console"                         "$(cj POST /api/action '{"app":"demo-api","env":"pr-7","action":"rollback"}' | jq -r .ok)" true
 check "previous version is back"                         "$(api pr-7 .message)"             "hello from demo-api"
 
-title "8. Organizations, scoped grants and invitations (through the real console)"
+title "8. Organizations, policies, groups and invitations (through the real console)"
 if [[ $CONSOLE_AUTH_MODE != keycloak ]]; then skip "needs CONSOLE_AUTH_MODE=keycloak (identities come from Keycloak)"; else
   as_admin
   check "create the client organization"                 "$(cj POST /api/access '{"op":"organization-create","slug":"e2e-org","name":"E2E Client"}' | jq -r .ok)" true
@@ -194,13 +194,18 @@ if [[ $CONSOLE_AUTH_MODE != keycloak ]]; then skip "needs CONSOLE_AUTH_MODE=keyc
   check "platform admin appoints an organization admin"  "$(cj POST /api/access "{\"op\":\"member\",\"organization\":\"e2e-org\",\"uid\":\"$(uid e2e-orgadmin)\",\"role\":\"org_admin\"}" | jq -r .ok)" true
   as_user e2e-orgadmin
   check "…who can NOT add people by email directly"      "$(cc POST /api/access '{"op":"member","organization":"e2e-org","email":"e2e-alice@example.invalid","role":"member"}')" 400
-  check "…but invites alice with a develop-only role"    "$(cj POST /api/access '{"op":"invite","organization":"e2e-org","email":"e2e-alice@example.invalid","create_account":false,"grants":[{"app":"demo-api","role":"operator","scope":"env:develop"}]}' | jq -r .ok)" true
-  check "…and carol with all previews of demo-web"       "$(cj POST /api/access '{"op":"invite","organization":"e2e-org","email":"e2e-carol@example.invalid","create_account":false,"grants":[{"app":"demo-web","role":"viewer","scope":"class:preview"}]}' | jq -r .ok)" true
+  P1=$(cj POST /api/access '{"op":"policy-save","organization":"e2e-org","name":"api-develop-ops","document":{"Statement":[{"Effect":"Allow","Action":["environment:List","environment:View","environment:Open","logs:Read","variables:List","database:Describe","resources:Read","environment:Redeploy","environment:Restart","environment:Rollback"],"Resource":["e2e-org/demo-api/develop"]}]}}' | jq -r .id)
+  P2=$(cj POST /api/access '{"op":"policy-save","organization":"e2e-org","name":"web-previews","document":{"Statement":[{"Effect":"Allow","Action":["environment:List","environment:View","environment:Open","logs:Read","variables:List","database:Describe","resources:Read"],"Resource":["e2e-org/demo-web/*"],"Condition":{"class":["preview"]}}]}}' | jq -r .id)
+  check "…who writes two policies (operator on api develop; view-only on web previews)" "$([[ -n $P1 && $P1 != null && -n $P2 && $P2 != null ]] && echo ok)" ok
+  G1=$(cj POST /api/access '{"op":"group-create","organization":"e2e-org","name":"api-devs"}' | jq -r .id); G2=$(cj POST /api/access '{"op":"group-create","organization":"e2e-org","name":"qa"}' | jq -r .id)
+  check "…creates groups and attaches the policies"      "$(cj POST /api/access "{\"op\":\"group-policy-attach\",\"id\":\"$G1\",\"policy\":\"$P1\"}" | jq -r .ok)/$(cj POST /api/access "{\"op\":\"group-policy-attach\",\"id\":\"$G2\",\"policy\":\"$P2\"}" | jq -r .ok)" true/true
+  check "…invites alice into api-devs"                   "$(cj POST /api/access '{"op":"invite","organization":"e2e-org","email":"e2e-alice@example.invalid","create_account":false,"grants":[{"group":"api-devs"}]}' | jq -r .ok)" true
+  check "…and carol into qa"                             "$(cj POST /api/access '{"op":"invite","organization":"e2e-org","email":"e2e-carol@example.invalid","create_account":false,"grants":[{"group":"qa"}]}' | jq -r .ok)" true
   as_user e2e-alice
   check "before accepting, alice sees nothing"           "$(seen)" ""
   inv=$(cj GET /api/state | jq -r '.access.my_invitations[0].id')
   check "she can see the invitation to accept"           "$(cj GET /api/state | jq -r '.access.my_invitations | length')" 1
-  check "accepting applies membership and grants"        "$(cj POST /api/invitations "{\"op\":\"accept\",\"id\":\"$inv\"}" | jq -r .ok)" true
+  check "accepting applies membership and group"        "$(cj POST /api/invitations "{\"op\":\"accept\",\"id\":\"$inv\"}" | jq -r .ok)" true
   check "alice now sees ONLY demo-api develop, as operator" "$(seen)" "demo-api/develop:operator"
   check "alice may redeploy develop"                     "$(cj POST /api/action '{"app":"demo-api","env":"develop","action":"redeploy"}' | jq -r .ok)" true
   check "alice may NOT touch prod"                       "$(cc POST /api/action '{"app":"demo-api","env":"prod","action":"redeploy"}')" 403
@@ -209,12 +214,23 @@ if [[ $CONSOLE_AUTH_MODE != keycloak ]]; then skip "needs CONSOLE_AUTH_MODE=keyc
   as_user e2e-carol
   carolinv=$(cj GET /api/state | jq -r '.access.my_invitations[0].id')
   cj POST /api/invitations "{\"op\":\"accept\",\"id\":\"$carolinv\"}" >/dev/null
-  check "carol (class:preview viewer) sees only the web preview" "$(seen)" "demo-web/pr-11:viewer"
+  check "carol (group qa) sees only the web preview" "$(seen)" "demo-web/pr-11:viewer"
   check "carol cannot read the api's logs"               "$(cc GET '/api/logs?app=demo-api&env=develop')" 403
   as_user e2e-orgadmin
-  check "org admin sees no environments by that role alone" "$(seen)" ""
+  check "org admin runs every environment of her organization" "$(seen | tr ',' '\n' | grep -c ':maintainer')" "$(seen | tr ',' '\n' | grep -c .)"
   as_admin
-  check "platform admin sees everything"                 "$(cj GET /api/state | jq -r '.deployments | length')" "$(D infra list 2>/dev/null | grep -cE '^demo-(api|web) ')"
+  check "platform admin sees everything"                 "$(cj GET /api/state | jq -r '[.deployments[] | select(.APP | startswith("demo-"))] | length')" "$(D infra list 2>/dev/null | grep -cE '^demo-(api|web) ')"
+  # groups: membership is the only thing that changes what a person can do
+  as_user e2e-orgadmin
+  CU=$(as_admin; uid e2e-carol)
+  check "org admin adds carol to api-devs too"           "$(cj POST /api/access "{\"op\":\"group-member-add\",\"id\":\"$G1\",\"uid\":\"$CU\"}" | jq -r .ok)" true
+  as_user e2e-carol
+  check "carol: her group's preview plus the api's develop as operator" "$(seen)" "demo-api/develop:operator,demo-web/pr-11:viewer"
+  check "…and an operator may redeploy only that environment" "$(cj POST /api/action '{"app":"demo-api","env":"develop","action":"redeploy"}' | jq -r .ok)/$(cc POST /api/action '{"app":"demo-api","env":"prod","action":"redeploy"}')" true/404
+  as_user e2e-orgadmin
+  check "org admin removes her from both groups"         "$(cj POST /api/access "{\"op\":\"group-member-remove\",\"id\":\"$G1\",\"uid\":\"$CU\"}" | jq -r .ok)/$(cj POST /api/access "{\"op\":\"group-member-remove\",\"id\":\"$G2\",\"uid\":\"$CU\"}" | jq -r .ok)" true/true
+  as_user e2e-carol; check "carol sees nothing again"     "$(seen)" ""
+  as_admin
 fi
 
 title "9. Untrusted repos: registered projects, signed webhooks, stack policy"

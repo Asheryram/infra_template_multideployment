@@ -28,6 +28,7 @@ from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
+import policy as policy_mod
 from access import AccessStore, ENV_SCOPE, PROJECT_ROLES, ROLE_ORDER
 
 INFRA_ROOT = os.environ["INFRA_ROOT"]
@@ -124,15 +125,6 @@ def may_change_org_member_role(actor, store, organization, target_uid, role):
             and store.organization_member_role(organization, target_uid) != "org_admin")
 
 
-def require_project_role(actor, store, app, minimum="viewer"):
-    role = store.role_for_project(actor["uid"], app, is_platform_admin(actor))
-    if role == "platform_admin":
-        return role
-    if role not in PROJECT_ROLES or ROLE_ORDER[role] < ROLE_ORDER[minimum]:
-        raise PermissionError("project access denied")
-    return role
-
-
 def preview_identity(cookie):
     """{uid, email, username, groups} for a preview session cookie, or None when not signed in."""
     if not cookie:
@@ -167,14 +159,18 @@ def deployment_branch(s, app, env):
     return read_env(f"{d}/meta.env").get("BRANCH") or read_env(f"{d}/status.env").get("BRANCH", "")
 
 
-def require_env_role(actor, store, s, app, env, minimum="viewer"):
-    """Role needed in ONE environment: a project-wide role or an environment/class/branch-scoped grant."""
-    role = store.role_for_environment(actor["uid"], app, env, deployment_branch(s, app, env), is_platform_admin(actor))
-    if role == "platform_admin":
-        return role
-    if role not in PROJECT_ROLES or ROLE_ORDER[role] < ROLE_ORDER[minimum]:
-        raise PermissionError("project access denied")
-    return role
+def require_action(actor, store, s, app, env, action):
+    """Least privilege: the person needs `action` on `org/app/env` (env '*' = project-wide). Someone who cannot even
+    LIST the environment gets 'not found', so its existence is not revealed."""
+    if is_platform_admin(actor):
+        return
+    branch = deployment_branch(s, app, env) if env and env != "*" else ""
+    statements = store.statements_for(actor["uid"])
+    if store.authorize(actor["uid"], action, app, env, branch, statements=statements)[0]:
+        return
+    if not store.authorize(actor["uid"], "environment:List", app, env, branch, statements=statements)[0]:
+        raise LookupError("not found")
+    raise PermissionError(f"not allowed: {action}")
 
 
 def scope_env(s, app, scope):
@@ -186,13 +182,8 @@ def scope_env(s, app, scope):
 def require_scope_role(actor, store, s, app, scope, minimum="maintainer"):
     """Project-wide scopes (common, a class) need a project-wide role; an environment's own scopes also accept a
     grant scoped to that environment."""
-    try:
-        return require_project_role(actor, store, app, minimum)
-    except PermissionError:
-        env = scope_env(s, app, scope)
-        if env is None:
-            raise
-        return require_env_role(actor, store, s, app, env, minimum)
+    env = scope_env(s, app, scope)
+    require_action(actor, store, s, app, env or "*", "variables:Write")
 
 
 def kc_enabled():
@@ -943,9 +934,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         env = q.get("env", "")
         env = env if NAME.match(env) else ""                       # no env (old labels): project-wide roles only
-        role = access_store(s).role_for_environment(ident["key"], app, env, deployment_branch(s, app, env) if env else "",
-                                                    ident["is_admin"])
-        if role == "platform_admin" or role in PROJECT_ROLES:
+        allowed = ident["is_admin"] or access_store(s).authorize(
+            ident["key"], "environment:Open", app, env or None, deployment_branch(s, app, env) if env else "")[0]
+        if allowed:
             return self.send(200, {"ok": True})
         return self.no_access_page(s, ident, (
             "this environment",
@@ -1029,11 +1020,13 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/state":
                 rows = deployments(s)
                 roles = store.project_roles(actor["uid"], is_platform_admin(actor))
-                for row in rows:           # effective role per ENVIRONMENT: project-wide role or a scoped grant
-                    row["ROLE"] = store.role_for_environment(actor["uid"], row["APP"], row["ENV_NAME"],
-                                                             row.get("BRANCH", ""), is_platform_admin(actor)) or ""
+                statements = None if is_platform_admin(actor) else store.statements_for(actor["uid"])
+                for row in rows:           # what this person may do in each ENVIRONMENT (actions); role kept for display
+                    row["ALLOW"] = store.allowed_actions(actor["uid"], row["APP"], row["ENV_NAME"], row.get("BRANCH", ""),
+                                                         is_platform_admin(actor), statements)
+                    row["ROLE"] = "platform_admin" if is_platform_admin(actor) else policy_mod.role_of(row["ALLOW"])
                 if not is_platform_admin(actor):
-                    rows = [row for row in rows if row["ROLE"]]
+                    rows = [row for row in rows if "environment:List" in row["ALLOW"]]
                 access = store.list_access(actor["uid"], is_platform_admin(actor))
                 access["platform_admin"] = is_platform_admin(actor)
                 access["project_roles"] = roles
@@ -1042,6 +1035,17 @@ class Handler(BaseHTTPRequestHandler):
                 access["auth_mode"] = s["console_auth_mode"]
                 return self.send(200, {"settings": s, "user": actor["display_name"],
                                        "access": access, "deployments": rows})
+            if u.path == "/api/policies":
+                memberships = store.list_access(actor["uid"])["organizations"]
+                if not (is_platform_admin(actor) or any(o["role"] == "org_admin" for o in memberships)):
+                    return self.send(403, {"error": "organization administration required"})
+                administered = None if is_platform_admin(actor) else {o["slug"] for o in memberships if o["role"] == "org_admin"}
+                pols = [p for p in store.list_policies() if administered is None or p["organization"] in administered]
+                groups = [g for g in store.list_groups() if administered is None or g["organization"] in administered]
+                return self.send(200, {"policies": pols, "groups": groups, "actions": policy_mod.catalog(), "levels": policy_mod.LEVELS,
+                                       "presets": {k: {"name": v["name"], "description": v["description"], "actions": v["actions"]}
+                                                   for k, v in policy_mod.PRESETS.items()},
+                                       "condition_keys": list(policy_mod.CONDITION_KEYS)})
             if u.path == "/api/access":
                 if s["console_auth_mode"] not in ("authentik", "keycloak"):
                     return self.send(409, {"error": "tenant access management requires an identity-provider mode"})
@@ -1051,18 +1055,23 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(403, {"error": "organization administration required"})
                 access = store.list_access(actor["uid"], is_platform_admin(actor))
                 access["platform_admin"] = is_platform_admin(actor)
+                administered = {p["app"] for p in access["projects"]}          # projects of organizations this person administers
+                access["environments"] = [{"app": d["APP"], "env": d["ENV_NAME"], "branch": d.get("BRANCH", "")}
+                                          for d in deployments(s) if d["APP"] in administered]
                 registered = projects(s) if is_platform_admin(actor) else []
                 return self.send(200, {"access": access, "registered_projects": registered})
             if u.path == "/api/env":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                role = require_env_role(actor, store, s, app, env)
+                require_action(actor, store, s, app, env, "environment:View")
+                role = "platform_admin" if is_platform_admin(actor) else policy_mod.role_of(store.allowed_actions(actor["uid"], app, env, deployment_branch(s, app, env)))
+                see_values = is_platform_admin(actor) or store.authorize(actor["uid"], "variables:ReadValues", app, env, deployment_branch(s, app, env))[0]
                 d = f"{s['deploy_root']}/{app}/{env}"
                 runtime = {}
                 for f in sorted(glob.glob(f"{d}/runtime/*.env")):
                     runtime[os.path.basename(f)[:-4]] = [{"key": k, "value": mask(k, v)} for k, v in read_env(f).items()]
-                if role not in ("maintainer", "platform_admin") and not is_platform_admin(actor):
+                if not see_values:
                     for rows in runtime.values():
                         for row in rows:
                             row["value"] = "••••••"
@@ -1075,33 +1084,31 @@ class Handler(BaseHTTPRequestHandler):
                 if not NAME.match(app):
                     return self.send(400, {"error": "bad app"})
                 files = secrets(s, app)
-                try:
-                    role = require_project_role(actor, store, app, "maintainer")
-                except PermissionError:
-                    # scoped maintainers only see (and may edit) the variable files of their own environments
-                    files = {sc: rows for sc, rows in files.items()
-                             if scope_env(s, app, sc) and store.role_for_environment(
-                                 actor["uid"], app, scope_env(s, app, sc),
-                                 deployment_branch(s, app, scope_env(s, app, sc))) == "maintainer"}
-                    if not any(scope_env(s, app, d.split("/")[-1]) and store.role_for_environment(
-                            actor["uid"], app, d.split("/")[-1], deployment_branch(s, app, d.split("/")[-1])) == "maintainer"
-                            for d in glob.glob(f"{s['deploy_root']}/{app}/*")):
-                        raise
-                    role = "maintainer"
+                if not is_platform_admin(actor):
+                    st = store.statements_for(actor["uid"])
+                    can = lambda env: store.authorize(actor["uid"], "variables:Write", app, env,
+                                                      deployment_branch(s, app, env) if env != "*" else "", statements=st)[0]
+                    if not can("*"):
+                        # scoped writers only see (and may edit) the variable files of their own environments
+                        files = {sc: rows for sc, rows in files.items() if scope_env(s, app, sc) and can(scope_env(s, app, sc))}
+                        if not files and not any(can(os.path.basename(d)) for d in glob.glob(f"{s['deploy_root']}/{app}/*")):
+                            raise LookupError("not found")
+                role = "maintainer"
                 return self.send(200, {"files": files,
                                        "can_manage": is_platform_admin(actor) or role == "maintainer"})
             if u.path == "/api/logs":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                require_env_role(actor, store, s, app, env)
+                require_action(actor, store, s, app, env, "logs:Read")
                 ok, out = infra("tail", app, env, str(min(int(q.get("n", 200)), 2000)), timeout=60)
                 return self.send(200, {"ok": ok, "output": out})
             if u.path == "/api/database":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                role = require_env_role(actor, store, s, app, env)
+                require_action(actor, store, s, app, env, "database:Describe")
+                allow = lambda a: is_platform_admin(actor) or store.authorize(actor["uid"], a, app, env, deployment_branch(s, app, env))[0]
                 ok, out = infra("db", "info", app, env, "--json", timeout=30)
                 try:
                     info = json.loads(out.strip().splitlines()[-1])
@@ -1109,17 +1116,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200, {"error": out[-500:]})
                 for item in info.get("databases", []):
                     item["url_masked"] = mask_url(item.pop("url", ""))   # full URLs only ever go into variables, server-side
-                info["can_manage"] = is_platform_admin(actor) or role == "maintainer"
-                info["can_wipe"] = is_platform_admin(actor)
-                info["can_reveal"] = is_platform_admin(actor)
+                info["can_manage"] = allow("database:Create")
+                info["can_wipe"] = allow("database:Wipe")
+                info["can_reveal"] = allow("database:RevealUrl")
                 return self.send(200, info)
             if u.path == "/api/database/reveal":
                 app, env, db = q.get("app", ""), q.get("env", ""), q.get("db", "")
                 if not (NAME.match(app) and NAME.match(env)
                         and re.fullmatch(r"[a-z0-9-]+:[A-Za-z_][A-Za-z0-9_]*", db)):
                     return self.send(400, {"error": "bad request"})
-                if not is_platform_admin(actor):
-                    return self.send(403, {"error": "only a platform administrator may reveal a database URL"})
+                require_action(actor, store, s, app, env, "database:RevealUrl")
                 ok, out = infra("db", "url", app, env, "--db", db, timeout=30)
                 url = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip().startswith("postgres://")), "")
                 if not (ok and url):
@@ -1130,32 +1136,33 @@ class Handler(BaseHTTPRequestHandler):
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                role = require_env_role(actor, store, s, app, env)
+                require_action(actor, store, s, app, env, "variables:List")
+                branch = deployment_branch(s, app, env)
+                editable = is_platform_admin(actor) or store.authorize(actor["uid"], "variables:Write", app, env, branch)[0]
+                readable = is_platform_admin(actor) or store.authorize(actor["uid"], "variables:ReadValues", app, env, branch)[0]
                 variables = env_variables(s, app, env)
-                editable = is_platform_admin(actor) or role == "maintainer"
                 for rows in variables.values():
                     for row in rows:
                         row["editable"] = editable
-                        if not editable:
+                        if not readable:
                             row["value"] = "••••••"
                 return self.send(200, {"components": variables})
             if u.path == "/api/resources":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                require_env_role(actor, store, s, app, env)
+                require_action(actor, store, s, app, env, "resources:Read")
                 try:
                     policy = resource_policy(s, app, env)
-                    policy["can_manage"] = is_platform_admin(actor)
+                    policy["can_manage"] = is_platform_admin(actor) or store.authorize(actor["uid"], "resources:Write", app, env, deployment_branch(s, app, env))[0]
                     return self.send(200, policy)
                 except ValueError:
-                    return self.send(200, {"components": [], "can_manage": is_platform_admin(actor)})
+                    return self.send(200, {"components": [], "can_manage": False})
             if u.path == "/api/reveal":
                 app, env, comp, key = q.get("app", ""), q.get("env", ""), q.get("comp", ""), q.get("key", "")
                 if not (NAME.match(app) and NAME.match(env) and NAME.match(comp) and KEY.match(key)):
                     return self.send(400, {"error": "bad request"})
-                if not is_platform_admin(actor):
-                    return self.send(403, {"error": "only a platform administrator may reveal secret values"})
+                require_action(actor, store, s, app, env, "secrets:Reveal")
                 self.audit(s, "reveal", f"{app}/{env} {comp}:{key}")
                 return self.send(200, {"value": reveal_variable(s, app, env, comp, key)})
             if u.path == "/api/projects":
@@ -1170,6 +1177,8 @@ class Handler(BaseHTTPRequestHandler):
                 lines = [ln for ln in lines if ln[:4].isdigit()]
                 lines.sort()
                 return self.send(200, {"lines": lines[-200:]})
+            return self.send(404, {"error": "not found"})
+        except LookupError:
             return self.send(404, {"error": "not found"})
         except PermissionError as e:
             return self.send(403, {"error": str(e)})
@@ -1233,16 +1242,6 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(403, {"error": "only a platform administrator may assign or change organization administrators"})
                     store.set_member(organization, uid, role)
                     self.audit(s, "organization:member", f"{organization} uid={uid} role={role}")
-                elif operation == "project-grant":
-                    app, uid, role = body.get("app", ""), body.get("uid", ""), body.get("role", "")
-                    organization = store.organization_for_project(app)
-                    if not organization:
-                        return self.send(400, {"error": "project is not assigned to an organization"})
-                    if not store.can_admin_organization(actor["uid"], organization,
-                                                        is_platform_admin(actor)):
-                        return self.send(403, {"error": "organization administrator required"})
-                    store.grant_project(app, uid, role)
-                    self.audit(s, "project:grant", f"{app} uid={uid} role={role}")
                 elif operation == "invite":
                     organization = body.get("organization", "")
                     if not store.can_admin_organization(actor["uid"], organization, is_platform_admin(actor)):
@@ -1276,18 +1275,77 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(403, {"error": "organization administrator required"})
                     store.revoke_invitation(invitation_id, organization)
                     self.audit(s, "organization:invite-revoke", f"{organization} id={invitation_id}")
-                elif operation == "environment-grant":
-                    app, uid, role, scope = body.get("app", ""), body.get("uid", ""), body.get("role", ""), body.get("scope", "")
-                    organization = store.organization_for_project(app)
+                elif operation in ("group-create", "group-delete", "group-member-add", "group-member-remove",
+                                   "group-policy-attach", "group-policy-detach"):
+                    gid = body.get("id", "")
+                    organization = body.get("organization", "") if operation == "group-create" else store.group_organization(gid)
                     if not organization:
-                        return self.send(400, {"error": "project is not assigned to an organization"})
+                        return self.send(404, {"error": "no such group"})
                     if not store.can_admin_organization(actor["uid"], organization, is_platform_admin(actor)):
                         return self.send(403, {"error": "organization administrator required"})
-                    store.grant_environment(app, uid, scope, role)
-                    self.audit(s, "environment:grant", f"{app} {scope} uid={uid} role={role}")
+                    if operation == "group-create":
+                        gid = store.create_group(organization, (body.get("name") or "").strip(), body.get("description", ""))
+                        self.audit(s, "group:create", f"{organization} name={body.get('name', '')}")
+                        return self.send(200, {"ok": True, "id": gid})
+                    if operation == "group-delete":
+                        store.delete_group(gid)
+                    elif operation == "group-member-add":
+                        store.add_group_member(gid, body.get("uid", ""))
+                    elif operation == "group-member-remove":
+                        store.remove_group_member(gid, body.get("uid", ""))
+                    elif operation == "group-policy-attach":
+                        store.attach_group_policy(gid, body.get("policy", ""))
+                    else:
+                        store.detach_group_policy(gid, body.get("policy", ""))
+                    self.audit(s, operation.replace("-", ":", 1), f"{organization} group={gid} uid={body.get('uid', '')} policy={body.get('policy', '')}")
+                elif operation in ("policy-save", "policy-delete", "policy-attach", "policy-detach"):
+                    pid = body.get("id", "")
+                    organization = store.policy_organization(pid) if pid else body.get("organization", "")
+                    if not organization:
+                        return self.send(404, {"error": "no such policy"})
+                    if not store.can_admin_organization(actor["uid"], organization, is_platform_admin(actor)):
+                        return self.send(403, {"error": "organization administrator required"})
+                    if operation == "policy-save":
+                        doc = policy_mod.validate_document(body.get("document"), organization, is_platform_admin(actor))
+                        pid = store.save_policy(organization, body.get("name", ""), body.get("description", "") or "", doc,
+                                                actor["uid"], pid or None)
+                        self.audit(s, "policy:save", f"{organization} id={pid} name={body.get('name', '')} statements={len(doc['Statement'])}")
+                        return self.send(200, {"ok": True, "id": pid})
+                    if operation == "policy-delete":
+                        store.delete_policy(pid)
+                        self.audit(s, "policy:delete", f"{organization} id={pid}")
+                    elif operation == "policy-attach":
+                        store.attach_policy(pid, body.get("uid", ""))
+                        self.audit(s, "policy:attach", f"{organization} id={pid} uid={body.get('uid', '')}")
+                    else:
+                        store.detach_policy(pid, body.get("uid", ""))
+                        self.audit(s, "policy:detach", f"{organization} id={pid} uid={body.get('uid', '')}")
                 else:
                     return self.send(400, {"error": "unknown access operation"})
                 return self.send(200, {"ok": True})
+
+            if u == "/api/simulate":
+                organization, uid, app = body.get("organization", ""), body.get("uid", ""), body.get("app", "")
+                if not store.can_admin_organization(actor["uid"], organization, is_platform_admin(actor)):
+                    return self.send(403, {"error": "organization administrator required"})
+                if not NAME.match(app) or store.organization_for_project(app) != organization:
+                    return self.send(400, {"error": "that project is not in this organization"})
+                if not store.organization_member_role(organization, uid):
+                    return self.send(400, {"error": "that person is not a member of this organization"})
+                env = body.get("env", "") or None
+                if env and not NAME.match(env):
+                    return self.send(400, {"error": "bad env"})
+                branch = body.get("branch") if body.get("branch") is not None else (deployment_branch(s, app, env) if env else "")
+                allowed = store.allowed_actions(uid, app, env, branch or "") if env else []
+                result = {"allowed_actions": allowed, "branch": branch or ""}
+                action = body.get("action", "")
+                if action:
+                    if action not in policy_mod.ACTIONS:
+                        return self.send(400, {"error": "unknown action"})
+                    ok, reason, matches = store.authorize(uid, action, app, env, branch or "")
+                    result.update({"action": action, "allowed": ok, "reason": reason,
+                                   "matches": [{"source": src, "statement": st} for src, _, st in matches]})
+                return self.send(200, result)
 
             if u == "/api/invitations":
                 invitation_id = body.get("id", "")
@@ -1421,11 +1479,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True})
 
             if u == "/api/resources":
-                if not is_platform_admin(actor):
-                    return self.send(403, {"error": "only a platform administrator may change resource limits"})
                 env, comp, scope = body.get("env", ""), body.get("component", ""), body.get("scope", "")
                 if not NAME.match(env):
                     return self.send(400, {"error": "bad env"})
+                # limits of one environment need resources:Write there; `common`/`preview` span the project's environments
+                require_action(actor, store, s, app, env if scope == env else "*", "resources:Write")
                 policy = resource_policy(s, app, env)
                 if comp not in [item["component"] for item in policy["components"]]:
                     return self.send(400, {"error": "component is not part of this deployment"})
@@ -1474,11 +1532,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not NAME.match(env):
                     return self.send(400, {"error": "bad env"})
                 if action in ("redeploy", "rollback", "restart"):
-                    require_env_role(actor, store, s, app, env, "operator")
+                    require_action(actor, store, s, app, env, {"redeploy": "environment:Redeploy", "restart": "environment:Restart",
+                                                              "rollback": "environment:Rollback"}[action])
                     args = [action, app, env]
                 elif action == "destroy":
-                    if not is_platform_admin(actor):
-                        return self.send(403, {"error": "only a platform administrator may destroy an environment"})
+                    require_action(actor, store, s, app, env, "environment:Destroy")
                     if body.get("confirm") != f"{app}/{env}":
                         return self.send(400, {"error": f"type {app}/{env} to confirm"})
                     args = ["destroy", "--app", app, "--env", env] + (["--i-really-mean-prod"] if env == "prod" else [])
@@ -1498,16 +1556,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "bad database id"})
                 db_args = ["--db", db_id] if db_id else []
                 if op == "create":
-                    require_env_role(actor, store, s, app, env, "maintainer")
+                    require_action(actor, store, s, app, env, "database:Create")
                     args = ["db", "create", app, env, *db_args]
                 elif op == "wipe":
-                    if not is_platform_admin(actor):
-                        return self.send(403, {"error": "only a platform administrator may wipe a database"})
+                    require_action(actor, store, s, app, env, "database:Wipe")
                     if body.get("confirm") != f"{app}/{env}":
                         return self.send(400, {"error": f"type {app}/{env} to confirm"})
                     args = ["db", "wipe", app, env, *db_args] + (["--i-really-mean-prod"] if env == "prod" else [])
                 elif op == "use":
-                    require_env_role(actor, store, s, app, env, "maintainer")
+                    require_action(actor, store, s, app, env, "database:Use")
                     src, key, scope = body.get("from", f"{app}/{env}"), body.get("key", "DATABASE_URL"), body.get("scope", env)
                     if not (re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", src) and KEY.match(key) and SCOPE.match(scope)):
                         return self.send(400, {"error": "bad source, key or scope"})
@@ -1523,6 +1580,8 @@ class Handler(BaseHTTPRequestHandler):
                     ok, out = ok and ok2, out + chr(10) + out2
                 return self.send(200, {"ok": ok, "output": mask_url(out)})
 
+            return self.send(404, {"error": "not found"})
+        except LookupError:
             return self.send(404, {"error": "not found"})
         except PermissionError as e:
             return self.send(403, {"error": str(e)})

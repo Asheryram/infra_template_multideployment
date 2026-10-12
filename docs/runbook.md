@@ -25,7 +25,7 @@ In identity-provider mode, the console has an **Access** tab for platform admini
 | Access task | Who can do it |
 |---|---|
 | Create an organization; assign registered projects to it | Platform admin |
-| Invite people (membership + first grants, optionally creating their account) and revoke invitations | Platform admin or that organization's admin |
+| Invite people (membership + groups, optionally creating their account) and revoke invitations | Platform admin or that organization's admin |
 | Grant or revoke a project-wide role, or a role on one environment / a class / a branch pattern | Platform admin or that organization's admin |
 | Remove a member | Platform admin or that organization's admin (not other admins) |
 | Invite or change an organization admin | Platform admin only |

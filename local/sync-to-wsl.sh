@@ -15,6 +15,8 @@ cp "$SRC/platform/traefik/dynamic/middlewares.yml.tmpl" /opt/infra/platform/trae
 cp "$SRC/platform/console/entrypoint.sh" /opt/infra/platform/console/entrypoint.sh
 cp "$SRC/platform/console/console.py"    /opt/infra/platform/console/console.py
 cp "$SRC/platform/console/access.py"     /opt/infra/platform/console/access.py
+cp "$SRC/platform/console/policy.py"     /opt/infra/platform/console/policy.py
+cp "$SRC/platform/console/Dockerfile"   /opt/infra/platform/console/Dockerfile
 cp "$SRC/platform/console/index.html"    /opt/infra/platform/console/index.html
 mkdir -p /opt/infra/app-kit/.infradeploy
 cp "$SRC/scripts/parse-manifest.py"            /opt/infra/scripts/parse-manifest.py

@@ -4,11 +4,12 @@ This guide covers tenant-facing access through the Infra Console. It does not gr
 
 ## Access model
 
-- **Platform administrators** belong to the configured identity-provider group (`AUTHENTIK_PLATFORM_ADMIN_GROUP` or `KEYCLOAK_PLATFORM_ADMIN_GROUP`, default `infra-platform-admins`). They can create organizations, connect registered projects, assign any project role, and manage organization-admin roles.
-- **Organization admins** can add/remove ordinary members and assign/revoke project roles only in organizations where they are admins. They cannot create organizations, link projects, appoint/change organization admins, or administer another organization.
-- **Project roles are explicit and per project.** Organization membership never grants project visibility by itself. A user may be a member of multiple organizations and may have different roles in each project's access list.
-- **Viewer** reads assigned project information. **Operator** can deploy, restart, and roll back. **Maintainer** can also manage project runtime variables. Platform-only operations such as resource policy changes, project destruction, database wipes, and secret reveal remain restricted to platform administrators.
-- Removing an organization member also removes their project grants for that organization's projects.
+- **Platform administrators** belong to the configured identity-provider group (`KEYCLOAK_PLATFORM_ADMIN_GROUP`, default `infra-platform-admins`). They create organizations, connect registered projects, appoint organization admins and may use every action, including the privileged ones.
+- An **organization** is one client. Inside it a person is either an **organization admin** — has **every action on everything scoped to that organization** (all its projects and environments, including destroy, database wipe / URL reveal and secrets) and manages its people, groups and policies. Registering projects, GitOps, the activity log and the platform ops tools stay with platform administrators — or a **member**, who can do **nothing** until they are put in a **group** or have a **policy** attached.
+- **Permissions are policies** (see below): *Allow* or *Deny* individual **actions** on **resources** `organization/project/environment`, optionally limited by branch, environment class or an expiry date. Policies attach to **groups** (and to single people); a person's permissions are the union of everything attached to them and their groups; an explicit Deny always wins.
+- **Groups** belong to one organization (QA, Backend, Client X…). Put people in groups, attach policies to the groups: changing a policy changes everyone in the group at once.
+- Least privilege is the default: what a person cannot **list** does not exist for them (404, not 403).
+- Removing an organization member also removes their group memberships and attached policies in that organization.
 
 ## Enable Keycloak
 
@@ -48,23 +49,25 @@ The `keycloak` Compose profile can run while `CONSOLE_AUTH_MODE=basic` during se
 
 Keycloak user IDs are stored with a `keycloak:` prefix and are intentionally distinct from Authentik IDs. Switching from Authentik requires re-adding users to organizations and re-granting project roles; do not remove the old provider data until the new grants are verified.
 
-## Granular access: environments, classes and branches
+## Organizations, groups and policies
 
-A client is an **organization**; it owns any number of **projects**. Beyond a project-wide role (all environments), an organization admin or platform admin can grant a role on part of a project:
+```
+Platform admin  (Keycloak group infra-platform-admins — everything)
+ └─ Organization  = one client / tenant ("acme")
+     ├─ People:   organization admin | member
+     ├─ Groups:   QA, Backend, Client X …  (people + attached policies)
+     └─ Policies: "Allow/Deny these actions on these organization/project/environment resources"
+```
 
-| Scope | Matches | Example |
-|---|---|---|
-| `env:<name>` | one environment | `env:develop`, `env:pr-12` |
-| `class:<class>` | every environment of a class | `class:preview`, `class:staging` |
-| `branch:<pattern>` | every environment built from a matching branch (`*` wildcard) | `branch:feature/checkout*` |
+**Setting it up** — console → **Access**: create **policies** (Policies card — start a statement from a preset such as Viewer / Operator / Maintainer, then narrow its resources), create **groups** (Groups card), attach policies to groups and add members; or attach a policy straight to one person. The **Members** table shows each person's groups and policies. People are added by **invitation**, which can already put them in groups. Use the **simulator** to see exactly what someone can do on an environment and which statement allows or denies it.
 
-Roles are `viewer`, `operator`, `maintainer`. In an environment a person's effective role is the **highest** of their project-wide role and every matching grant; people only see environments they can access. Variables follow the same rule per scope: a maintainer of one environment may edit that environment's scopes (`pr-7`, `pr-7.api`) but never project-wide ones (`common`, a class). Granting requires the person to already belong to the project's organization; removing someone from the organization removes all their grants. Manage everything in the console's **Access** tab. Platform-admin-only actions are unchanged (resource limits, project registration, destroy, database wipe/reveal).
+Presets (copy them into a policy): **Viewer** = list, view, open, read logs, list variables (masked), describe databases, read resources · **Operator** = Viewer + redeploy, restart, roll back · **Maintainer** = Operator + read/write variables, create databases, use a database from another environment.
 
 ## Permission matrix
 
-Actors: **platform admin** (Keycloak group `infra-platform-admins`) · **organization admin** (manages one client's people and grants; sees no environments by that role alone) · **organization member** (nothing until granted) · and a role of **viewer / operator / maintainer**, which is cumulative and comes from a grant (project-wide or scoped, see above).
+Actors: **platform admin** · **organization admin** (every action in their organization, plus managing its people, groups and policies) · **organization member** (nothing until in a group or given a policy). The columns are the three presets; a policy can mix any actions.
 
-| Action (inside an environment the role covers) | viewer | operator | maintainer | platform admin only |
+| Action (a role is a preset of the actions below; see Policies for the exact action names) | viewer | operator | maintainer | platform admin only |
 |---|:-:|:-:|:-:|:-:|
 | See the environment; open it when its gate is on | ✓ | ✓ | ✓ | |
 | Read logs; see variables (values masked) | ✓ | ✓ | ✓ | |
@@ -76,11 +79,45 @@ Actors: **platform admin** (Keycloak group `infra-platform-admins`) · **organiz
 | Destroy an environment | | | | ✓ |
 | Register projects · GitOps · activity log · Traefik / logs / status | | | | ✓ |
 
-Variable scopes: `common` or a class (`preview`) need a **project-wide** maintainer; one environment's scopes (`pr-7`, `pr-7.api`, `develop`) need a maintainer **covering that environment**. People management: a platform admin creates organizations, assigns projects and appoints organization admins; an organization admin invites people, grants and revokes access **within their own organization** only. There are no deny rules — grants only add.
+Variable scopes: `common` or a class (`preview`) need a maintainer on the **project or organization level**; one environment's scopes (`pr-7`, `pr-7.api`, `develop`) need a maintainer **covering that environment** (any level, or a matching pattern). People management: a platform admin creates organizations, assigns projects and appoints organization admins; an organization admin invites people, grants and revokes access **within their own organization** only. To take something away use a **Deny** in a [policy](#policies-allow-or-deny-individual-actions-aws-style).
+
+## Policies: allow or deny individual actions (AWS-style)
+
+Underneath, **every permission is an action on a resource, denied by default** — the three roles are just ready-made sets of actions, and the console checks each request against the person's actions, not against a role. Use a **policy** (console → **Access → Policies**) when you need finer control: *see* every environment but not *open* it, read logs on `prod` but change nothing, work only on `feature/*` branches, or temporary access until a date.
+
+**Resources** are `organization/project/environment`, with `*` wildcards: `acme/*` (everything of the client), `acme/shop-api/*` (a project), `acme/shop-api/prod`, `acme/shop-web/pr-*`.
+
+**Actions**, by access level (Privileged actions are the dangerous ones; an organization admin can allow them inside their own organization):
+
+| Level | Actions |
+|---|---|
+| List | `environment:List` — the environment appears in lists. **Without it the environment does not exist for that person** (404, not 403) |
+| Read | `environment:View` (details, endpoints, who deployed) · `environment:Open` (pass the access gate, open its URLs) · `logs:Read` · `variables:List` (names, values masked) · `variables:ReadValues` · `database:Describe` · `resources:Read` |
+| Write | `environment:Redeploy` · `environment:Restart` · `environment:Rollback` · `variables:Write` · `database:Create` · `database:Use` |
+| Privileged | `environment:Destroy` · `database:Wipe` · `database:RevealUrl` · `secrets:Reveal` · `resources:Write` |
+
+**Statements** — `Effect` Allow/Deny, `Action` (wildcards like `logs:*`), `Resource`, optional `Condition`: `branch` (patterns like `feature/*`), `class` (`prod`, `staging`, `develop`, `preview`) and `expires` (a date). All conditions must hold; a conditional statement never matches a resource it cannot evaluate (a `branch` condition does not apply to a project-level resource).
+
+**How a request is decided:** an explicit **Deny** always wins; otherwise one matching **Allow** is enough; otherwise it is denied. Everything combines freely: add a policy with a Deny to carve an exception out of a broad Allow.
+
+```json
+{ "Statement": [
+  { "Effect": "Allow", "Action": ["environment:List", "environment:View"], "Resource": ["acme/shop-web/*"] },
+  { "Effect": "Allow", "Action": ["environment:Open", "logs:Read"],        "Resource": ["acme/shop-web/*"],
+    "Condition": { "branch": ["feature/*"], "expires": "2026-12-31" } },
+  { "Effect": "Deny",  "Action": ["*"],                                    "Resource": ["acme/shop-web/prod"] }
+] }
+```
+
+**Editing:** the editor has a **Visual** mode (Effect, actions grouped by level with *select all*, resources with suggestions from your real environments, conditions) and a **JSON** mode; both validate on save (an action that matches nothing, a resource outside the organization is refused with a precise message). A policy belongs to one organization and is **attached to members**; removing a member detaches their policies.
+
+**Policy simulator** (same page): pick person, project, environment and optionally one action → *Allowed / Denied*, the reason (explicit Deny / Allow / nothing allows it) and the exact statement that decided, plus every action the person has on that environment. Use it before and after changing access.
+
+What the console shows follows the actions: no `environment:View` → no details, no `environment:Open` → endpoints are shown but not clickable (and the preview/ops gate refuses), no `logs:Read` → no Logs section, and so on. Platform administrators always have every action.
 
 ## Inviting people
 
-Nobody is added to an organization by looking up their account. An organization admin (or a platform admin) **invites by email** in **Access → Organization membership**: the organization, the email, an optional name and, optionally, the first grant (a role on a project, narrowed to an environment, class or branch pattern). Nothing is applied yet; the invitation is **pending** (14 days) and the admin never learns whether an account for that address exists.
+Nobody is added to an organization by looking up their account. An organization admin (or a platform admin) **invites by email** in **Access → Organization membership**: the organization, the email, an optional name and, optionally, the **groups** to put them in. Nothing is applied yet; the invitation is **pending** (14 days) and the admin never learns whether an account for that address exists.
 
 - **If the person has no account**, and `KEYCLOAK_USER_ADMIN_SECRET` is set (default on a fresh install), the console creates it in Keycloak: with a mail server configured the person is emailed to verify the address and choose a password; without one the admin is shown a **one-time password once** (never logged or stored) to pass on privately, and the address is marked verified because the admin vouches for it. The account gets **no groups and no roles** — never the platform-admin group.
 - **If they already have an account** (or arrive through the client's own identity provider) nothing is created.
@@ -147,7 +184,7 @@ The `authentik` Compose profile can run while `CONSOLE_AUTH_MODE=basic` during s
 1. A platform admin creates or invites a user in the configured identity provider. Users sign in through the console once so their stable provider ID and email are recorded locally.
 2. In the console's **Access** tab, a platform admin creates the organization and links each already-registered project/repository to it. An app can be linked to only one organization.
 3. A platform admin or that organization's admin adds the user by the email shown in the identity provider. The email must match the user's first console sign-in. Org-admin roles can only be assigned by a platform admin.
-4. Assign the user a Viewer, Operator, or Maintainer role separately for each project they need. A user's organization-admin status does not grant access to deployments.
+4. Put the user in a group (or attach a policy) for each project they need. A user's organization-admin status does not grant access to deployments.
 5. Check the user's view by asking them to sign out and back in. They should see only explicitly granted projects and controls permitted by their role.
 
 Treat `console-access.sqlite3` as security-critical state. Back it up with `$STATE_DIR`; losing it removes organization memberships and grants, though Authentik identities can be rediscovered on their next login.
