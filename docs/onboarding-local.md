@@ -1,3 +1,5 @@
+> **Start with [runbook-fresh-install.md](runbook-fresh-install.md).** It covers install, Keycloak login, organizations/granular access and `.infradeploy/infra.yml` deploys. This older walkthrough predates both: where it mentions `manifest.env`, `.deploy/`, `infra db create/use` or `ci-local.sh`, use the runbook instead.
+
 # Onboarding walkthrough: from new project to production (local server)
 
 This walkthrough takes two new projects, `shop-api` (backend) and `shop-web` (frontend), from "never heard of the platform" to running in production. Along the way you'll use every DevOps control: previews, wiring, variables, rollback and merging.

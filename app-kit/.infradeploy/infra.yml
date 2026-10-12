@@ -51,6 +51,8 @@ services:
 #     app:
 #       FEATURE_X: "true"
 #   preview:
-#     auth: true                # basic-auth in front of every service in previews (default true)
+#     auth: true                # login in front of every service in previews (default true)
 #     api:
 #       auth: false             # override for one service: previews of the API stay public
+#   staging:
+#     auth: true                # opt in: staging only opens for people whose role covers it (default: public)

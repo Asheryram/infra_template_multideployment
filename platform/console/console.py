@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
-from access import AccessStore, PROJECT_ROLES, ROLE_ORDER
+from access import AccessStore, ENV_SCOPE, PROJECT_ROLES, ROLE_ORDER
 
 INFRA_ROOT = os.environ["INFRA_ROOT"]
 ENV_FILE = os.environ.get("INFRA_ENV_FILE", "/etc/infra/infra.env")
@@ -144,6 +144,40 @@ def preview_identity(cookie):
         PREVIEW_SESSIONS.clear()
     PREVIEW_SESSIONS[key] = (now + 15, ident)
     return ident
+
+
+def deployment_branch(s, app, env):
+    """Branch a deployment was built from (authoritative: the platform's own record, not a request header)."""
+    d = f"{s['deploy_root']}/{app}/{env}"
+    return read_env(f"{d}/meta.env").get("BRANCH") or read_env(f"{d}/status.env").get("BRANCH", "")
+
+
+def require_env_role(actor, store, s, app, env, minimum="viewer"):
+    """Role needed in ONE environment: a project-wide role or an environment/class/branch-scoped grant."""
+    role = store.role_for_environment(actor["uid"], app, env, deployment_branch(s, app, env), is_platform_admin(actor))
+    if role == "platform_admin":
+        return role
+    if role not in PROJECT_ROLES or ROLE_ORDER[role] < ROLE_ORDER[minimum]:
+        raise PermissionError("project access denied")
+    return role
+
+
+def scope_env(s, app, scope):
+    """The deployed environment a variable scope belongs to (`pr-7`, `pr-7.api`), or None for project-wide scopes."""
+    base = scope.split(".")[0]
+    return base if NAME.match(base) and os.path.isdir(f"{s['deploy_root']}/{app}/{base}") else None
+
+
+def require_scope_role(actor, store, s, app, scope, minimum="maintainer"):
+    """Project-wide scopes (common, a class) need a project-wide role; an environment's own scopes also accept a
+    grant scoped to that environment."""
+    try:
+        return require_project_role(actor, store, app, minimum)
+    except PermissionError:
+        env = scope_env(s, app, scope)
+        if env is None:
+            raise
+        return require_env_role(actor, store, s, app, env, minimum)
 
 
 def mask(key, value):
@@ -746,19 +780,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def preview_gate(self, s, q):
-        """Traefik forwardAuth target for preview environments. 200 = let through, 302 = go sign in, 403 = no access."""
-        app = q.get("app", "")
-        if s["console_auth_mode"] != "keycloak" or not NAME.match(app):
-            return self.send(404, {"error": "not found"})
+    def gate_signin(self, s):
+        """Shared first half of every Traefik forwardAuth gate (previews, environments, ops tools).
+        Returns the signed-in identity, or None after having answered (302 to Keycloak / 401 / 503)."""
         try:
             ident = preview_identity(self.headers.get("Cookie", ""))
         except Exception:
-            return self.send(503, b"Sign-in service unavailable", "text/plain; charset=utf-8")
+            self.send(503, b"Sign-in service unavailable", "text/plain; charset=utf-8")
+            return None
         sso = f"https://sso.{s['domain']}{s['suffix']}"
         if ident is None:
             if self.headers.get("X-Forwarded-Method", "GET").upper() not in ("GET", "HEAD"):
-                return self.send(401, b"Sign in required", "text/plain; charset=utf-8")
+                self.send(401, b"Sign in required", "text/plain; charset=utf-8")
+                return None
             proto = "http" if self.headers.get("X-Forwarded-Proto") == "http" else "https"
             host, uri = self.headers.get("X-Forwarded-Host", ""), self.headers.get("X-Forwarded-Uri", "/")
             hostname = host.split(":")[0].lower()
@@ -769,28 +803,61 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", "0")
             self.end_headers()
-            return
+            return None
         uid = "keycloak:" + ident["uid"]
-        store = access_store(s)
         if uid not in PREVIEW_SEEN:           # register the person so an admin can grant them access by email
-            store.observe_identity(uid, ident["username"], ident["email"], ident["username"] or ident["email"])
+            access_store(s).observe_identity(uid, ident["username"], ident["email"], ident["username"] or ident["email"])
             PREVIEW_SEEN.add(uid)
-        groups = {g.strip().strip("/") for g in re.split(r"[,;]", ident["groups"]) if g.strip()}
-        role = store.role_for_project(uid, app, s["keycloak_platform_admin_group"] in groups)
-        if role == "platform_admin" or role in PROJECT_ROLES:
-            return self.send(200, {"ok": True})
+        ident["key"] = uid
+        ident["is_admin"] = s["keycloak_platform_admin_group"] in {
+            g.strip().strip("/") for g in re.split(r"[,;]", ident["groups"]) if g.strip()}
+        return ident
+
+    def no_access_page(self, s, ident, what):
+        sso = f"https://sso.{s['domain']}{s['suffix']}"
         page = (
             "<!doctype html><html lang='en'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'><title>No access</title>"
             "<body style='font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:1rem;color:#17181c'>"
-            f"<h1 style='font-size:1.4rem'>You don't have access to this preview</h1>"
-            f"<p>You are signed in as <b>{html.escape(ident['email'])}</b>, but you have no role on "
-            f"<b>{html.escape(app)}</b>.</p>"
-            "<p>Ask a project maintainer or organization administrator to grant you the <b>viewer</b> role "
-            "(your account is already registered under this email).</p>"
+            f"<h1 style='font-size:1.4rem'>You don't have access to {html.escape(what[0])}</h1>"
+            f"<p>You are signed in as <b>{html.escape(ident['email'])}</b>. {what[1]}</p>"
             f"<p><a href='{html.escape(sso)}/oauth2/sign_out'>Sign out</a></p></body></html>"
         )
         return self.send(403, page.encode(), "text/html; charset=utf-8")
+
+    def preview_gate(self, s, q):
+        """Traefik forwardAuth target for environments with auth on. 200 = let through, 302 = go sign in, 403 = no access.
+        Who may pass: a platform admin, or anyone whose role (project-wide, or an environment/class/branch grant)
+        covers that environment."""
+        app = q.get("app", "")
+        if s["console_auth_mode"] != "keycloak" or not NAME.match(app):
+            return self.send(404, {"error": "not found"})
+        ident = self.gate_signin(s)
+        if ident is None:
+            return
+        env = q.get("env", "")
+        env = env if NAME.match(env) else ""                       # no env (old labels): project-wide roles only
+        role = access_store(s).role_for_environment(ident["key"], app, env, deployment_branch(s, app, env) if env else "",
+                                                    ident["is_admin"])
+        if role == "platform_admin" or role in PROJECT_ROLES:
+            return self.send(200, {"ok": True})
+        return self.no_access_page(s, ident, (
+            "this environment",
+            f"You have no role on <b>{html.escape(app)}</b>{(' that covers <b>' + html.escape(env) + '</b>') if env else ''}. "
+            "Ask a project maintainer or organization administrator to grant you access "
+            "(your account is already registered under this email)."))
+
+    def platform_gate(self, s):
+        """Traefik forwardAuth target for the platform's own tools (Traefik dashboard, container logs):
+        signed in with Keycloak AND a platform administrator."""
+        if s["console_auth_mode"] != "keycloak":
+            return self.send(404, {"error": "not found"})
+        ident = self.gate_signin(s)
+        if ident is None:
+            return
+        if ident["is_admin"]:
+            return self.send(200, {"ok": True})
+        return self.no_access_page(s, ident, ("this tool", "It is limited to platform administrators."))
 
     def audit(self, s, action, detail):
         audit_line(s, self.user(), action, detail)
@@ -844,6 +911,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, page, "text/html; charset=utf-8")
             if u.path == "/auth/preview":
                 return self.preview_gate(s, q)
+            if u.path == "/auth/platform":
+                return self.platform_gate(s)
             actor = self.actor(s)
             if actor is None:
                 return self.send(401, {"error": "authentication required"})
@@ -854,14 +923,15 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/state":
                 rows = deployments(s)
                 roles = store.project_roles(actor["uid"], is_platform_admin(actor))
-                visible = set(store.visible_apps(actor["uid"], is_platform_admin(actor)))
+                for row in rows:           # effective role per ENVIRONMENT: project-wide role or a scoped grant
+                    row["ROLE"] = store.role_for_environment(actor["uid"], row["APP"], row["ENV_NAME"],
+                                                             row.get("BRANCH", ""), is_platform_admin(actor)) or ""
                 if not is_platform_admin(actor):
-                    rows = [row for row in rows if row["APP"] in visible]
-                for row in rows:
-                    row["ROLE"] = roles.get(row["APP"], "platform_admin" if is_platform_admin(actor) else "")
+                    rows = [row for row in rows if row["ROLE"]]
                 access = store.list_access(actor["uid"], is_platform_admin(actor))
                 access["platform_admin"] = is_platform_admin(actor)
                 access["project_roles"] = roles
+                access["environment_grants_mine"] = [] if is_platform_admin(actor) else store.environment_grants_for(actor["uid"])
                 access["auth_mode"] = s["console_auth_mode"]
                 return self.send(200, {"settings": s, "user": actor["display_name"],
                                        "access": access, "deployments": rows})
@@ -880,7 +950,7 @@ class Handler(BaseHTTPRequestHandler):
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                role = require_project_role(actor, store, app)
+                role = require_env_role(actor, store, s, app, env)
                 d = f"{s['deploy_root']}/{app}/{env}"
                 runtime = {}
                 for f in sorted(glob.glob(f"{d}/runtime/*.env")):
@@ -897,21 +967,34 @@ class Handler(BaseHTTPRequestHandler):
                 app = q.get("app", "")
                 if not NAME.match(app):
                     return self.send(400, {"error": "bad app"})
-                role = require_project_role(actor, store, app, "maintainer")
-                return self.send(200, {"files": secrets(s, app),
+                files = secrets(s, app)
+                try:
+                    role = require_project_role(actor, store, app, "maintainer")
+                except PermissionError:
+                    # scoped maintainers only see (and may edit) the variable files of their own environments
+                    files = {sc: rows for sc, rows in files.items()
+                             if scope_env(s, app, sc) and store.role_for_environment(
+                                 actor["uid"], app, scope_env(s, app, sc),
+                                 deployment_branch(s, app, scope_env(s, app, sc))) == "maintainer"}
+                    if not any(scope_env(s, app, d.split("/")[-1]) and store.role_for_environment(
+                            actor["uid"], app, d.split("/")[-1], deployment_branch(s, app, d.split("/")[-1])) == "maintainer"
+                            for d in glob.glob(f"{s['deploy_root']}/{app}/*")):
+                        raise
+                    role = "maintainer"
+                return self.send(200, {"files": files,
                                        "can_manage": is_platform_admin(actor) or role == "maintainer"})
             if u.path == "/api/logs":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                require_project_role(actor, store, app)
+                require_env_role(actor, store, s, app, env)
                 ok, out = infra("tail", app, env, str(min(int(q.get("n", 200)), 2000)), timeout=60)
                 return self.send(200, {"ok": ok, "output": out})
             if u.path == "/api/database":
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                role = require_project_role(actor, store, app)
+                role = require_env_role(actor, store, s, app, env)
                 ok, out = infra("db", "info", app, env, "--json", timeout=30)
                 try:
                     info = json.loads(out.strip().splitlines()[-1])
@@ -940,7 +1023,7 @@ class Handler(BaseHTTPRequestHandler):
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                role = require_project_role(actor, store, app)
+                role = require_env_role(actor, store, s, app, env)
                 variables = env_variables(s, app, env)
                 editable = is_platform_admin(actor) or role == "maintainer"
                 for rows in variables.values():
@@ -953,7 +1036,7 @@ class Handler(BaseHTTPRequestHandler):
                 app, env = q.get("app", ""), q.get("env", "")
                 if not (NAME.match(app) and NAME.match(env)):
                     return self.send(400, {"error": "bad app/env"})
-                require_project_role(actor, store, app)
+                require_env_role(actor, store, s, app, env)
                 try:
                     policy = resource_policy(s, app, env)
                     policy["can_manage"] = is_platform_admin(actor)
@@ -1046,6 +1129,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(403, {"error": "organization administrator required"})
                     store.grant_project(app, uid, role)
                     self.audit(s, "project:grant", f"{app} uid={uid} role={role}")
+                elif operation == "environment-grant":
+                    app, uid, role, scope = body.get("app", ""), body.get("uid", ""), body.get("role", ""), body.get("scope", "")
+                    organization = store.organization_for_project(app)
+                    if not organization:
+                        return self.send(400, {"error": "project is not assigned to an organization"})
+                    if not store.can_admin_organization(actor["uid"], organization, is_platform_admin(actor)):
+                        return self.send(403, {"error": "organization administrator required"})
+                    store.grant_environment(app, uid, scope, role)
+                    self.audit(s, "environment:grant", f"{app} {scope} uid={uid} role={role}")
                 else:
                     return self.send(400, {"error": "unknown access operation"})
                 return self.send(200, {"ok": True})
@@ -1135,8 +1227,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": ok, "output": out, "secret": secret, "webhook_url": webhook_url(s)})
 
             if u == "/api/secrets/bulk":
-                require_project_role(actor, store, app, "maintainer")
                 scope = body.get("scope", "common")
+                require_scope_role(actor, store, s, app, scope, "maintainer")
                 pairs = body.get("pairs", [])
                 if not SCOPE.match(scope):
                     return self.send(400, {"error": "bad scope"})
@@ -1155,8 +1247,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True, "saved": saved})
 
             if u == "/api/secret":
-                require_project_role(actor, store, app, "maintainer")
                 scope, key, value = body.get("scope", ""), body.get("key", ""), body.get("value")
+                require_scope_role(actor, store, s, app, scope, "maintainer")
                 if not SCOPE.match(scope) or not KEY.match(key):
                     return self.send(400, {"error": "bad scope or key"})
                 if value is not None and key in PLATFORM_MANAGED_KEYS:
@@ -1221,7 +1313,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not NAME.match(env):
                     return self.send(400, {"error": "bad env"})
                 if action in ("redeploy", "rollback", "restart"):
-                    require_project_role(actor, store, app, "operator")
+                    require_env_role(actor, store, s, app, env, "operator")
                     args = [action, app, env]
                 elif action == "destroy":
                     if not is_platform_admin(actor):
@@ -1245,7 +1337,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(400, {"error": "bad database id"})
                 db_args = ["--db", db_id] if db_id else []
                 if op == "create":
-                    require_project_role(actor, store, app, "maintainer")
+                    require_env_role(actor, store, s, app, env, "maintainer")
                     args = ["db", "create", app, env, *db_args]
                 elif op == "wipe":
                     if not is_platform_admin(actor):
@@ -1254,7 +1346,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(400, {"error": f"type {app}/{env} to confirm"})
                     args = ["db", "wipe", app, env, *db_args] + (["--i-really-mean-prod"] if env == "prod" else [])
                 elif op == "use":
-                    require_project_role(actor, store, app, "maintainer")
+                    require_env_role(actor, store, s, app, env, "maintainer")
                     src, key, scope = body.get("from", f"{app}/{env}"), body.get("key", "DATABASE_URL"), body.get("scope", env)
                     if not (re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", src) and KEY.match(key) and SCOPE.match(scope)):
                         return self.send(400, {"error": "bad source, key or scope"})

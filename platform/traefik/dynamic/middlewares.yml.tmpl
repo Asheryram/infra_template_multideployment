@@ -41,6 +41,13 @@ http:
         users: ["${DASHBOARD_AUTH_USERS}"]
         headerField: X-Infra-User          # the console records who did what
 
+    # Ops tools behind Keycloak (OPS_AUTH_MODE=keycloak): only platform administrators pass. The console decides
+    # (it asks the previews oauth2-proxy who is signed in); signed-out browsers are sent to Keycloak and back.
+    ops-sso:
+      forwardAuth:
+        address: http://console:8000/auth/platform
+        trustForwardHeader: true
+
     authentik-auth:
       forwardAuth:
         address: http://authentik-server:9000/outpost.goauthentik.io/auth/traefik

@@ -22,6 +22,8 @@ if [[ ! -f /etc/infra/platform.secrets.env ]]; then
       -e "s/@KEYCLOAK_ADMIN_PASSWORD@/$(openssl rand -hex 32)/g" \
       -e "s/@OAUTH2_PROXY_CLIENT_SECRET@/$(openssl rand -hex 32)/g" \
       -e "s|@OAUTH2_PROXY_COOKIE_SECRET@|$(openssl rand -base64 24 | tr -d '\n')|g" \
+      -e "s/@OAUTH2_PREVIEWS_CLIENT_SECRET@/$(openssl rand -hex 32)/g" \
+      -e "s|@OAUTH2_PREVIEWS_COOKIE_SECRET@|$(openssl rand -base64 24 | tr -d '\n')|g" \
       "$INFRA_ROOT/inventory/platform.secrets.env.example" \
     > /etc/infra/platform.secrets.env
   echo "created /etc/infra/platform.secrets.env with a generated POSTGRES_PASSWORD"
@@ -49,6 +51,12 @@ if ! grep -q '^OAUTH2_PROXY_CLIENT_SECRET=' /etc/infra/platform.secrets.env; the
 fi
 if ! grep -q '^OAUTH2_PROXY_COOKIE_SECRET=' /etc/infra/platform.secrets.env; then
   printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(openssl rand -base64 24 | tr -d '\n')" >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^OAUTH2_PREVIEWS_CLIENT_SECRET=' /etc/infra/platform.secrets.env; then
+  printf 'OAUTH2_PREVIEWS_CLIENT_SECRET=%s\n' "$(openssl rand -hex 32)" >> /etc/infra/platform.secrets.env
+fi
+if ! grep -q '^OAUTH2_PREVIEWS_COOKIE_SECRET=' /etc/infra/platform.secrets.env; then
+  printf 'OAUTH2_PREVIEWS_COOKIE_SECRET=%s\n' "$(openssl rand -base64 24 | tr -d '\n')" >> /etc/infra/platform.secrets.env
 fi
 chown root:"$G" /etc/infra/platform.secrets.env
 chmod 640 /etc/infra/platform.secrets.env

@@ -5,5 +5,5 @@ http:
       rule: "Host(`traefik.${DOMAIN}`)"
       entryPoints: [websecure]
       service: api@internal
-      middlewares: [ops-auth, secure-headers]
+      middlewares: [${OPS_AUTH_NAME}, secure-headers]
       tls: {}

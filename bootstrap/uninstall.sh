@@ -42,6 +42,11 @@ if [[ -n ${INFRA_ROOT:-} && -f $INFRA_ROOT/platform/docker-compose.yml ]]; then
   TRAEFIK_STATE_DIR="$STATE_DIR/traefik" POSTGRES_PASSWORD=x COMPOSE_PROFILES="${PLATFORM_PROFILES:-}" \
     docker compose -p infra-platform "${files[@]}" down --volumes --remove-orphans || true
 fi
+# `compose down` can't even parse the file unless every required secret is set (Authentik/Keycloak/...), which is
+# not the case on a host that never configured those profiles. So also remove by our compose-PROJECT label: this only
+# matches what `infra platform up` created (project infra-platform), never anything else on the host.
+docker ps -aq --filter label=com.docker.compose.project=infra-platform | xargs -r docker rm -f >/dev/null
+docker volume ls -q --filter label=com.docker.compose.project=infra-platform | xargs -r docker volume rm >/dev/null || true
 for n in infra_proxy infra_data infra_socket infra_metrics; do
   if [[ $(docker network inspect -f '{{index .Labels "com.docker.compose.project"}}' "$n" 2>/dev/null) == infra-platform ]]; then
     docker network rm "$n" >/dev/null || true
@@ -79,5 +84,13 @@ rm -f /etc/cron.d/infra /etc/logrotate.d/infra /etc/tmpfiles.d/infra.conf /usr/l
 rm -rf "$DEPLOY_ROOT" "$STATE_DIR" /var/log/infra /run/lock/infra /etc/infra
 if id "$DEPLOY_USER" &>/dev/null; then userdel -r "$DEPLOY_USER" 2>/dev/null || userdel "$DEPLOY_USER"; fi
 
+# Never delete backups silently — but a non-empty backup dir makes the next install's preflight refuse to start, so
+# move it aside (the old /etc/infra tarball in it holds the previous secrets: delete it once you're sure).
+KEPT=""
+BK=${BACKUP_DIR:-/srv/backups}
+if [[ -d $BK && -n $(ls -A "$BK" 2>/dev/null) ]]; then
+  KEPT="$BK.uninstalled-$(date +%Y%m%d-%H%M%S)"; mv "$BK" "$KEPT"
+fi
+
 echo
-echo "Uninstalled. Kept: ${BACKUP_DIR:-/srv/backups} (backups), apt packages, Docker itself."
+echo "Uninstalled. Kept: ${KEPT:-no backups} (old backups — contains the previous /etc/infra with its secrets; delete by hand when sure), apt packages, Docker itself."

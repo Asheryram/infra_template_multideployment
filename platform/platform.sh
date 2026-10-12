@@ -101,24 +101,32 @@ else
   KEYCLOAK_VPN_CIDRS_YAML='          - "127.0.0.1/32"'
   CONSOLE_AUTH_MIDDLEWARE=ops-auth@file,secure-headers@file
 fi
-# Preview access: basic (shared password, default) or keycloak (SSO + project roles, see docs/access-control.md)
+# Environment gates (previews by default; any class via `auth:` in infra.yml): basic (shared password, default) or
+# keycloak (SSO + project roles). Ops tools (Traefik dashboard, container logs): basic or keycloak (platform admins).
+# Both keycloak modes use the same extra proxy (profile keycloak-previews, sso.<domain>).
 PREVIEW_AUTH_MODE=${PREVIEW_AUTH_MODE:-basic}
+OPS_AUTH_MODE=${OPS_AUTH_MODE:-basic}
+for _m in "$PREVIEW_AUTH_MODE" "$OPS_AUTH_MODE"; do
+  [[ $_m == basic || $_m == keycloak ]] || die "PREVIEW_AUTH_MODE and OPS_AUTH_MODE must be basic or keycloak"
+done
 HAS_PREVIEWS_PROFILE=false
 [[ ,$COMPOSE_PROFILES, == *,keycloak-previews,* ]] && HAS_PREVIEWS_PROFILE=true
-case $PREVIEW_AUTH_MODE in
-  basic)
-    $HAS_PREVIEWS_PROFILE && die "PLATFORM_PROFILES includes keycloak-previews but PREVIEW_AUTH_MODE is not keycloak"
-    ;;
-  keycloak)
-    [[ $HAS_KEYCLOAK_PROFILE == true && $HAS_KEYCLOAK_AUTH_PROFILE == true && $CONSOLE_AUTH_MODE == keycloak && $HAS_PREVIEWS_PROFILE == true ]] \
-      || die "PREVIEW_AUTH_MODE=keycloak requires CONSOLE_AUTH_MODE=keycloak and PLATFORM_PROFILES to include keycloak,keycloak-auth,keycloak-previews"
-    [[ -n ${OAUTH2_PREVIEWS_CLIENT_SECRET:-} ]] || die "set OAUTH2_PREVIEWS_CLIENT_SECRET in /etc/infra/platform.secrets.env"
-    [[ ${OAUTH2_PREVIEWS_COOKIE_SECRET:-} =~ ^[A-Za-z0-9+/]{32}$ ]] \
-      || die "set OAUTH2_PREVIEWS_COOKIE_SECRET to a 32-character base64 value (openssl rand -base64 24)"
-    ;;
-  *) die "PREVIEW_AUTH_MODE must be basic or keycloak" ;;
-esac
-export PREVIEW_AUTH_MODE
+if [[ $PREVIEW_AUTH_MODE == keycloak || $OPS_AUTH_MODE == keycloak ]]; then
+  [[ $HAS_KEYCLOAK_PROFILE == true && $HAS_KEYCLOAK_AUTH_PROFILE == true && $CONSOLE_AUTH_MODE == keycloak && $HAS_PREVIEWS_PROFILE == true ]] \
+    || die "PREVIEW_AUTH_MODE/OPS_AUTH_MODE=keycloak require CONSOLE_AUTH_MODE=keycloak and PLATFORM_PROFILES to include keycloak,keycloak-auth,keycloak-previews"
+  [[ -n ${OAUTH2_PREVIEWS_CLIENT_SECRET:-} ]] || die "set OAUTH2_PREVIEWS_CLIENT_SECRET in /etc/infra/platform.secrets.env"
+  [[ ${OAUTH2_PREVIEWS_COOKIE_SECRET:-} =~ ^[A-Za-z0-9+/]{32}$ ]] \
+    || die "set OAUTH2_PREVIEWS_COOKIE_SECRET to a 32-character base64 value (openssl rand -base64 24)"
+elif $HAS_PREVIEWS_PROFILE; then
+  die "PLATFORM_PROFILES includes keycloak-previews but neither PREVIEW_AUTH_MODE nor OPS_AUTH_MODE is keycloak"
+fi
+OPS_AUTH_NAME=ops-auth; [[ $OPS_AUTH_MODE == keycloak ]] && OPS_AUTH_NAME=ops-sso
+OPS_AUTH_MIDDLEWARE="$OPS_AUTH_NAME@file"
+# Uptime Kuma / Grafana keep their own logins in basic mode; with Keycloak they sit behind the platform-admin gate too
+# (otherwise a fresh Kuma lets whoever opens it first create its admin account).
+STATUS_MIDDLEWARES="secure-headers@file"
+[[ $OPS_AUTH_MODE == keycloak ]] && STATUS_MIDDLEWARES="ops-sso@file,secure-headers@file"
+export PREVIEW_AUTH_MODE OPS_AUTH_MODE OPS_AUTH_NAME OPS_AUTH_MIDDLEWARE STATUS_MIDDLEWARES
 export CONSOLE_AUTH_MODE CONSOLE_AUTH_MIDDLEWARE CONSOLE_ROUTER_SERVICE CONSOLE_LOGOUT_MIDDLEWARE AUTHENTIK_VPN_CIDRS_YAML KEYCLOAK_VPN_CIDRS_YAML
 # The console container runs as the deploy user so its files match the CLI's ownership.
 DEPLOY_UID=$(id -u "$DEPLOY_USER"); DEPLOY_GID=$(id -g "$DEPLOY_USER")
@@ -219,8 +227,17 @@ render_file() { # template → destination (atomic, so Traefik's watcher never s
 
 render() {
   mkdir -p "$T/dynamic" "$T/certs"
-  resolve_auth DASHBOARD_AUTH_USERS DASHBOARD_AUTH_PLAIN
-  resolve_auth PREVIEW_AUTH_USERS PREVIEW_AUTH_PLAIN
+  # A surface that moved to Keycloak needs no basic credentials: render an unusable entry instead of requiring them.
+  if [[ $OPS_AUTH_MODE == keycloak && $CONSOLE_AUTH_MODE == keycloak && -z ${DASHBOARD_AUTH_USERS:-}${DASHBOARD_AUTH_PLAIN:-} ]]; then
+    export DASHBOARD_AUTH_USERS='locked:!'
+  else
+    resolve_auth DASHBOARD_AUTH_USERS DASHBOARD_AUTH_PLAIN
+  fi
+  if [[ $PREVIEW_AUTH_MODE == keycloak && -z ${PREVIEW_AUTH_USERS:-}${PREVIEW_AUTH_PLAIN:-} ]]; then
+    export PREVIEW_AUTH_USERS='locked:!'
+  else
+    resolve_auth PREVIEW_AUTH_USERS PREVIEW_AUTH_PLAIN
+  fi
   export ACME_CA_SERVER="${ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}"
   local dashboard=tls
   case $TLS_MODE in
@@ -243,7 +260,7 @@ render() {
 
   if [[ $HAS_KEYCLOAK_PROFILE == true ]]; then ensure_keycloak_cert; fi
 
-  VARS='${DOMAIN} ${ACME_EMAIL} ${DNS_PROVIDER} ${ACME_CA_SERVER} ${HSTS_SECONDS} ${DASHBOARD_AUTH_USERS} ${PREVIEW_AUTH_USERS} ${AUTHENTIK_VPN_CIDRS_YAML} ${KEYCLOAK_VPN_CIDRS_YAML}'
+  VARS='${DOMAIN} ${ACME_EMAIL} ${DNS_PROVIDER} ${ACME_CA_SERVER} ${HSTS_SECONDS} ${DASHBOARD_AUTH_USERS} ${PREVIEW_AUTH_USERS} ${OPS_AUTH_NAME} ${AUTHENTIK_VPN_CIDRS_YAML} ${KEYCLOAK_VPN_CIDRS_YAML}'
   render_file "$P/traefik/static.$TLS_MODE.yml.tmpl" "$T/traefik.yml"
   local f
   for f in "$P"/traefik/dynamic/*.yml.tmpl; do
@@ -317,18 +334,22 @@ SQL
     bash "$INFRA_ROOT/scripts/networks.sh" reconnect
     # Start the GitOps watcher now that the platform (webhook endpoint) is up.
     if systemctl is-enabled infra-gitops.service >/dev/null 2>&1; then
-      systemctl restart infra-gitops.service
-      log "GitOps watcher started (infra-gitops.service) — polls GitHub every 30s for all registered projects"
+      # A system unit: restarting it needs root. The platform itself is already up, so never fail here.
+      if systemctl restart infra-gitops.service 2>/dev/null; then
+        log "GitOps watcher started (infra-gitops.service) — polls GitHub every 30s for all registered projects"
+      else
+        warn "could not restart the GitOps watcher as $(id -un). As root run:  systemctl restart infra-gitops"
+      fi
     fi
     scheme=https
     if [[ $TLS_MODE == external ]]; then
       log "Traefik listens on http://$TRAEFIK_BIND:$TRAEFIK_HTTPS_PORT — point your existing proxy's *.$DOMAIN at it"
     fi
     log "platform is up:"
-    log "  $scheme://console.$DOMAIN$URL_PORT_SUFFIX   (DevOps console, ops-auth)"
+    log "  $scheme://console.$DOMAIN$URL_PORT_SUFFIX   (DevOps console, $CONSOLE_AUTH_MODE login)"
     log "  $scheme://hooks.$DOMAIN$URL_PORT_SUFFIX/webhook   (signed deploy webhooks for registered projects)"
-    log "  $scheme://traefik.$DOMAIN$URL_PORT_SUFFIX   (dashboard, ops-auth)"
-    log "  $scheme://logs.$DOMAIN$URL_PORT_SUFFIX      (dozzle, ops-auth — shows only infra-managed containers)"
+    log "  $scheme://traefik.$DOMAIN$URL_PORT_SUFFIX   (dashboard, $OPS_AUTH_MODE login)"
+    log "  $scheme://logs.$DOMAIN$URL_PORT_SUFFIX      (dozzle, $OPS_AUTH_MODE login — shows only infra-managed containers)"
     log "  $scheme://status.$DOMAIN$URL_PORT_SUFFIX    (uptime-kuma)"
     if [[ ,$COMPOSE_PROFILES, == *,metrics,* ]]; then log "  $scheme://grafana.$DOMAIN$URL_PORT_SUFFIX"; fi
     ;;

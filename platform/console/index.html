@@ -400,7 +400,7 @@ async function load() {
   $('#sidebarUser').textContent = STATE.user || 'unknown';
   const platformAdmin = STATE.access?.platform_admin;
   const orgAdmin = STATE.access?.organizations?.some(org => org.role === 'org_admin');
-  const canManageVars = platformAdmin || Object.values(STATE.access?.project_roles || {}).includes('maintainer');
+  const canManageVars = platformAdmin || STATE.deployments.some(d => d.ROLE === 'maintainer');
   document.querySelector('#sidebar nav button[data-tab=projects]').hidden = !platformAdmin;
   document.querySelector('#sidebar nav button[data-tab=activity]').hidden = !platformAdmin;
   document.querySelector('#sidebar nav button[data-tab=access]').hidden =
@@ -917,7 +917,7 @@ async function act(btn, app, env, action) {
 // ── Variables tab ─────────────────────────────────────────────────────────────
 function renderVars() {
   const apps = Object.keys(byApp()).filter(app => STATE.access?.platform_admin
-    || STATE.access?.project_roles?.[app] === 'maintainer').sort();
+    || byApp()[app].some(d => d.ROLE === 'maintainer')).sort();
   const el = $('#tab-vars');
   if (!el.dataset.ready) {
     el.innerHTML = `<div class="card">
@@ -1099,6 +1099,23 @@ async function renderAccess() {
             '<tr><td colspan="4" class="empty">No project grants assigned.</td></tr>'}</table></div>
       </div>
     </div>
+    <div class="card">
+      <div class="card-header"><h2>Environment &amp; branch access</h2></div>
+      <div style="padding:16px 18px">
+        <p class="muted">Narrower than project access: give someone a role on <b>one environment</b> (<span class="mono">develop</span>, <span class="mono">pr-12</span>), on <b>every environment of a class</b> (all previews), or on <b>every environment built from a branch</b> (<span class="mono">feature/checkout*</span>). Their effective role in an environment is the highest of their project role and any matching grant here, and they only see the environments they can access. The person must already be a member of the project's organization.</p>
+        <div class="row"><select id="egProject" aria-label="Project">${projectOptions}</select><select id="egUser" aria-label="User">${identityOptions}</select></div>
+        <div class="row"><select id="egKind" aria-label="Scope type"><option value="env">One environment</option><option value="class">All of a class</option><option value="branch">Branch pattern</option></select>
+          <input id="egValue" aria-label="Scope value" list="egSuggest" placeholder="develop" class="mono" style="min-width:300px">
+          <datalist id="egSuggest"></datalist>
+          <select id="egRole"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="maintainer">Maintainer</option></select>
+          <button class="btn primary" id="egSave" ${!projects.length || !identities.length ? 'disabled' : ''}>Grant</button></div>
+        <div class="scroll"><table><tr><th>Organization</th><th>Project</th><th>User</th><th>Applies to</th><th>Role</th><th></th></tr>
+          ${(access.environment_grants || []).map(g => `<tr><td>${esc(g.organization)}</td><td>${esc(g.app)}</td><td>${esc(g.email)}</td>
+            <td class="mono">${esc(g.scope.replace(/^env:/, 'environment ').replace(/^class:/, 'all ').replace(/^branch:/, 'branch '))}</td><td>${esc(g.role)}</td>
+            <td style="text-align:right"><button class="btn danger" data-egrevoke="${esc(g.app)}|${esc(g.uid)}|${esc(g.scope)}">Remove</button></td></tr>`).join('') ||
+            '<tr><td colspan="6" class="empty">No environment-level grants.</td></tr>'}</table></div>
+      </div>
+    </div>
     ${platformAdmin ? `<div class="card"><div class="card-header"><h2>Known ${identityProvider} identities</h2><span class="card-meta">users who have signed in at least once</span></div>
       <div class="scroll"><table><tr><th>Name</th><th>Email</th><th>Identity ID</th><th>Last seen</th></tr>
         ${identities.map(identity => `<tr><td>${esc(identity.display_name)}</td><td>${esc(identity.email)}</td><td class="mono">${esc(identity.uid)}</td><td>${ago(identity.last_seen)}</td></tr>`).join('') ||
@@ -1121,6 +1138,30 @@ async function renderAccess() {
   $('#grantSave', el)?.addEventListener('click', () =>
     postAccess({ op: 'project-grant', app: $('#grantProject', el).value,
       uid: $('#grantUser', el).value, role: $('#grantRole', el).value }));
+
+  // environment / class / branch grants
+  const egHints = () => {
+    const app = $('#egProject', el)?.value, kind = $('#egKind', el)?.value;
+    const envs = STATE.deployments.filter(d => d.APP === app);
+    const options = kind === 'env' ? envs.map(d => d.ENV_NAME)
+      : kind === 'class' ? ['prod', 'staging', 'develop', 'preview']
+      : [...new Set(envs.map(d => d.BRANCH).filter(Boolean))];
+    $('#egSuggest', el).innerHTML = options.map(o => `<option value="${esc(o)}">`).join('');
+    $('#egValue', el).placeholder = kind === 'env' ? 'develop or pr-12' : kind === 'class' ? 'preview' : 'feature/checkout* (* = anything)';
+  };
+  $('#egProject', el)?.addEventListener('change', egHints);
+  $('#egKind', el)?.addEventListener('change', egHints);
+  egHints();
+  $('#egSave', el)?.addEventListener('click', () => {
+    const value = $('#egValue', el).value.trim();
+    if (!value) return toast('Enter the environment, class or branch pattern');
+    postAccess({ op: 'environment-grant', app: $('#egProject', el).value, uid: $('#egUser', el).value,
+      scope: `${$('#egKind', el).value}:${value}`, role: $('#egRole', el).value });
+  });
+  el.querySelectorAll('[data-egrevoke]').forEach(btn => btn.onclick = () => {
+    const [app, uid, scope] = btn.dataset.egrevoke.split('|');
+    postAccess({ op: 'environment-grant', app, uid, scope, role: 'none' });
+  });
 }
 
 // ── Projects tab ──────────────────────────────────────────────────────────────

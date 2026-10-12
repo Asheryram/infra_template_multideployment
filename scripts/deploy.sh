@@ -170,18 +170,19 @@ for svc in "${SERVICES[@]}"; do
 
   # middlewares
   mw="secure-headers@file,compress@file"
-  if [[ $PREVIEW == true ]]; then
-    mw+=",preview-noindex@file"
-    auth_var="ENV_PREVIEW_AUTH"
-    auth=${!auth_var:-true}
-    svc_auth_var="ENV_PREVIEW_${S}_AUTH"
-    if [[ -n ${!svc_auth_var:-} ]]; then auth=${!svc_auth_var}; fi
-    if [[ $PREVIEW_AUTH_ENABLED == true && $auth == true ]]; then
-      if [[ ${PREVIEW_AUTH_MODE:-basic} == keycloak ]]; then
-        mw+=",${STACK}-${svc}-sso@docker"; SVC_SSO[$svc]=1      # Keycloak login + project-role check (console /auth/preview)
-      else
-        mw+=",preview-auth@file"                                 # shared basic-auth password
-      fi
+  # Access gate: previews default to ON, every other class to OFF. `environments.<class>.auth` and
+  # `environments.<class>.<service>.auth` in infra.yml override it (so develop/staging/prod can opt in too).
+  auth=false
+  if [[ $PREVIEW == true ]]; then mw+=",preview-noindex@file"; auth=true; fi
+  auth_var="ENV_${CLASS_VAR}_AUTH"
+  if [[ -n ${!auth_var:-} ]]; then auth=${!auth_var}; fi
+  svc_auth_var="ENV_${CLASS_VAR}_${S}_AUTH"
+  if [[ -n ${!svc_auth_var:-} ]]; then auth=${!svc_auth_var}; fi
+  if [[ $PREVIEW_AUTH_ENABLED == true && $auth == true ]]; then
+    if [[ ${PREVIEW_AUTH_MODE:-basic} == keycloak ]]; then
+      mw+=",${STACK}-${svc}-sso@docker"; SVC_SSO[$svc]=1      # Keycloak login + role check (console /auth/preview)
+    else
+      mw+=",preview-auth@file"                                 # shared basic-auth password
     fi
   fi
   extra_var="${S}_EXTRA_MIDDLEWARES"
@@ -337,7 +338,7 @@ for svc in "${SERVICES[@]}"; do
   out="$STACK_DIR/generated/$svc.yml"
   sso_labels=""
   if [[ -n ${SVC_SSO[$svc]:-} ]]; then
-    sso_labels="      - traefik.http.middlewares.${STACK}-${svc}-sso.forwardauth.address=http://console:8000/auth/preview?app=${APP}
+    sso_labels="      - traefik.http.middlewares.${STACK}-${svc}-sso.forwardauth.address=http://console:8000/auth/preview?app=${APP}&env=${ENV_NAME}
       - traefik.http.middlewares.${STACK}-${svc}-sso.forwardauth.trustForwardHeader=true"
   fi
   cat > "$out" << COMPOSEYML

@@ -48,18 +48,34 @@ The `keycloak` Compose profile can run while `CONSOLE_AUTH_MODE=basic` during se
 
 Keycloak user IDs are stored with a `keycloak:` prefix and are intentionally distinct from Authentik IDs. Switching from Authentik requires re-adding users to organizations and re-granting project roles; do not remove the old provider data until the new grants are verified.
 
+## Granular access: environments, classes and branches
+
+A client is an **organization**; it owns any number of **projects**. Beyond a project-wide role (all environments), an organization admin or platform admin can grant a role on part of a project:
+
+| Scope | Matches | Example |
+|---|---|---|
+| `env:<name>` | one environment | `env:develop`, `env:pr-12` |
+| `class:<class>` | every environment of a class | `class:preview`, `class:staging` |
+| `branch:<pattern>` | every environment built from a matching branch (`*` wildcard) | `branch:feature/checkout*` |
+
+Roles are `viewer`, `operator`, `maintainer`. In an environment a person's effective role is the **highest** of their project-wide role and every matching grant; people only see environments they can access. Variables follow the same rule per scope: a maintainer of one environment may edit that environment's scopes (`pr-7`, `pr-7.api`) but never project-wide ones (`common`, a class). Granting requires the person to already belong to the project's organization; removing someone from the organization removes all their grants. Manage everything in the console's **Access** tab. Platform-admin-only actions are unchanged (resource limits, project registration, destroy, database wipe/reveal).
+
 ## Preview environments with Keycloak (optional)
 
 By default every preview sits behind one shared basic-auth password (`PREVIEW_AUTH_PLAIN`). With `PREVIEW_AUTH_MODE=keycloak`, previews use the same Keycloak identities and project roles as the console instead.
 
-**Who can open a preview:** someone who is signed in to Keycloak **and** either is a platform administrator or has a project role (viewer, operator or maintainer) on that app. Roles are per app and never inherited: a viewer of `shop-web` cannot open `shop-api` previews. Signed in but without a role shows a "no access" page; the person is registered under their email, so an organization admin can grant the role from the console's **Access** tab. Revoking a role takes effect within about 15 seconds. A service with `environments.preview.<service>.auth: false` in `infra.yml` stays public, exactly as with basic auth.
+**Who can open a preview:** someone who is signed in to Keycloak **and** either is a platform administrator or has a role that covers that environment — a project-wide role, or an environment, class or branch grant that matches it (see above). Roles are per app and never inherited: a viewer of `shop-web` cannot open `shop-api` previews. Signed in but without a role shows a "no access" page; the person is registered under their email, so an organization admin can grant the role from the console's **Access** tab. Revoking a role takes effect within about 15 seconds. A service with `environments.preview.<service>.auth: false` in `infra.yml` stays public, exactly as with basic auth.
 
 How it works: Traefik asks the console (`/auth/preview?app=<app>`) before every preview request. The console asks a dedicated `oauth2-previews` proxy whether the browser's session cookie is valid (identity is taken only from that answer, never from request headers). Signed-out browsers are sent to Keycloak and back to the exact preview URL. The login cookie is shared across `*.<domain>`, and the OIDC callback is one fixed host, `sso.<domain>`, because Keycloak cannot register wildcard hosts. `sso.<domain>` is VPN-restricted like `auth.<domain>`, so previewers must reach Keycloak (VPN) to sign in.
 
+> On a fresh install everything below (secrets, realm, both clients, mappers, first admin user, switching the platform over) is done by `platform/keycloak/bootstrap-realm.sh --admin-user … --admin-email … --apply` — see [runbook-fresh-install.md](runbook-fresh-install.md). The manual steps remain for adding previews SSO to an existing platform.
+
 1. In `/etc/infra/platform.secrets.env` add `OAUTH2_PREVIEWS_CLIENT_SECRET` (`openssl rand -hex 32`) and `OAUTH2_PREVIEWS_COOKIE_SECRET` (`openssl rand -base64 24`, exactly 32 characters).
-2. Create the Keycloak client `infra-previews` (override with `OAUTH2_PREVIEWS_CLIENT_ID`): either run `sudo bash platform/keycloak/create-previews-client.sh` (creates or updates only that client; `--dry-run` shows what it would do), or create it by hand exactly like the console client in step 6 above, with the single redirect URI `https://sso.<domain><public-port-if-nonstandard>/oauth2/callback`. It needs the same `groups` mapper (and Audience mapper) as the console client.
+2. Create the Keycloak client `infra-previews` (override with `OAUTH2_PREVIEWS_CLIENT_ID`): either run `sudo bash platform/keycloak/create-previews-client.sh` (creates or updates only that client; `--dry-run` shows what it would do), or create it by hand exactly like the console client in step 6 above, with the single redirect URI `https://sso.<domain><public-port-if-nonstandard>/oauth2/callback`. It needs the same two client mappers as the console client (a Group Membership mapper emitting `groups`, and an Audience mapper); the script adds both. Do not request a `groups` *scope* unless your realm defines one.
 3. In `/etc/infra/infra.env` set `PREVIEW_AUTH_MODE=keycloak` and add `keycloak-previews` to `PLATFORM_PROFILES` (for example `keycloak,keycloak-auth,keycloak-previews`). Requires `CONSOLE_AUTH_MODE=keycloak`. `infra platform up` refuses inconsistent combinations.
 4. Apply with `sudo -u deploy infra platform up`. Existing previews switch on their **next deploy** (the middleware is generated per service); redeploy them or push to the PR.
+
+`OPS_AUTH_MODE=keycloak` (set by `bootstrap-realm.sh --apply`) puts the Traefik dashboard, container logs, the status page and Grafana behind the same login, limited to platform administrators (console endpoint `/auth/platform`). Any environment class can opt in to the gate with `environments.<class>.auth: true` in `infra.yml`; the roles above then decide who gets in.
 
 Switching back: set `PREVIEW_AUTH_MODE=basic`, remove `keycloak-previews` from the profiles, run `infra platform up`, and redeploy the previews. `sso` and `auth` are reserved app names.
 

@@ -68,7 +68,7 @@ Anything else is rejected.
   blocks the deploy instead of shipping a broken release.
 * **Linking services** — nothing is auto-derived. If `web` needs the API address, give it `API_URL` like any other
   variable. It may point at a sibling service, another app, or an external API.
-* Previews are behind basic-auth by default. Turn it off per service with `environments.preview.<service>.auth: false`.
+* Previews are behind a login by default (Keycloak when the platform uses it: only people whose role covers that environment get in). Turn it off per service with `environments.preview.<service>.auth: false`, or turn it **on** for another class with `environments.<class>.auth: true` (e.g. `staging`); `develop`/`staging`/`prod` are public by default.
 
 ## 3. CI
 
