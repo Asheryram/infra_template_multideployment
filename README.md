@@ -31,7 +31,7 @@ Every repo can get **prod, staging, develop and a preview per pull request**, ea
 | [.github/workflows/](.github/workflows/) | Reusable workflows app repos call (build, deploy, destroy) |
 | [app-kit/](app-kit/) | **Drag-and-drop folder for app repos**: manifest, CI workflow, Dockerfiles |
 | [local/](local/) | local "fake VPS" (WSL/Multipass), smoke test and the end-to-end story test |
-| [docs/](docs/) | **[Fresh install runbook](docs/runbook-fresh-install.md)** · [Architecture](docs/architecture.md) · [Ops runbook](docs/runbook.md) · [Access control](docs/access-control.md) · [Walkthrough](docs/onboarding-local.md) · [Shared host](docs/shared-host.md) |
+| [docs/](docs/) | **[Fresh install runbook](docs/runbook-fresh-install.md)** · [Architecture](docs/architecture.md) · [Ops runbook](docs/runbook.md) · [Access control](docs/access-control.md) · [Walkthrough](docs/onboarding-local.md) · [Shared host](docs/shared-host.md) · [Certificates](docs/certificates.md) |
 
 ## Services, not project types
 

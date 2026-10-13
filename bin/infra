@@ -35,7 +35,7 @@ Data
   infra backup
 
 Platform & housekeeping
-  infra platform up | down | ps | logs [svc] | pull | render
+  infra platform up | down | ps | logs [svc] | pull | render | cert status|import
   infra networks list | reconnect | migrate   (each environment has its own private network)
   infra cleanup [--dry-run]
   infra host-check

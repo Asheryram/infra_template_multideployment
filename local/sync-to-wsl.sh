@@ -8,6 +8,7 @@ cp "$SRC/scripts/deploy.sh"              /opt/infra/scripts/deploy.sh
 cp "$SRC/scripts/cleanup.sh"             /opt/infra/scripts/cleanup.sh
 cp "$SRC/platform/docker-compose.yml"    /opt/infra/platform/docker-compose.yml
 cp "$SRC/platform/platform.sh"           /opt/infra/platform/platform.sh
+cp "$SRC/platform/cert.sh"               /opt/infra/platform/cert.sh
 cp "$SRC/platform/traefik/static.selfsigned.yml.tmpl" /opt/infra/platform/traefik/static.selfsigned.yml.tmpl
 cp "$SRC/platform/traefik/static.letsencrypt.yml.tmpl" /opt/infra/platform/traefik/static.letsencrypt.yml.tmpl
 cp "$SRC/platform/traefik/static.external.yml.tmpl" /opt/infra/platform/traefik/static.external.yml.tmpl

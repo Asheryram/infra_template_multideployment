@@ -7,6 +7,7 @@
 #   infra platform ps
 #   infra platform logs [service]
 #   infra platform pull      pull newer images (then run `up`)
+#   infra platform cert status|import <crt> <key>   the wildcard certificate (TLS_MODE=selfsigned): inspect it, or replace it with a trusted one
 #   infra platform down      stop the platform — every app loses routing and its database!
 #
 # TLS_MODE:
@@ -197,6 +198,11 @@ ensure_selfsigned_cert() {
      && openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null | grep -qF "*.$DOMAIN"; then
     return 0
   fi
+  # a certificate you imported is never replaced behind your back; `infra platform cert import` renews it
+  if [[ -f $T/certs/.imported && -f $crt && -f $key ]]; then
+    warn "the imported wildcard certificate is expiring or no longer covers *.$DOMAIN — import a renewed one (infra platform cert import <crt> <key>)"
+    return 0
+  fi
   log "generating self-signed wildcard certificate for *.$DOMAIN (drop mkcert files here to replace: $T/certs)"
   openssl req -x509 -newkey rsa:2048 -nodes -days 397 \
     -keyout "$key" -out "$crt" -subj "/CN=*.$DOMAIN" \
@@ -296,6 +302,7 @@ case $action in
     preflight
     render
     write_managed_override
+    if [[ $TLS_MODE == selfsigned ]]; then CERT_DIR="$T/certs" bash "$P/cert.sh" check || true; fi   # warns when the wildcard expires within 30 days
     if [[ ,$COMPOSE_PROFILES, == *,authentik,* ]]; then
       dc up -d --wait postgres
       docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" infra-postgres \
@@ -353,6 +360,7 @@ SQL
     log "  $scheme://status.$DOMAIN$URL_PORT_SUFFIX    (uptime-kuma)"
     if [[ ,$COMPOSE_PROFILES, == *,metrics,* ]]; then log "  $scheme://grafana.$DOMAIN$URL_PORT_SUFFIX"; fi
     ;;
+  cert) CERT_DIR="$T/certs" bash "$P/cert.sh" "$@" ;;
   ps)   dc ps -a ;;
   logs) dc logs -f --tail 200 "$@" ;;
   pull) dc pull ;;
