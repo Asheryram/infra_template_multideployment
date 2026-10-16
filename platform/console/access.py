@@ -14,6 +14,9 @@ SLUG = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$")
 PROJECT_ROLES = {"viewer", "operator", "maintainer"}
 ROLE_ORDER = {"viewer": 1, "operator": 2, "maintainer": 3}
 ENV_CLASSES = ("prod", "staging", "develop", "preview")
+LINK_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$")
+LINK_PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,100}$")
+LINK_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Environment-scoped grants narrow a role to part of a project:
 #   env:<name>        one environment            (env:develop, env:pr-12)
 #   class:<class>     every environment of a class (class:preview = all previews)
@@ -123,6 +126,21 @@ class AccessStore:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     UNIQUE (organization, name)
+                );
+                CREATE TABLE IF NOT EXISTS project_links (
+                    id TEXT PRIMARY KEY,
+                    consumer TEXT NOT NULL,
+                    service TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    provider_service TEXT NOT NULL,
+                    env TEXT NOT NULL DEFAULT '',
+                    strip INTEGER NOT NULL DEFAULT 0,
+                    inject_as TEXT NOT NULL DEFAULT '',
+                    hide_provider INTEGER NOT NULL DEFAULT 0,
+                    created_by TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE (consumer, service, path)
                 );
                 CREATE TABLE IF NOT EXISTS groups (
                     id TEXT PRIMARY KEY,
@@ -552,6 +570,49 @@ class AccessStore:
             if not db.execute("SELECT 1 FROM organization_members WHERE organization=? AND uid=?", (org["organization"], uid)).fetchone():
                 raise ValueError("that person is not a member of the organization")
             db.execute("INSERT OR IGNORE INTO policy_attachments (policy_id, uid, created_at) VALUES (?,?,?)", (policy_id, uid, int(time.time())))
+
+    # ------------------------------------------------------------------ project links
+
+    def create_link(self, consumer, service, path, provider, provider_service, strip, inject_as, hide_provider, created_by):
+        """A service of `consumer` serves `path` from a service of `provider`, behind the consumer's own access gate."""
+        if not (SLUG.match(consumer or "") and SLUG.match(provider or "")) or consumer == provider:
+            raise ValueError("two different registered project names are required")
+        if not (LINK_NAME.match(service or "") and LINK_NAME.match(provider_service or "")):
+            raise ValueError("service names are lower-case letters, digits and -")
+        if not LINK_PATH.match(path or "") or path == "/":
+            raise ValueError("the path must look like /api (letters, digits . _ ~ - /), and not be the whole site")
+        if inject_as and not LINK_KEY.match(inject_as):
+            raise ValueError("inject_as must be a valid environment variable name")
+        with self.connect() as db:
+            lid = secrets.token_hex(8)
+            try:
+                db.execute("""INSERT INTO project_links (id, consumer, service, path, provider, provider_service, env, strip, inject_as,
+                              hide_provider, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           (lid, consumer, service, path.rstrip("/") or "/", provider, provider_service, "", 1 if strip else 0,
+                            inject_as or "", 1 if hide_provider else 0, created_by, int(time.time())))
+            except sqlite3.IntegrityError:
+                raise ValueError("this service already has a link on that path") from None
+            return lid
+
+    def delete_link(self, link_id):
+        with self.connect() as db:
+            db.execute("DELETE FROM project_links WHERE id=?", (link_id,))
+
+    def get_link(self, link_id):
+        with self.connect() as db:
+            r = db.execute("SELECT * FROM project_links WHERE id=?", (link_id,)).fetchone()
+            return dict(r) if r else None
+
+    def list_links(self):
+        with self.connect() as db:
+            return [dict(r) for r in db.execute("SELECT * FROM project_links ORDER BY consumer, service, path")]
+
+    def can_manage_link(self, uid, consumer, provider, platform_admin=False):
+        """A platform admin may link any two projects; an organization admin only two projects of THEIR organization."""
+        if platform_admin:
+            return True
+        org = self.organization_for_project(consumer)
+        return bool(org) and org == self.organization_for_project(provider) and self.can_admin_organization(uid, org)
 
     # ------------------------------------------------------------------ groups
 

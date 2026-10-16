@@ -21,6 +21,7 @@ cp "$SRC/platform/console/Dockerfile"   /opt/infra/platform/console/Dockerfile
 cp "$SRC/platform/console/index.html"    /opt/infra/platform/console/index.html
 mkdir -p /opt/infra/app-kit/.infradeploy
 cp "$SRC/scripts/parse-manifest.py"            /opt/infra/scripts/parse-manifest.py
+cp "$SRC/scripts/project-links.py"           /opt/infra/scripts/project-links.py
 cp "$SRC/app-kit/.infradeploy/infra.yml"       /opt/infra/app-kit/.infradeploy/infra.yml
 cp "$SRC"/app-kit/examples/*.infra.yml         /opt/infra/app-kit/examples/
 echo "deployment files synced to /opt/infra"

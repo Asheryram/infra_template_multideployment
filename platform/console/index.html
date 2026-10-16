@@ -1481,7 +1481,27 @@ async function renderPolicies(access, response) {
   POL.orgOf = app => (access.projects.find(p => p.app === app) || {}).organization;
   const d = POL.data = await api('/api/policies');
   const members = access.members;
-  host.innerHTML = `<div class="card">
+  const links = access.project_links || [];
+  const linkApps = [...new Set([...(access.projects || []).map(p => p.app), ...(response.registered_projects || []).map(p => p.app)])].sort();
+  const linkCard = access.project_links ? `<div class="card">
+    <div class="card-header"><h2>Project links</h2><span class="card-meta">let a frontend use another project's API without access to it</span></div>
+    <div style="padding:16px 18px">
+      <p class="muted">A link makes a path on one project's address (for example <span class="mono">/api</span> on the frontend) answer from a service of another project, over the platform's private network. The browser then talks to one host, the access gate of that host covers the whole call, so <b>whoever may open the frontend can use its API through it without any access to the API's project</b>. The API can drop its own public address. Links are managed here, not in <span class="mono">infra.yml</span>, so nobody can create one with a pull request. A link applies to every environment, previews reach previews, develop reaches develop, prod reaches prod. Only a platform administrator (or the organization's administrator, for two projects of their own organization) can manage them.</p>
+      <div class="scroll"><table><tr><th>Frontend</th><th>Path</th><th>Serves from</th><th>Options</th><th></th></tr>
+      ${links.map(l => `<tr><td><b>${esc(l.consumer)}</b> <span class="muted">${esc(l.service)}</span></td><td class="mono">${esc(l.path)}</td>
+        <td><b>${esc(l.provider)}</b> <span class="muted">${esc(l.provider_service)}</span></td>
+        <td style="font-size:12.5px">${l.strip ? '<span class="chip quiet">strip prefix</span> ' : ''}${l.inject_as ? `<span class="chip quiet">sets ${esc(l.inject_as)}</span> ` : ''}${l.hide_provider ? '<span class="chip quiet">API has no public address</span>' : ''}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn" data-lnkapply="${esc(l.id)}" title="Redeploy both projects' environments so the change takes effect">Apply now</button> <button class="btn danger" data-lnkdel="${esc(l.id)}">Delete</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No links yet.</td></tr>'}</table></div>
+      <h3 style="margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em" class="muted">New link</h3>
+      <div class="row"><select id="lnkFrom" aria-label="Frontend project">${linkApps.map(a => `<option>${esc(a)}</option>`).join('')}</select><input id="lnkSvc" class="mono" placeholder="service (web)" value="web" style="width:120px">
+        <input id="lnkPath" class="mono" placeholder="/api" value="/api" style="width:110px"><span class="muted">serves from</span>
+        <select id="lnkTo" aria-label="API project">${linkApps.map(a => `<option>${esc(a)}</option>`).join('')}</select><input id="lnkTsvc" class="mono" placeholder="service (api)" value="api" style="width:120px"></div>
+      <div class="row"><label class="muted" style="font-size:12.5px"><input type="checkbox" id="lnkStrip"> remove the path before it reaches the API</label>
+        <input id="lnkInject" class="mono" placeholder="set variable (API_URL)" value="API_URL" style="width:170px">
+        <label class="muted" style="font-size:12.5px"><input type="checkbox" id="lnkHide"> the API has no public address of its own</label>
+        <button class="btn primary" id="lnkAdd">Create link</button><span class="muted" id="lnkNote" style="font-size:12.5px">Takes effect at the next deploy of both projects — or press Apply now.</span></div>
+    </div></div>` : '';
+  host.innerHTML = `${linkCard}<div class="card">
     <div class="card-header"><h2>Groups</h2><span class="card-meta">people who share the same policies</span></div>
     <div style="padding:16px 18px">
       <p class="muted">An organization has two kinds of people: <b>organization admins</b> (run everything inside the organization: all projects, environments, databases, variables, policies and groups) and <b>members</b>, who can do <b>nothing</b> until they are in a <b>group</b> or have a <b>policy</b> attached. Put people in groups (QA, Backend, Client X…) and attach the policies to the group.</p>
@@ -1534,6 +1554,15 @@ async function renderPolicies(access, response) {
   };
   $('#invOrg')?.addEventListener('change', fillInvGroups); fillInvGroups();
   const post = async (body, msg) => { try { await api('/api/access', body); toast(msg); await renderAccess(); } catch (e) { toast(e.message); } };
+  host.querySelectorAll('[data-lnkdel]').forEach(b => b.onclick = () => { if (confirm('Delete this link? It stops applying at the next deploy.')) post({ op: 'link-delete', id: b.dataset.lnkdel }, 'Link deleted'); });
+  host.querySelectorAll('[data-lnkapply]').forEach(b => b.onclick = async () => {
+    b.disabled = true; toast('Redeploying both projects…', 60000);
+    try { const r = await api('/api/access', { op: 'link-apply', id: b.dataset.lnkapply }); toast('Applied: ' + (r.redeployed || []).join(', ')); } catch (e) { toast(e.message); }
+    b.disabled = false;
+  });
+  $('#lnkAdd', host)?.addEventListener('click', () => post({ op: 'link-create', consumer: $('#lnkFrom', host).value, service: $('#lnkSvc', host).value.trim(),
+    path: $('#lnkPath', host).value.trim(), provider: $('#lnkTo', host).value, provider_service: $('#lnkTsvc', host).value.trim(),
+    strip: $('#lnkStrip', host).checked, inject_as: $('#lnkInject', host).value.trim(), hide_provider: $('#lnkHide', host).checked }, 'Link created'));
   $('#grpCreate', host)?.addEventListener('click', () => post({ op: 'group-create', organization: $('#grpOrg', host).value, name: $('#grpName', host).value.trim(), description: $('#grpDesc', host).value.trim() }, 'Group created'));
   host.querySelectorAll('[data-grpdel]').forEach(b => b.onclick = () => { if (confirm('Delete this group? Its members lose what its policies granted.')) post({ op: 'group-delete', id: b.dataset.grpdel }, 'Group deleted'); });
   host.querySelectorAll('[data-grpmrm]').forEach(a => a.onclick = ev => { ev.preventDefault(); const [id, uid] = a.dataset.grpmrm.split('|'); post({ op: 'group-member-remove', id, uid }, 'Removed'); });

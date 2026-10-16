@@ -56,6 +56,10 @@ Anything else is rejected.
 | `web` or `app` | `myapp.<domain>` | `myapp-staging.<domain>`, `myapp-pr-12.<domain>` |
 | anything else (e.g. `api`) | `api-myapp.<domain>` | `api-myapp-staging.<domain>`, `api-myapp-pr-12.<domain>` |
 
+### A frontend that calls its API
+
+Nothing to put in `infra.yml`. A browser cannot call a second host that sits behind the access gate (the call carries no sign-in cookie and the gate's answer has no CORS headers), and people would otherwise need access to both projects. An administrator links the two projects **in the console** (**Access → Project links**): `/api` on the frontend's address is served from the API project's service, over the platform's private network, behind the frontend's gate. Whoever may open the frontend can use its API through it, the API can drop its own public address, and `API_URL` can be set to the frontend's own address. The link applies to every environment of the same class (previews to previews, develop to develop, prod to prod). It is **not** configurable from the repository, on purpose: `infra.yml` comes from the repository, so otherwise anyone who can open a pull request could route into another project. See [access-control.md](../docs/access-control.md#project-links-frontend--api).
+
 ## 2. Databases and variables
 
 * **Databases** — `databases:` only *declares* what a service needs. Nothing is created on deploy. In the console

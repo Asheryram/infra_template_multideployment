@@ -115,6 +115,18 @@ Underneath, **every permission is an action on a resource, denied by default** �
 
 What the console shows follows the actions: no `environment:View` → no details, no `environment:Open` → endpoints are shown but not clickable (and the preview/ops gate refuses), no `logs:Read` → no Logs section, and so on. Platform administrators always have every action.
 
+## Project links (frontend → API)
+
+A browser cannot reliably call an API on a second host that is behind the access gate (no sign-in cookie is sent and the gate's answer has no CORS headers), and a permission alone does not change that. A **project link** solves it without touching either app: in **Access → Project links** an administrator says "`/api` on `shop-web`'s `web` service is served from `shop-api`'s `api` service". Traefik then routes `https://<frontend>/api/...` to the API over the platform network, behind the **frontend's** gate and `environment:Open` rule. So:
+
+- **people who may open the frontend can use its API through it, with no access to the API's project** — the API stays isolated;
+- the API can drop its **own public address** (its address then answers 403), and the frontend's `API_URL` variable can be set to the frontend's own address;
+- a link applies to every environment of the **same class**: previews reach previews (`pr-12` → `pr-12`), develop reaches develop, prod reaches prod. A preview can never reach another project's develop or prod;
+- `/api` matches `/api` and `/api/...`, never `/apix`;
+- changes take effect at the next deploy of both projects, or immediately with **Apply now**.
+
+Who can manage links: a **platform admin** (any two projects) or the **administrator of the organization** that both projects belong to. Links are deliberately **not** read from `infra.yml`: that file comes from the repository, so anyone who can open a pull request could otherwise declare a route into another project (a manifest that tries is refused). The API's own authorization still matters — everyone who can open the frontend can call it through the route, and no signed caller identity is passed on.
+
 ## Inviting people
 
 Nobody is added to an organization by looking up their account. An organization admin (or a platform admin) **invites by email** in **Access → Organization membership**: the organization, the email, an optional name and, optionally, the **groups** to put them in. Nothing is applied yet; the invitation is **pending** (14 days) and the admin never learns whether an account for that address exists.

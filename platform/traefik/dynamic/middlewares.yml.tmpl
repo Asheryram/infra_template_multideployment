@@ -74,3 +74,9 @@ ${KEYCLOAK_VPN_CIDRS_YAML}
       basicAuth:
         realm: "Preview environment"
         users: ["${PREVIEW_AUTH_USERS}"]
+
+    # A service with `public: false` keeps no reachable address of its own; it is only served through the
+    # `upstreams` routes of other services. Nothing is ever in 192.0.2.0/24 (TEST-NET-1), so this always answers 403.
+    deny-all:
+      ipAllowList:
+        sourceRange: ["192.0.2.1/32"]

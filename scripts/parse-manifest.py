@@ -222,6 +222,11 @@ def validate(manifest):
         if hp and not str(hp).startswith('/'):
             err(f"service {svc!r}: 'health_path' must start with /")
 
+        for forbidden in ('upstreams', 'public'):
+            if forbidden in cfg:
+                err(f"service {svc!r}: '{forbidden}' is not part of infra.yml. Links between projects are managed in the "
+                    "console (Access → Project links) so a pull request cannot create them")
+
         ctx = cfg.get('build_context', '')
         if ctx and not PATH_RE.match(str(ctx)):
             err(f"service {svc!r}: 'build_context' contains invalid characters")

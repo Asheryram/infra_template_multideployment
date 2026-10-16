@@ -1058,6 +1058,8 @@ class Handler(BaseHTTPRequestHandler):
                 administered = {p["app"] for p in access["projects"]}          # projects of organizations this person administers
                 access["environments"] = [{"app": d["APP"], "env": d["ENV_NAME"], "branch": d.get("BRANCH", "")}
                                           for d in deployments(s) if d["APP"] in administered]
+                mine = None if is_platform_admin(actor) else {p["app"] for p in access["projects"]}   # apps of organizations I administer
+                access["project_links"] = [l for l in store.list_links() if mine is None or (l["consumer"] in mine and l["provider"] in mine)]
                 registered = projects(s) if is_platform_admin(actor) else []
                 return self.send(200, {"access": access, "registered_projects": registered})
             if u.path == "/api/env":
@@ -1275,6 +1277,35 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(403, {"error": "organization administrator required"})
                     store.revoke_invitation(invitation_id, organization)
                     self.audit(s, "organization:invite-revoke", f"{organization} id={invitation_id}")
+                elif operation in ("link-create", "link-delete", "link-apply"):
+                    if operation == "link-create":
+                        consumer, provider = body.get("consumer", ""), body.get("provider", "")
+                    else:
+                        link = store.get_link(body.get("id", ""))
+                        if not link:
+                            return self.send(404, {"error": "no such link"})
+                        consumer, provider = link["consumer"], link["provider"]
+                    if not store.can_manage_link(actor["uid"], consumer, provider, is_platform_admin(actor)):
+                        return self.send(403, {"error": "a platform administrator (or the administrator of the organization both projects belong to) manages links"})
+                    if operation == "link-create":
+                        for app in (consumer, provider):
+                            if not project(s, app).get("APP"):
+                                return self.send(400, {"error": f"{app} is not a registered project"})
+                        lid = store.create_link(consumer, body.get("service", ""), body.get("path", ""), provider, body.get("provider_service", ""),
+                                                body.get("strip") is True, body.get("inject_as", "") or "", body.get("hide_provider") is True, actor["uid"])
+                        self.audit(s, "link:create", f"{consumer}/{body.get('service')} {body.get('path')} -> {provider}/{body.get('provider_service')}")
+                        return self.send(200, {"ok": True, "id": lid})
+                    if operation == "link-delete":
+                        store.delete_link(link["id"])
+                        self.audit(s, "link:delete", f"{consumer}/{link['service']} {link['path']} -> {provider}")
+                    else:                                    # redeploy every environment of both projects so the change takes effect
+                        done = []
+                        for d in deployments(s):
+                            if d["APP"] in (consumer, provider) and d.get("STATE") != "blocked":
+                                ok, _ = infra("redeploy", d["APP"], d["ENV_NAME"])
+                                done.append(f"{d['APP']}/{d['ENV_NAME']}:{'ok' if ok else 'FAILED'}")
+                        self.audit(s, "link:apply", " ".join(done))
+                        return self.send(200, {"ok": True, "redeployed": done})
                 elif operation in ("group-create", "group-delete", "group-member-add", "group-member-remove",
                                    "group-policy-attach", "group-policy-detach"):
                     gid = body.get("id", "")

@@ -123,7 +123,10 @@ DEPLOY_DIR="$STACK_DIR/deploy"
 
 # ----------------------------------------------------------------------------- per service
 
-declare -A SVC_HOST SVC_IMAGE SVC_PORT SVC_MEM SVC_CPUS SVC_MW SVC_SSO
+# Project links (console → Access → Project links) that involve this project, as set by an administrator
+LINKS=$(python3 "$INFRA_ROOT/scripts/project-links.py" "$STATE_DIR/console-access.sqlite3" "$APP" 2>/dev/null || true)
+
+declare -A SVC_HOST SVC_IMAGE SVC_PORT SVC_MEM SVC_CPUS SVC_MW SVC_SSO SVC_PUBLIC
 stack_mem_kib=0
 stack_cpus=0
 
@@ -188,6 +191,8 @@ for svc in "${SERVICES[@]}"; do
   extra_var="${S}_EXTRA_MIDDLEWARES"
   if [[ -n ${!extra_var:-} ]]; then mw+=",${!extra_var}"; fi
   SVC_MW[$svc]=$mw
+  # public: false → no reachable address of its own (served only through other services' `upstreams`)
+  if grep -qx "HIDE|$svc" <<<"$LINKS"; then SVC_PUBLIC[$svc]=false; SVC_MW[$svc]="deny-all@file"; unset "SVC_SSO[$svc]"; fi
 done
 resource_validate_stack "$stack_mem_kib" "$stack_cpus"
 
@@ -209,6 +214,51 @@ for svc in "${SERVICES[@]}"; do
 done
 
 URL="https://${SVC_HOST[${SERVICES[0]}]}$URL_PORT_SUFFIX"
+
+# ----------------------------------------------------------------------------- project links
+# An administrator can link a service of this project to a service of another project (console → Access → Project
+# links): requests to <path> on THIS service's host are forwarded to that service over the platform network. The browser
+# only ever talks to one host, so the access gate on this host covers the whole call (whoever may open the frontend can use
+# its API — no access to the API project is needed) and the target can drop its own public address. Links live in the
+# console's database, not in infra.yml, so a pull request cannot create one.
+declare -A UP_LABELS UP_INJECT
+UP_META=""
+up_i=0
+while IFS='|' read -r usvc upath uproj utsvc uenv ustrip uinject; do
+  [[ -n $usvc ]] || continue
+  [[ " ${SERVICES[*]} " == *" $usvc "* ]] || { warn "link for service '$usvc' ignored: this project has no such service"; continue; }
+  # The target is the SAME environment name unless `env:` says otherwise, and never a different environment class:
+  # a preview must not reach another project's develop/prod, nor develop reach prod. (It attaches by name, so the
+  # other project may be deployed before or after this one.)
+  tenv=${uenv:-$ENV_NAME}
+  [[ $(env_class "$tenv") == "$CLASS" ]] \
+    || die "service '$usvc' routes to $uproj/$tenv, but this is a $CLASS environment: upstreams stay inside the same environment class"
+  if [[ -f $DEPLOY_ROOT/$uproj/$tenv/meta.env ]] \
+     && ! grep -qw -- "$utsvc" <<<"$(meta_get "$DEPLOY_ROOT/$uproj/$tenv/meta.env" SERVICES)"; then
+    die "upstream $uproj/$tenv has no service '$utsvc'"
+  fi
+  tstack=$(stack_name "$uproj" "$tenv")
+  up_i=$((up_i + 1)); rname="${STACK}-${usvc}-up${up_i}"
+  mw=${SVC_MW[$usvc]}
+  # exact path boundary: /api matches /api and /api/..., never /apix
+  base=${upath%/}
+  if [[ -z $base ]]; then pathrule="PathPrefix(\`/\`)"; else pathrule="(Path(\`${base}\`) || PathPrefix(\`${base}/\`))"; fi
+  labels="      - traefik.http.routers.${rname}.rule=Host(\`${SVC_HOST[$usvc]}\`) && ${pathrule}
+      - traefik.http.routers.${rname}.priority=$((1000 + ${#upath}))
+      - traefik.http.routers.${rname}.entrypoints=websecure
+      - traefik.http.routers.${rname}.tls=${ROUTER_TLS:-true}
+      - traefik.http.routers.${rname}.service=${tstack}-${utsvc}@docker"
+  if [[ $ustrip == true ]]; then
+    labels+=$'\n'"      - traefik.http.middlewares.${rname}-strip.stripprefix.prefixes=${upath}"
+    mw+=",${rname}-strip@docker"
+  fi
+  labels+=$'\n'"      - traefik.http.routers.${rname}.middlewares=${mw}"
+  UP_LABELS[$usvc]+="$labels"$'\n'
+  [[ -z $uinject ]] || UP_INJECT[$usvc]+="${uinject}=https://${SVC_HOST[$usvc]}${URL_PORT_SUFFIX}"$'\n'
+  UP_META+="${usvc}:${upath}=${uproj}/${tenv}/${utsvc} "
+  log "upstream: https://${SVC_HOST[$usvc]}${upath} → ${uproj}/${tenv} ${utsvc}"
+done < <(grep -v '^HIDE|' <<<"$LINKS" || true)
+
 
 # ----------------------------------------------------------------------------- databases
 # Databases declared in infra.yml are NOT created here. They are created on demand
@@ -286,6 +336,8 @@ for svc in "${SERVICES[@]}"; do
           "$SECRETS_ROOT/$APP/$ENV_NAME.env" \
           "$SECRETS_ROOT/$APP/$ENV_NAME.$svc.env"
       fi
+      # last, so it wins over anything set by hand: variables pointing at this service's own address (see `upstreams`)
+      if [[ -n ${UP_INJECT[$svc]:-} ]]; then echo "# --- upstream routes"; printf '%s' "${UP_INJECT[$svc]}"; fi
     } > "$out.tmp"
   )
   mv "$out.tmp" "$out"
@@ -370,7 +422,7 @@ services:
       - traefik.http.routers.${STACK}-${svc}.service=${STACK}-${svc}
       - traefik.http.services.${STACK}-${svc}.loadbalancer.server.port=${SVC_PORT[$svc]}
 ${sso_labels}
-
+${UP_LABELS[$svc]:-}
 networks:
   default:
     name: ${STACK_NETWORK}
@@ -481,7 +533,7 @@ wait_routed() {
 }
 for svc in "${SERVICES[@]}"; do
   S=${svc^^}; S=${S//-/_}; hp_var="${S}_HEALTH_PATH"
-  wait_routed "${SVC_HOST[$svc]}" "${!hp_var:-/}"
+  [[ ${SVC_PUBLIC[$svc]:-true} == false ]] || wait_routed "${SVC_HOST[$svc]}" "${!hp_var:-/}"
 done
 
 # ----------------------------------------------------------------------------- record
@@ -495,8 +547,9 @@ write_kv "$tmp" PREV_TAG "$PREV_TAG"
 write_kv "$tmp" BRANCH "$BRANCH"
 write_kv "$tmp" COMMIT "$COMMIT"
 write_kv "$tmp" URL "$URL"
-urls=""; for svc in "${SERVICES[@]}"; do urls+="$svc=https://${SVC_HOST[$svc]}$URL_PORT_SUFFIX "; done
+urls=""; for svc in "${SERVICES[@]}"; do [[ ${SVC_PUBLIC[$svc]:-true} == false ]] || urls+="$svc=https://${SVC_HOST[$svc]}$URL_PORT_SUFFIX "; done
 write_kv "$tmp" URLS "${urls% }"
+write_kv "$tmp" UPSTREAMS "${UP_META% }"
 write_kv "$tmp" SERVICES "${SERVICES[*]}"
 write_kv "$tmp" STACK_NETWORK "$STACK_NETWORK"
 write_kv "$tmp" USES_PG "$USES_PG"
