@@ -221,10 +221,10 @@ URL="https://${SVC_HOST[${SERVICES[0]}]}$URL_PORT_SUFFIX"
 # only ever talks to one host, so the access gate on this host covers the whole call (whoever may open the frontend can use
 # its API — no access to the API project is needed) and the target can drop its own public address. Links live in the
 # console's database, not in infra.yml, so a pull request cannot create one.
-declare -A UP_LABELS UP_INJECT
+declare -A UP_LABELS
 UP_META=""
 up_i=0
-while IFS='|' read -r usvc upath uproj utsvc uenv ustrip uinject; do
+while IFS='|' read -r usvc upath uproj utsvc uenv ustrip umode uexcl; do
   [[ -n $usvc ]] || continue
   [[ " ${SERVICES[*]} " == *" $usvc "* ]] || { warn "link for service '$usvc' ignored: this project has no such service"; continue; }
   # The target is the SAME environment name unless `env:` says otherwise, and never a different environment class:
@@ -240,11 +240,24 @@ while IFS='|' read -r usvc upath uproj utsvc uenv ustrip uinject; do
   tstack=$(stack_name "$uproj" "$tenv")
   up_i=$((up_i + 1)); rname="${STACK}-${usvc}-up${up_i}"
   mw=${SVC_MW[$usvc]}
-  # exact path boundary: /api matches /api and /api/..., never /apix
-  base=${upath%/}
-  if [[ -z $base ]]; then pathrule="PathPrefix(\`/\`)"; else pathrule="(Path(\`${base}\`) || PathPrefix(\`${base}/\`))"; fi
-  labels="      - traefik.http.routers.${rname}.rule=Host(\`${SVC_HOST[$usvc]}\`) && ${pathrule}
-      - traefik.http.routers.${rname}.priority=$((1000 + ${#upath}))
+  if [[ $umode == fetch ]]; then
+    # everything the page itself requests with fetch/XHR (browsers label those `Sec-Fetch-Dest: empty`; documents, scripts,
+    # styles and images carry other values), except the prefixes the frontend serves itself. No knowledge of the app's
+    # API paths is needed. Where the header is missing (very old browsers) nothing is rerouted: fails closed.
+    rule="Host(\`${SVC_HOST[$usvc]}\`) && Header(\`Sec-Fetch-Dest\`, \`empty\`)"
+    IFS=, read -ra exl <<<"$uexcl"
+    for e in "${exl[@]}"; do [[ -n $e ]] && rule+=" && !PathPrefix(\`$e\`)"; done
+    prio=500; ustrip=false
+  else
+    # exact path boundary: /api matches /api and /api/..., never /apix
+    alt=""
+    IFS=, read -ra pl <<<"$upath"
+    for p in "${pl[@]}"; do b=${p%/}; alt+=" || Path(\`$b\`) || PathPrefix(\`$b/\`)"; done
+    rule="Host(\`${SVC_HOST[$usvc]}\`) && (${alt# || })"
+    prio=$((1000 + ${#upath}))
+  fi
+  labels="      - traefik.http.routers.${rname}.rule=${rule}
+      - traefik.http.routers.${rname}.priority=${prio}
       - traefik.http.routers.${rname}.entrypoints=websecure
       - traefik.http.routers.${rname}.tls=${ROUTER_TLS:-true}
       - traefik.http.routers.${rname}.service=${tstack}-${utsvc}@docker"
@@ -254,9 +267,9 @@ while IFS='|' read -r usvc upath uproj utsvc uenv ustrip uinject; do
   fi
   labels+=$'\n'"      - traefik.http.routers.${rname}.middlewares=${mw}"
   UP_LABELS[$usvc]+="$labels"$'\n'
-  [[ -z $uinject ]] || UP_INJECT[$usvc]+="${uinject}=https://${SVC_HOST[$usvc]}${URL_PORT_SUFFIX}"$'\n'
   UP_META+="${usvc}:${upath}=${uproj}/${tenv}/${utsvc} "
-  log "upstream: https://${SVC_HOST[$usvc]}${upath} → ${uproj}/${tenv} ${utsvc}"
+  [[ $umode == fetch ]] && log "upstream: every fetch/XHR of https://${SVC_HOST[$usvc]} (except ${uexcl:-nothing}) → ${uproj}/${tenv} ${utsvc}" \
+    || log "upstream: https://${SVC_HOST[$usvc]} ${upath} → ${uproj}/${tenv} ${utsvc}"
 done < <(grep -v '^HIDE|' <<<"$LINKS" || true)
 
 
@@ -336,8 +349,6 @@ for svc in "${SERVICES[@]}"; do
           "$SECRETS_ROOT/$APP/$ENV_NAME.env" \
           "$SECRETS_ROOT/$APP/$ENV_NAME.$svc.env"
       fi
-      # last, so it wins over anything set by hand: variables pointing at this service's own address (see `upstreams`)
-      if [[ -n ${UP_INJECT[$svc]:-} ]]; then echo "# --- upstream routes"; printf '%s' "${UP_INJECT[$svc]}"; fi
     } > "$out.tmp"
   )
   mv "$out.tmp" "$out"

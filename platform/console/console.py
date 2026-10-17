@@ -918,7 +918,7 @@ class Handler(BaseHTTPRequestHandler):
             "<body style='font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:14vh auto;padding:1rem;color:#17181c'>"
             f"<h1 style='font-size:1.4rem'>You don't have access to {html.escape(what[0])}</h1>"
             f"<p>You are signed in as <b>{html.escape(ident['email'])}</b>. {what[1]}</p>{invite_hint}"
-            f"<p><a href='{html.escape(sso)}/oauth2/sign_out'>Sign out</a></p></body></html>"
+            f"<p><a href='{html.escape(sso)}/oauth2/sign_out?rd={quote('https://console.' + s['domain'] + s['suffix'] + '/signed-out', safe='')}'>Sign out</a></p></body></html>"
         )
         return self.send(403, page.encode(), "text/html; charset=utf-8")
 
@@ -1002,7 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
                     "<title>Signed out - Infra Console</title>"
                     "<body style='font:16px system-ui,sans-serif;max-width:36rem;margin:15vh auto;padding:1rem'>"
                     "<h1>You are signed out</h1>"
-                    "<p>Your Infra Console session has ended. Your Keycloak session may still be active.</p>"
+                    "<p>Your Infra Console, preview and Keycloak sessions have all ended. You will be asked for your password again.</p>"
                     "<p><a href='/'>Sign in again</a></p></body></html>"
                 )
                 return self.send(200, page, "text/html; charset=utf-8")
@@ -1292,7 +1292,8 @@ class Handler(BaseHTTPRequestHandler):
                             if not project(s, app).get("APP"):
                                 return self.send(400, {"error": f"{app} is not a registered project"})
                         lid = store.create_link(consumer, body.get("service", ""), body.get("path", ""), provider, body.get("provider_service", ""),
-                                                body.get("strip") is True, body.get("inject_as", "") or "", body.get("hide_provider") is True, actor["uid"])
+                                                body.get("strip") is True, body.get("hide_provider") is True, actor["uid"],
+                                                mode=body.get("mode", "paths") or "paths", excludes=body.get("excludes", "") or "")
                         self.audit(s, "link:create", f"{consumer}/{body.get('service')} {body.get('path')} -> {provider}/{body.get('provider_service')}")
                         return self.send(200, {"ok": True, "id": lid})
                     if operation == "link-delete":

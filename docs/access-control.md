@@ -117,15 +117,23 @@ What the console shows follows the actions: no `environment:View` → no details
 
 ## Project links (frontend → API)
 
-A browser cannot reliably call an API on a second host that is behind the access gate (no sign-in cookie is sent and the gate's answer has no CORS headers), and a permission alone does not change that. A **project link** solves it without touching either app: in **Access → Project links** an administrator says "`/api` on `shop-web`'s `web` service is served from `shop-api`'s `api` service". Traefik then routes `https://<frontend>/api/...` to the API over the platform network, behind the **frontend's** gate and `environment:Open` rule. So:
+A browser cannot reliably call an API on a second host that is behind the access gate: a `fetch` sends no sign-in cookie to another origin and the gate's answer carries no CORS headers, and a permission alone does not change that. A **project link** is the relationship "this frontend's service may use that API service". In **Access → Project links** an administrator creates it, and the platform makes the **frontend's own address** answer the page's API calls, forwarding them to the API over the platform's private network, **behind the frontend's gate** and its `environment:Open` rule. The call is then same-origin and the sign-in cookie travels with it. Nothing about either app is changed and the link sets no variables; the only prerequisite is the one every deployment already has: the app's API-address setting must point at the frontend's own address (set it once in **Variables**, as you do for any variable).
 
-- **people who may open the frontend can use its API through it, with no access to the API's project** — the API stays isolated;
-- the API can drop its **own public address** (its address then answers 403), and the frontend's `API_URL` variable can be set to the frontend's own address;
-- a link applies to every environment of the **same class**: previews reach previews (`pr-12` → `pr-12`), develop reaches develop, prod reaches prod. A preview can never reach another project's develop or prod;
-- `/api` matches `/api` and `/api/...`, never `/apix`;
+You choose which requests go to the API:
+
+- **All calls the page makes with fetch/XHR** (the default). Browsers label every such request (`Sec-Fetch-Dest: empty`), whereas pages, scripts, styles and images carry other labels, so **no knowledge of the app's API paths is needed** and an app that calls `API_URL + '/products'` or `API_URL + '/v2/orders'` keeps working. List the few paths the frontend serves itself (the default list covers `/_next/`, `/static/`, `/assets/`, `/locales/`, `/env.js`, `/favicon.ico`, `/manifest.json`, `/robots.txt`, `/sw.js`; add your own). A browser that sends no such label (very old ones) is simply not rerouted, so it fails closed.
+- **Only these paths** (for example `/api, /graphql`), matched exactly: `/api` covers `/api` and `/api/...`, never `/apix`. Optionally remove the prefix before it reaches the API.
+
+What that gives you:
+
+- **people who may open the frontend can use its API through it, with no access to the API's project**;
+- the API can drop its **own public address** (its address then answers 403);
+- a link applies to every environment of the **same class**: previews reach previews (`pr-12` → `pr-12`), develop reaches develop, prod reaches prod, never across classes;
 - changes take effect at the next deploy of both projects, or immediately with **Apply now**.
 
-Who can manage links: a **platform admin** (any two projects) or the **administrator of the organization** that both projects belong to. Links are deliberately **not** read from `infra.yml`: that file comes from the repository, so anyone who can open a pull request could otherwise declare a route into another project (a manifest that tries is refused). The API's own authorization still matters — everyone who can open the frontend can call it through the route, and no signed caller identity is passed on.
+Who can manage links: a **platform admin** (any two projects) or the **administrator of the organization** that both projects belong to. Links are deliberately **not** read from `infra.yml`: that file comes from the repository, so anyone who can open a pull request could otherwise declare a route into another project (a manifest that tries is refused).
+
+Limits to know: an app that **hard-codes the API's full address in its code** keeps calling that address and cannot be redirected this way (it needs a variable, or a code change); the API's own authorization still matters, because everyone who can open the frontend can call it through the route and no signed caller identity is passed on.
 
 ## Inviting people
 

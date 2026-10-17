@@ -16,7 +16,6 @@ ROLE_ORDER = {"viewer": 1, "operator": 2, "maintainer": 3}
 ENV_CLASSES = ("prod", "staging", "develop", "preview")
 LINK_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$")
 LINK_PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,100}$")
-LINK_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Environment-scoped grants narrow a role to part of a project:
 #   env:<name>        one environment            (env:develop, env:pr-12)
 #   class:<class>     every environment of a class (class:preview = all previews)
@@ -136,8 +135,9 @@ class AccessStore:
                     provider_service TEXT NOT NULL,
                     env TEXT NOT NULL DEFAULT '',
                     strip INTEGER NOT NULL DEFAULT 0,
-                    inject_as TEXT NOT NULL DEFAULT '',
                     hide_provider INTEGER NOT NULL DEFAULT 0,
+                    mode TEXT NOT NULL DEFAULT 'paths',
+                    excludes TEXT NOT NULL DEFAULT '',
                     created_by TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     UNIQUE (consumer, service, path)
@@ -169,6 +169,12 @@ class AccessStore:
                     PRIMARY KEY (policy_id, uid)
                 );
             """)
+        with self.connect() as db:                       # databases created before `mode`/`excludes` existed
+            cols = {r[1] for r in db.execute("PRAGMA table_info(project_links)")}
+            if "mode" not in cols:
+                db.execute("ALTER TABLE project_links ADD COLUMN mode TEXT NOT NULL DEFAULT 'paths'")
+            if "excludes" not in cols:
+                db.execute("ALTER TABLE project_links ADD COLUMN excludes TEXT NOT NULL DEFAULT ''")
         os.chmod(path, 0o660)
         self.migrate_legacy_grants()
 
@@ -573,25 +579,51 @@ class AccessStore:
 
     # ------------------------------------------------------------------ project links
 
-    def create_link(self, consumer, service, path, provider, provider_service, strip, inject_as, hide_provider, created_by):
-        """A service of `consumer` serves `path` from a service of `provider`, behind the consumer's own access gate."""
+    def create_link(self, consumer, service, path, provider, provider_service, strip, hide_provider, created_by,
+                    mode="paths", excludes=""):
+        """A service of `consumer` serves part of its traffic from a service of `provider`, behind the consumer's own gate.
+        mode 'paths': requests under the listed path prefixes (comma separated).
+        mode 'fetch': every request the page makes with fetch/XHR (Sec-Fetch-Dest: empty), except the `excludes` prefixes
+                      that the frontend serves itself — no knowledge of the app's API paths is needed."""
         if not (SLUG.match(consumer or "") and SLUG.match(provider or "")) or consumer == provider:
             raise ValueError("two different registered project names are required")
         if not (LINK_NAME.match(service or "") and LINK_NAME.match(provider_service or "")):
             raise ValueError("service names are lower-case letters, digits and -")
-        if not LINK_PATH.match(path or "") or path == "/":
-            raise ValueError("the path must look like /api (letters, digits . _ ~ - /), and not be the whole site")
-        if inject_as and not LINK_KEY.match(inject_as):
-            raise ValueError("inject_as must be a valid environment variable name")
+        if mode not in ("paths", "fetch"):
+            raise ValueError("mode must be paths or fetch")
+
+        def prefixes(raw, label, limit, allow_root=False):
+            out = []
+            for part in str(raw or "").split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if not LINK_PATH.match(part) or (part == "/" and not allow_root):
+                    raise ValueError(f"{label}: {part!r} must look like /api (letters, digits . _ ~ - /)")
+                part = part.rstrip("/") or "/"
+                if part not in out:
+                    out.append(part)
+            if len(out) > limit:
+                raise ValueError(f"{label}: at most {limit}")
+            return out
+
+        if mode == "paths":
+            plist = prefixes(path, "path", 8)
+            if not plist:
+                raise ValueError("give at least one path, for example /api")
+            stored_path = ",".join(plist)
+        else:
+            stored_path, strip = "*", False
+        exlist = prefixes(excludes, "excluded path", 30)
         with self.connect() as db:
             lid = secrets.token_hex(8)
             try:
-                db.execute("""INSERT INTO project_links (id, consumer, service, path, provider, provider_service, env, strip, inject_as,
-                              hide_provider, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                           (lid, consumer, service, path.rstrip("/") or "/", provider, provider_service, "", 1 if strip else 0,
-                            inject_as or "", 1 if hide_provider else 0, created_by, int(time.time())))
+                db.execute("""INSERT INTO project_links (id, consumer, service, path, provider, provider_service, env, strip,
+                              hide_provider, mode, excludes, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           (lid, consumer, service, stored_path, provider, provider_service, "", 1 if strip else 0,
+                            1 if hide_provider else 0, mode, ",".join(exlist), created_by, int(time.time())))
             except sqlite3.IntegrityError:
-                raise ValueError("this service already has a link on that path") from None
+                raise ValueError("this service already has a link of that kind") from None
             return lid
 
     def delete_link(self, link_id):

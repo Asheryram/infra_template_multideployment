@@ -419,6 +419,9 @@ async function load() {
   STATE = await api('/api/state');
   const s = STATE.settings;
   const base = d => `https://${d}.${s.domain}${s.suffix}`;
+  // Sign out everywhere: end the console session, then the preview session (the other proxy, on the sso host), and each of
+  // them ends the Keycloak session, so the next visit asks for the password again.
+  const signOutHref = '/oauth2/sign_out?rd=' + encodeURIComponent(base('sso') + '/oauth2/sign_out?rd=' + encodeURIComponent(base('console') + '/signed-out'));
   $('#sidebarDomain').textContent = s.domain || s.server;
   $('#sidebarUser').textContent = STATE.user || 'unknown';
   const platformAdmin = STATE.access?.platform_admin;
@@ -434,14 +437,14 @@ async function load() {
     : [['Status', base('status')]];
   $('#sidebarLinks').innerHTML = links
     .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener">${n} ↗</a>`).join('')
-    + (STATE.access?.auth_mode === 'keycloak' ? '<a href="/oauth2/sign_out?rd=%2Fsigned-out" style="margin-top:6px">Sign out</a>' : '');
+    + (STATE.access?.auth_mode === 'keycloak' ? `<a href="${signOutHref}" style="margin-top:6px">Sign out</a>` : '');
   $('#topMeta').textContent = s.server;
   $('#topLinks').innerHTML = (platformAdmin
     ? [['Traefik', base('traefik')], ['Container logs', base('logs')], ['Uptime', base('status')]]
     : [['Uptime', base('status')]])
     .map(([n, u]) => `<a href="${u}" target="_blank" rel="noopener"><svg width="12" height="12" fill="none" viewBox="0 0 12 12"><path d="M2 10L10 2M10 2H5M10 2v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>${n}</a>`).join('');
   if (STATE.access?.auth_mode === 'keycloak') {
-    $('#topLinks').innerHTML += '<a href="/oauth2/sign_out?rd=%2Fsigned-out">Sign out</a>';
+    $('#topLinks').innerHTML += `<a href="${signOutHref}">Sign out</a>`;
   }
   renderEnvs();
   if (!$('#tab-vars').hidden) renderVars();
@@ -1486,18 +1489,21 @@ async function renderPolicies(access, response) {
   const linkCard = access.project_links ? `<div class="card">
     <div class="card-header"><h2>Project links</h2><span class="card-meta">let a frontend use another project's API without access to it</span></div>
     <div style="padding:16px 18px">
-      <p class="muted">A link makes a path on one project's address (for example <span class="mono">/api</span> on the frontend) answer from a service of another project, over the platform's private network. The browser then talks to one host, the access gate of that host covers the whole call, so <b>whoever may open the frontend can use its API through it without any access to the API's project</b>. The API can drop its own public address. Links are managed here, not in <span class="mono">infra.yml</span>, so nobody can create one with a pull request. A link applies to every environment, previews reach previews, develop reaches develop, prod reaches prod. Only a platform administrator (or the organization's administrator, for two projects of their own organization) can manage them.</p>
+      <p class="muted">A link lets a frontend use another project's API <b>without any change to either app</b>. The page's API calls are sent to the other project over the platform's private network. The browser then talks to one host, the access gate of that host covers the whole call, so <b>whoever may open the frontend can use its API through it without any access to the API's project</b>, and the API can drop its own public address. Choose which requests go to the API: <b>all calls the page makes with fetch/XHR</b> (browsers label them; no knowledge of the app's paths is needed — list the few paths the frontend serves itself, such as <span class="mono">/assets/</span>) or <b>specific paths</b> (for example <span class="mono">/api</span>). Links are managed here, not in <span class="mono">infra.yml</span>, so nobody can create one with a pull request. A link applies to every environment of the same class (previews reach previews, develop reaches develop, prod reaches prod). Only a platform administrator, or the organization's administrator for two projects of their own organization, can manage links. <i>An app that hard-codes the API's full address in its code keeps calling that address and cannot be redirected this way.</i></p>
       <div class="scroll"><table><tr><th>Frontend</th><th>Path</th><th>Serves from</th><th>Options</th><th></th></tr>
-      ${links.map(l => `<tr><td><b>${esc(l.consumer)}</b> <span class="muted">${esc(l.service)}</span></td><td class="mono">${esc(l.path)}</td>
+      ${links.map(l => `<tr><td><b>${esc(l.consumer)}</b> <span class="muted">${esc(l.service)}</span></td><td>${l.mode === 'fetch' ? `<span class="chip info">all fetch/XHR calls</span><div class="muted mono" style="font-size:11.5px">except ${esc(l.excludes || 'nothing')}</div>` : `<span class="mono">${esc(l.path)}</span>`}</td>
         <td><b>${esc(l.provider)}</b> <span class="muted">${esc(l.provider_service)}</span></td>
-        <td style="font-size:12.5px">${l.strip ? '<span class="chip quiet">strip prefix</span> ' : ''}${l.inject_as ? `<span class="chip quiet">sets ${esc(l.inject_as)}</span> ` : ''}${l.hide_provider ? '<span class="chip quiet">API has no public address</span>' : ''}</td>
+        <td style="font-size:12.5px">${l.strip ? '<span class="chip quiet">strip prefix</span> ' : ''}${l.hide_provider ? '<span class="chip quiet">API has no public address</span>' : ''}</td>
         <td style="text-align:right;white-space:nowrap"><button class="btn" data-lnkapply="${esc(l.id)}" title="Redeploy both projects' environments so the change takes effect">Apply now</button> <button class="btn danger" data-lnkdel="${esc(l.id)}">Delete</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No links yet.</td></tr>'}</table></div>
       <h3 style="margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em" class="muted">New link</h3>
       <div class="row"><select id="lnkFrom" aria-label="Frontend project">${linkApps.map(a => `<option>${esc(a)}</option>`).join('')}</select><input id="lnkSvc" class="mono" placeholder="service (web)" value="web" style="width:120px">
-        <input id="lnkPath" class="mono" placeholder="/api" value="/api" style="width:110px"><span class="muted">serves from</span>
+        <span class="muted">sends</span>
+        <select id="lnkMode" aria-label="Which requests"><option value="fetch">all fetch/XHR calls of the page</option><option value="paths">only these paths</option></select>
+        <input id="lnkPath" class="mono" placeholder="/api, /graphql" value="/api" style="width:170px" hidden>
+        <span class="muted">to</span>
         <select id="lnkTo" aria-label="API project">${linkApps.map(a => `<option>${esc(a)}</option>`).join('')}</select><input id="lnkTsvc" class="mono" placeholder="service (api)" value="api" style="width:120px"></div>
-      <div class="row"><label class="muted" style="font-size:12.5px"><input type="checkbox" id="lnkStrip"> remove the path before it reaches the API</label>
-        <input id="lnkInject" class="mono" placeholder="set variable (API_URL)" value="API_URL" style="width:170px">
+      <div class="row" id="lnkExclRow"><span class="muted" style="font-size:12.5px">the frontend keeps these itself:</span><input id="lnkExcl" class="mono" value="/_next/,/static/,/assets/,/locales/,/env.js,/favicon.ico,/manifest.json,/robots.txt,/sw.js" style="min-width:420px"></div>
+      <div class="row"><label class="muted" style="font-size:12.5px" id="lnkStripRow" hidden><input type="checkbox" id="lnkStrip"> remove the path before it reaches the API</label>
         <label class="muted" style="font-size:12.5px"><input type="checkbox" id="lnkHide"> the API has no public address of its own</label>
         <button class="btn primary" id="lnkAdd">Create link</button><span class="muted" id="lnkNote" style="font-size:12.5px">Takes effect at the next deploy of both projects — or press Apply now.</span></div>
     </div></div>` : '';
@@ -1560,9 +1566,11 @@ async function renderPolicies(access, response) {
     try { const r = await api('/api/access', { op: 'link-apply', id: b.dataset.lnkapply }); toast('Applied: ' + (r.redeployed || []).join(', ')); } catch (e) { toast(e.message); }
     b.disabled = false;
   });
+  const lnkMode = () => { const f = $('#lnkMode', host)?.value === 'fetch'; if (!$('#lnkMode', host)) return; $('#lnkPath', host).hidden = f; $('#lnkExclRow', host).hidden = !f; $('#lnkStripRow', host).hidden = f; };
+  $('#lnkMode', host)?.addEventListener('change', lnkMode); lnkMode();
   $('#lnkAdd', host)?.addEventListener('click', () => post({ op: 'link-create', consumer: $('#lnkFrom', host).value, service: $('#lnkSvc', host).value.trim(),
-    path: $('#lnkPath', host).value.trim(), provider: $('#lnkTo', host).value, provider_service: $('#lnkTsvc', host).value.trim(),
-    strip: $('#lnkStrip', host).checked, inject_as: $('#lnkInject', host).value.trim(), hide_provider: $('#lnkHide', host).checked }, 'Link created'));
+    mode: $('#lnkMode', host).value, path: $('#lnkPath', host).value.trim(), excludes: $('#lnkExcl', host).value.trim(), provider: $('#lnkTo', host).value, provider_service: $('#lnkTsvc', host).value.trim(),
+    strip: $('#lnkStrip', host).checked, hide_provider: $('#lnkHide', host).checked }, 'Link created'));
   $('#grpCreate', host)?.addEventListener('click', () => post({ op: 'group-create', organization: $('#grpOrg', host).value, name: $('#grpName', host).value.trim(), description: $('#grpDesc', host).value.trim() }, 'Group created'));
   host.querySelectorAll('[data-grpdel]').forEach(b => b.onclick = () => { if (confirm('Delete this group? Its members lose what its policies granted.')) post({ op: 'group-delete', id: b.dataset.grpdel }, 'Group deleted'); });
   host.querySelectorAll('[data-grpmrm]').forEach(a => a.onclick = ev => { ev.preventDefault(); const [id, uid] = a.dataset.grpmrm.split('|'); post({ op: 'group-member-remove', id, uid }, 'Removed'); });

@@ -316,6 +316,7 @@ services:
       OAUTH2_PROXY_CLIENT_ID: ${OAUTH2_PROXY_CLIENT_ID:-infra-console}
       OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH2_PROXY_CLIENT_SECRET:-}
       OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET:-}
+      OAUTH2_PROXY_WHITELIST_DOMAINS: .${DOMAIN}:*
       OAUTH2_PROXY_REDIRECT_URL: https://console.${DOMAIN}${PUBLIC_HTTPS_PORT_SUFFIX:-}/oauth2/callback
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
       OAUTH2_PROXY_UPSTREAMS: http://console:8000/
@@ -330,6 +331,15 @@ services:
       OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
       OAUTH2_PROXY_COOKIE_SECURE: "true"
       OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      # A sign-in can legitimately take a while (a login tab left open, a password reset, a second factor). The default
+      # one-time cookie lives 15 minutes, so finishing later ended on a 403 page until "Sign in" was pressed again.
+      # Keep it as long as Keycloak accepts the login, and keep one per attempt so several open tabs don't overwrite each other.
+      OAUTH2_PROXY_COOKIE_CSRF_EXPIRE: 1h
+      OAUTH2_PROXY_COOKIE_CSRF_PER_REQUEST: "true"
+      # Real sign-out. By default /oauth2/sign_out only clears this proxy's own cookie, so the Keycloak session stayed alive and
+      # the next visit signed you straight back in without a password. With this URL oauth2-proxy also ends the Keycloak
+      # session itself (server to server, using the session's own id_token), so "Sign out" means signed out everywhere.
+      OAUTH2_PROXY_BACKEND_LOGOUT_URL: https://auth.${DOMAIN}${PUBLIC_HTTPS_PORT_SUFFIX:-}/realms/${KEYCLOAK_REALM:-infra}/protocol/openid-connect/logout?id_token_hint={id_token}
       SSL_CERT_FILE: /etc/keycloak-certs/tls.crt
     volumes:
       - ${TRAEFIK_STATE_DIR:?run via 'infra platform up'}/certs/keycloak:/etc/keycloak-certs:ro
@@ -382,6 +392,15 @@ services:
       OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
       OAUTH2_PROXY_COOKIE_SECURE: "true"
       OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      # A sign-in can legitimately take a while (a login tab left open, a password reset, a second factor). The default
+      # one-time cookie lives 15 minutes, so finishing later ended on a 403 page until "Sign in" was pressed again.
+      # Keep it as long as Keycloak accepts the login, and keep one per attempt so several open tabs don't overwrite each other.
+      OAUTH2_PROXY_COOKIE_CSRF_EXPIRE: 1h
+      OAUTH2_PROXY_COOKIE_CSRF_PER_REQUEST: "true"
+      # Real sign-out. By default /oauth2/sign_out only clears this proxy's own cookie, so the Keycloak session stayed alive and
+      # the next visit signed you straight back in without a password. With this URL oauth2-proxy also ends the Keycloak
+      # session itself (server to server, using the session's own id_token), so "Sign out" means signed out everywhere.
+      OAUTH2_PROXY_BACKEND_LOGOUT_URL: https://auth.${DOMAIN}${PUBLIC_HTTPS_PORT_SUFFIX:-}/realms/${KEYCLOAK_REALM:-infra}/protocol/openid-connect/logout?id_token_hint={id_token}
       SSL_CERT_FILE: /etc/keycloak-certs/tls.crt
     volumes:
       - ${TRAEFIK_STATE_DIR:?run via 'infra platform up'}/certs/keycloak:/etc/keycloak-certs:ro

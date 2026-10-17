@@ -239,6 +239,7 @@ bash /opt/infra/local/verify-isolation.sh              # your containers/volumes
 |---|---|
 | Keycloak page says **403** | `auth.` and `sso.` only accept the networks in `KEYCLOAK_VPN_CIDRS`. After a Docker Desktop restart your address changed → keep the private ranges locally (step 1), then `sudo -u deploy infra platform up`. |
 | Console login shows `invalid_scope` | A proxy requests a scope the realm doesn't define. Both proxies request only `openid email profile`; check `OAUTH2_PROXY_SCOPE` in `platform/docker-compose.yml` wasn't edited back to include `groups`. |
+| A **403 page with "More Info"** right after a successful Keycloak login | oauth2-proxy's one-time sign-in cookie had expired (the login page was left open longer than it lives; the log says `CSRF cookie … was not found`). It now lives 1 hour (`OAUTH2_PROXY_COOKIE_CSRF_EXPIRE`) and one is kept per attempt, so several open tabs don't clash. If it still happens, press **Sign in** once more; check `docker logs infra-oauth2-previews`. |
 | `infra-console` / `infra-socket-proxy` exit 127 after Docker Desktop restarted | Bind mounts weren't ready: `sudo -u deploy infra platform up`, then `docker restart infra-traefik`. |
 | Traefik unhealthy after the socket-proxy was recreated | `docker restart infra-traefik`. |
 | `platform up` → `…require CONSOLE_AUTH_MODE=keycloak…` | The settings must agree: `PLATFORM_PROFILES` has `keycloak,keycloak-auth,keycloak-previews` ⇔ `CONSOLE_AUTH_MODE=keycloak` and at least one of `PREVIEW_AUTH_MODE` / `OPS_AUTH_MODE` is `keycloak`. |

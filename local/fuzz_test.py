@@ -141,23 +141,28 @@ path_like = st.one_of(st.sampled_from(["/api", "/", "api", "/a b", "/a;b", "//",
 
 
 @settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(name_like, name_like, path_like, name_like, name_like, st.text(alphabet="API_URL9-;'", max_size=8))
-def test_link_validation_accepts_only_safe_values(consumer, svc, path, provider, psvc, inject):
+@given(name_like, name_like, path_like, name_like, name_like,
+       st.sampled_from(["paths", "fetch", "all", ""]), st.text(alphabet="/abc,-_.~;'` $\\", max_size=24))
+def test_link_validation_accepts_only_safe_values(consumer, svc, path, provider, psvc, mode, excludes):
     d = tempfile.mkdtemp()
     try:
         s = access.AccessStore(os.path.join(d, "a.sqlite3"))
         try:
-            s.create_link(consumer, svc, path, provider, psvc, False, inject, False, "t")
+            s.create_link(consumer, svc, path, provider, psvc, False, False, "t", mode=mode, excludes=excludes)
         except ValueError:
             return
         row = s.list_links()[0]
         assert re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?", row["consumer"]) and row["consumer"] != row["provider"]
         assert re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?", row["service"]) and re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?", row["provider_service"])
-        assert re.fullmatch(r"/[A-Za-z0-9._~/-]{0,100}", row["path"]) and row["path"] != "/"
-        assert not row["inject_as"] or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", row["inject_as"])
+        assert row["mode"] in ("paths", "fetch")
+        if row["mode"] == "fetch":
+            assert row["path"] == "*" and row["strip"] == 0
+        else:
+            assert all(re.fullmatch(r"/[A-Za-z0-9._~/-]{0,100}", x) and x != "/" for x in row["path"].split(","))
+        assert all(re.fullmatch(r"/[A-Za-z0-9._~/-]{0,100}", x) for x in filter(None, row["excludes"].split(",")))
         out = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "project-links.py"), os.path.join(d, "a.sqlite3"), row["consumer"]],
                              capture_output=True, text=True).stdout
-        assert out.count("\n") == 1 and out.count("|") == 6, out          # one line, six separators: no value can break the format
+        assert out.count("\n") == 1 and out.count("|") == 7, out          # one line, seven separators: no value can break the format
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)

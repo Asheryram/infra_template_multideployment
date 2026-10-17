@@ -4,8 +4,9 @@
 #
 #   sudo bash /opt/infra/local/e2e/upstreams.sh [--keep]
 #
-# What it proves: the link is made in the console (never in the repo) · it applies per environment class · the target can
-# lose its public address · the frontend's access gate covers the route · exact path boundary · forged identity headers do
+# What it proves: the link is made in the console (never in the repo) · it works without knowing the app's API paths
+# (every fetch/XHR of the page, checked with a REAL browser when WAIT_FOR_BROWSER=1) or for explicit paths · it applies per
+# environment class · the target can lose its public address · the frontend's access gate covers the route · exact path boundary · forged identity headers do
 # not open the gate · deleting the link puts everything back · your other containers are untouched.
 set -uo pipefail
 [[ $EUID -eq 0 ]] || { echo "run with sudo"; exit 1; }
@@ -100,23 +101,43 @@ check "a manifest declaring upstreams is REFUSED"            "$rc" 1
 check "…and the message points to the console"               "$(tail -30 "$LOG" | grep -c "'upstreams' is not part of infra.yml")" 1
 G demo-web reset -q --hard HEAD~1
 
-title "2. The link is made in the console"
-LNK='{"op":"link-create","consumer":"demo-web","service":"web","path":"/api","provider":"demo-api","provider_service":"api","strip":true,"inject_as":"API_URL","hide_provider":true}'
+title "2. The link is made in the console: \"every fetch/XHR of the page\" — no API path needed"
+LNK='{"op":"link-create","consumer":"demo-web","service":"web","mode":"fetch","excludes":"/assets/,/env.js,/favicon.ico","provider":"demo-api","provider_service":"api","hide_provider":true}'
 check "a member cannot create it"                            "$(member POST /api/access "$LNK")" 403
 check "a platform admin creates it"                          "$(adm POST /api/access "$LNK" | jq -r .ok)" true
 LID=$(adm GET /api/access | jq -r '.access.project_links[] | select(.consumer=="demo-web") | .id')
 check "the same path twice is refused"                       "$(adm POST /api/access "$LNK" | jq -r .error | grep -c 'already has a link')" 1
+# the link sets NO variable. Like any team does today, the frontend's API address is an ordinary console variable:
+# pointed at the frontend itself, so the browser's call is same-origin and the gate's cookie travels with it
+check "the frontend's API address is set as an ordinary variable" "$(adm POST /api/secret "{\"app\":\"demo-web\",\"scope\":\"develop\",\"key\":\"API_URL\",\"value\":\"$WEB\"}" | jq -r .ok)" true
 check "Apply now redeploys both projects"                    "$(adm POST /api/access "{\"op\":\"link-apply\",\"id\":\"$LID\"}" | jq -r '.redeployed | map(select(endswith(":ok"))) | length')" 2
 
-title "3. The route works, and the API has no address of its own"
-check "frontend serves its own page"                         "$(code "$WEB/")" 200
-check "/api/ reaches the API (strip prefix)"                 "$(body "$WEB/api/" | jq -r .env)" develop
-check "/api/health reaches the API's /health"                "$(code "$WEB/api/health")" 200
+title "3. The route works for ANY API path, and the API has no address of its own"
+FD=(-H 'Sec-Fetch-Dest: empty')      # what every browser sends for fetch()/XHR
+check "frontend serves its own page (a navigation)"          "$(code "$WEB/")" 200
+check "a fetch of / reaches the API (no /api prefix anywhere)" "$(body "${FD[@]}" "$WEB/" | jq -r .env)" develop
+check "a fetch of /health reaches the API's /health"         "$(body "${FD[@]}" "$WEB/health" | jq -r .ok)" true
+check "a fetch of any other path reaches the API too"        "$(body "${FD[@]}" "$WEB/anything/at/all" | jq -r .service)" demo-api
+check "the same URL as a page NAVIGATION is the frontend's"  "$(body "$WEB/healthz")" "ok"
+check "a script/image request is never rerouted"             "$(body -H 'Sec-Fetch-Dest: script' "$WEB/env.js" | grep -c 'API_URL')" 1
+check "excluded paths stay with the frontend, even for fetch" "$(body "${FD[@]}" "$WEB/env.js" | grep -c 'API_URL')" 1
 check "the API's own address now answers 403"                "$(code "$API/health")" 403
 check "API_URL points at the frontend's own address"         "$(body "$WEB/env.js" | sed -nE 's/.*"API_URL": "(.*)",?/\1/p')" "$WEB"
 check "the API is not listed as a public URL"                "$(adm GET /api/state | jq -r '[.deployments[] | select(.APP=="demo-api" and .ENV_NAME=="develop") | .URLS] | join(",")')" ""
+if [[ -n ${WAIT_FOR_BROWSER:-} ]]; then
+  echo "READY-FOR-BROWSER $WEB"; rm -f /tmp/up-continue
+  for _ in $(seq 1 90); do [[ -f /tmp/up-continue ]] && break; sleep 2; done
+fi
 
-title "4. Path boundary: exact, not a string prefix"
+title "4. The same with explicit paths — and a path boundary that is exact, not a string prefix"
+adm POST /api/access "{\"op\":\"link-delete\",\"id\":\"$LID\"}" >/dev/null
+PLNK='{"op":"link-create","consumer":"demo-web","service":"web","mode":"paths","path":"/api","strip":true,"provider":"demo-api","provider_service":"api","hide_provider":true}'
+check "an explicit-path link is created"                     "$(adm POST /api/access "$PLNK" | jq -r .ok)" true
+LID=$(adm GET /api/access | jq -r '.access.project_links[] | select(.consumer=="demo-web") | .id')
+check "Apply now redeploys both projects"                    "$(adm POST /api/access "{\"op\":\"link-apply\",\"id\":\"$LID\"}" | jq -r '.redeployed | map(select(endswith(":ok"))) | length')" 2
+check "/api/ reaches the API (strip prefix)"                 "$(body "$WEB/api/" | jq -r .env)" develop
+check "/api/health reaches the API's /health"                "$(code "$WEB/api/health")" 200
+check "a fetch of another path is NOT rerouted in this mode" "$(body "${FD[@]}" "$WEB/health" | jq -r .ok 2>/dev/null)" ""
 check "/apix is NOT sent to the API"                         "$(body "$WEB/apix" | jq -r .env 2>/dev/null)" ""
 check "/apiary is NOT sent to the API"                       "$(body "$WEB/apiary/x" | jq -r .env 2>/dev/null)" ""
 check "encoded slash cannot smuggle a prefix"                "$(body --path-as-is "$WEB/api%2f..%2f" | jq -r .env 2>/dev/null)" ""
