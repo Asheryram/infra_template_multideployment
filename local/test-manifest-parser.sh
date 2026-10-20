@@ -21,4 +21,15 @@ reject "no services"             $'name: t'
 reject "bad env key"             $'name: t\nservices:\n  web:\n    image: x/y\n    required_env: ["BAD KEY"]'
 reject "migrate unknown service" $'name: t\nservices:\n  web:\n    image: x/y\nmigrate:\n  service: nope\n  cmd: x'
 
+accept() { # description, yaml, expected line in the parsed output
+  printf '%s\n' "$2" > "$tmp"
+  python3 "$PARSE" "$tmp" 2>&1 | grep -qF -- "$3" || { echo "expected '$3' for: $1" >&2; exit 1; }
+}
+accept "a colon inside a trailing comment on a list item" \
+  $'name: t\nservices:\n  api:\n    image: x/y\n    required_env:\n      - A_KEY    # note: this is a comment\n      - B_KEY' "API_REQUIRED_ENV='A_KEY B_KEY'"
+accept "a colon inside a trailing comment on a mapping line" \
+  $'name: t\nservices:\n  api:\n    image: x/y   # which image: this one\n    port: 80  # the port: fixed' "API_PORT='80'"
+accept "a hash inside quotes is not a comment" \
+  $'name: t\nservices:\n  api:\n    image: x/y\n    required_env: ["A_KEY"]\n    health_path: "/h#x"' "API_HEALTH_PATH='/h#x'"
+
 echo "infra.yml parser: shipped manifests accepted; invalid manifests rejected"

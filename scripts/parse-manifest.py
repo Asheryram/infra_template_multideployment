@@ -20,6 +20,21 @@ import os
 # Supports: mappings, sequences, scalars (quoted + unquoted), comments, multiline.
 # No anchors, no tags, no complex keys. Enough for infra.yml.
 
+def _decomment(line):
+    """Drop a trailing ` # comment` (a `#` after whitespace, outside quotes). Done BEFORE a line is looked at for
+    `key: value`, so a colon inside a comment can never turn a list item into a mapping."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '#' and (i == 0 or line[i - 1] in ' \t'):
+            return line[:i].rstrip()
+    return line
+
+
 def _parse_yaml(text):
     lines = text.splitlines()
     pos = [0]
@@ -66,7 +81,7 @@ def _parse_yaml(text):
             ind = indent_of(l)
             if ind < min_indent:
                 break
-            stripped = l.strip()
+            stripped = _decomment(l.strip())
             if stripped.startswith('- ') or stripped == '-':
                 # sequence
                 if result is None:
@@ -89,7 +104,7 @@ def _parse_yaml(text):
                         nl = peek()
                         if nl is None or indent_of(nl) <= ind:
                             break
-                        ns = nl.strip()
+                        ns = _decomment(nl.strip())
                         if ns.startswith('- ') or ns == '-':
                             break
                         if ':' in ns:

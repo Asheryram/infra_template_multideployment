@@ -50,11 +50,11 @@ need_stack() { # app env → sets SD (stack dir); the environment must have been
 declared_of() { declared_dbs "$(stack_dir "$1" "$2")/deploy" "$1" "$2"; }   # app env
 pick_row() { # app env → first declared row matching $DBID (or the first created one when no --db)
   local row sd; sd=$(stack_dir "$1" "$2")
-  while IFS= read -r row; do
+  while IFS= read -r -u 3 row; do
     [[ -n $row ]] || continue
     if [[ -n $DBID ]]; then [[ ${row%%|*} == "$DBID" ]] && { echo "$row"; return 0; }
     else IFS='|' read -r _ _ _ n _ <<< "$row"; db_is_created "$sd" "$n" && { echo "$row"; return 0; }; fi
-  done < <(declared_of "$1" "$2")
+  done 3< <(declared_of "$1" "$2")
   return 1
 }
 db_name_of() { local row; row=$(pick_row "$1" "$2") || die "$1/$2 has no ${DBID:-created} database (see: infra db info $1 $2)"; IFS='|' read -r _ _ _ n _ <<< "$row"; echo "$n"; }
@@ -81,7 +81,7 @@ case $action in
   info)
     app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"
     rows=$(declared_of "$app" "$env"); items=()
-    while IFS='|' read -r id svc inject name fixed; do
+    while IFS='|' read -r -u 3 id svc inject name fixed; do
       [[ -n $id ]] || continue
       created=false; exists=false wiped=false; size=""
       db_is_created "$SD" "$name" && created=true
@@ -91,7 +91,7 @@ case $action in
         --arg url "$([[ $created == true ]] && db_url_for "$SD" "$name" || true)" \
         --argjson created "$created" --argjson exists "$exists" --argjson wiped "$wiped" \
         '{id:$id, service:$service, inject_as:$inject_as, name:$name, created:$created, exists:$exists, wiped:$wiped, size:$size, url:$url}')")
-    done <<< "$rows"
+    done 3<<< "$rows"
     json=$(printf '%s\n' "${items[@]:-}" | jq -cs '[ .[] | select(. != null) ]')
     if [[ ${3:-} == --json ]]; then jq -cn --argjson databases "$json" '{databases:$databases}'
     else
@@ -104,14 +104,14 @@ case $action in
     app=${1:?app}; env=${2:?env}; need_stack "$app" "$env"
     rows=$(declared_of "$app" "$env"); n=0
     [[ -n $rows ]] || die "infra.yml declares no databases for $app"
-    while IFS='|' read -r id svc inject name fixed; do
+    while IFS='|' read -r -u 3 id svc inject name fixed; do
       [[ -n $id ]] || continue
       [[ -z $DBID || $DBID == "$id" ]] || continue
       if [[ -z $DBID ]] && db_is_created "$SD" "$name"; then continue; fi    # all: only the missing ones
       log "creating $id → $name"
       db_provision "$SD" "$name" "$fixed" "$(env_class "$env")"
       n=$((n + 1))
-    done <<< "$rows"
+    done 3<<< "$rows"
     (( n )) || { [[ -z $DBID ]] && { log "all declared databases already exist"; exit 0; }; die "no declared database '$DBID'"; }
     attach_pg "$app" "$env"
     log "$n database(s) ready — apply with: infra redeploy $app $env"
@@ -122,14 +122,14 @@ case $action in
     if [[ $env == prod && ${3:-} != --i-really-mean-prod ]]; then die "refusing to wipe prod without --i-really-mean-prod"; fi
     acquire_lock "$(stack_name "$app" "$env")"
     rows=$(declared_of "$app" "$env"); n=0
-    while IFS='|' read -r id svc inject name fixed; do
+    while IFS='|' read -r -u 3 id svc inject name fixed; do
       [[ -n $id ]] || continue
       [[ -z $DBID || $DBID == "$id" ]] || continue
       db_is_created "$SD" "$name" || continue
       if db_exists "$name"; then psql_admin -c "DROP DATABASE \"$name\" WITH (FORCE)"; fi
       touch "$SD/.db_wiped_$name"        # later deploys must NOT bring it back — only `create` does
       n=$((n + 1))
-    done <<< "$rows"
+    done 3<<< "$rows"
     log "$n database(s) wiped — apply with: infra redeploy $app $env (the URL is no longer injected)"
     ;;
 

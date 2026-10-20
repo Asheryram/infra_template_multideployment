@@ -284,7 +284,9 @@ PENDING_DBS=()
 declare -A DB_NAMES  # svc -> space-separated "inject_as=url" pairs
 
 declared=$(declared_dbs "$DEPLOY_DIR" "$APP" "$ENV_NAME") || die "failed to read databases from infra.yml"
-while IFS='|' read -r id svc inject_as db_name fixed_pw; do
+# Rows are read from fd 3, never from stdin: psql_admin runs `docker exec -i`, which reads stdin and would swallow the
+# remaining rows (an app with two declared databases only ever got its first one).
+while IFS='|' read -r -u 3 id svc inject_as db_name fixed_pw; do
   [[ -n $id ]] || continue
   if ! db_is_created "$STACK_DIR" "$db_name"; then
     PENDING_DBS+=("$id")
@@ -296,7 +298,7 @@ while IFS='|' read -r id svc inject_as db_name fixed_pw; do
   fi
   DB_NAMES[$svc]+="${inject_as}=$(db_url_for "$STACK_DIR" "$db_name") "
   ALL_DBS+=("$db_name")
-done <<< "$declared"
+done 3<<< "$declared"
 if (( ${#PENDING_DBS[@]} )); then
   log "databases declared but not created yet: ${PENDING_DBS[*]} (create them in the console → Database)"
 fi
