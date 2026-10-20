@@ -5,7 +5,7 @@ policies:
   - orgId: 1
     receiver: email-ops
     group_by: ["alertname"]
-    group_wait: 1m
+    group_wait: 30s
     group_interval: 15m
     repeat_interval: 12h
     routes:

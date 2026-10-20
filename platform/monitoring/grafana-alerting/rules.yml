@@ -445,7 +445,7 @@ groups:
       - uid: "scrape-down"
         title: "Monitoring cannot reach a target"
         condition: "C"
-        for: "10m"
+        for: "1m"
         noDataState: "OK"
         execErrState: "OK"
         labels:
