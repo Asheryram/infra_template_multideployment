@@ -1,0 +1,13 @@
+# Alerts go to ALERT_EMAIL_TO through the Gmail login in platform.secrets.env (GF_SMTP_*).
+apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: email-ops
+    receivers:
+      - uid: email-ops
+        type: email
+        settings:
+          addresses: "${ALERT_EMAIL_TO}"
+          singleEmail: true
+          subject: '{{ template "infra.subject" . }}'
+          message: '{{ template "infra.message" . }}'

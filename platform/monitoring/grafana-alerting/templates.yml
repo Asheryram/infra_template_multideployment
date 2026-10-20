@@ -1,0 +1,18 @@
+# What an alert email looks like: a plain subject, then for each problem WHAT, WHERE, WHY IT MATTERS and WHAT TO DO FIRST.
+apiVersion: 1
+templates:
+  - orgID: 1
+    name: infra
+    template: |
+      {{ define "infra.subject" }}[{{ if eq .Status "firing" }}{{ (index .Alerts 0).Labels.severity | toUpper }}{{ else }}RESOLVED{{ end }}] {{ (index .Alerts 0).Labels.alertname }}{{ if gt (len .Alerts) 1 }} ({{ len .Alerts }} alerts){{ end }}{{ end }}
+      {{ define "infra.message" }}{{ range .Alerts }}
+      {{ if eq .Status "firing" }}PROBLEM{{ else }}RESOLVED{{ end }}: {{ .Labels.alertname }}
+      {{ with .Labels.service }}Where:  {{ . }}
+      {{ end }}{{ with .Labels.name }}Where:  container {{ . }}
+      {{ end }}{{ with .Labels.device }}Where:  disk {{ . }}
+      {{ end }}{{ with .Labels.job }}Where:  monitoring target {{ . }}
+      {{ end }}{{ with .Labels.sans }}Where:  certificate for {{ . }}
+      {{ end }}Why it matters: {{ .Annotations.description }}
+      What to do first: {{ .Annotations.action }}
+      Since: {{ .StartsAt.Format "2006-01-02 15:04 MST" }}
+      {{ end }}{{ end }}

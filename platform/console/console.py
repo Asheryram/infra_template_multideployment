@@ -505,6 +505,23 @@ def available_keys(s, app, env, svc):
     keys = set()
     for f in files:
         keys |= {k for k, v in read_env(f).items() if v}
+    keys |= injected_database_keys(s, app, env, svc)
+    return keys
+
+
+def injected_database_keys(s, app, env, svc):
+    """Variables the platform itself injects on every deploy: the URL of each declared database that has been created
+    (and not wiped) for this environment. They are not in any variable file, but they are not going to go missing."""
+    d = f"{s['deploy_root']}/{app}/{env}"
+    cfg = (load_manifest(f"{d}/deploy").get("services") or {}).get(svc) or {}
+    keys = set()
+    for entry in cfg.get("databases") or []:
+        key = entry.get("inject_as") if isinstance(entry, dict) else None
+        if not key:
+            continue
+        ident = re.sub(r"[^a-z0-9_]", "_", f"{app}_{env}_{svc}_{key}".lower())
+        if os.path.exists(f"{d}/.db_password_{ident}") and not os.path.exists(f"{d}/.db_wiped_{ident}"):
+            keys.add(str(key))
     return keys
 
 

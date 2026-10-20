@@ -446,7 +446,8 @@ services:
     command: ["--path.rootfs=/host"]
     pid: host
     volumes:
-      - /:/host:ro,rslave
+      # rslave lets it see submounts; hosts whose root is not a shared mount (WSL) set NODE_EXPORTER_ROOT_MODE=ro
+      - /:/host:${NODE_EXPORTER_ROOT_MODE:-ro,rslave}
     networks: [metrics]
     mem_limit: 64m
     logging: *logging
@@ -479,9 +480,19 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_ROOT_URL: https://grafana.${DOMAIN}
+      # Alert emails (Gmail app password lives in platform.secrets.env, never in the repo)
+      GF_SMTP_ENABLED: ${GF_SMTP_ENABLED:-false}
+      GF_SMTP_HOST: ${GF_SMTP_HOST:-smtp.gmail.com:587}
+      GF_SMTP_USER: ${GF_SMTP_USER:-}
+      GF_SMTP_PASSWORD: ${GF_SMTP_PASSWORD:-}
+      GF_SMTP_FROM_ADDRESS: ${GF_SMTP_FROM_ADDRESS:-}
+      GF_SMTP_FROM_NAME: ${GF_SMTP_FROM_NAME:-Infra alerts}
+      GF_SMTP_STARTTLS_POLICY: ${GF_SMTP_STARTTLS_POLICY:-MandatoryStartTLS}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-root@localhost}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./monitoring/grafana-alerting:/etc/grafana/provisioning/alerting:ro
     networks: [proxy, metrics]
     mem_limit: 256m
     logging: *logging
