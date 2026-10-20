@@ -34,6 +34,8 @@ ACTIONS = {
     "database:Use":           ("Write",      "Point a variable at another environment's database", True),
     "environment:Destroy":    ("Privileged", "Destroy the environment and its databases", True),
     "database:Wipe":          ("Privileged", "Drop a database's data", True),
+    "database:Dump":          ("Privileged", "Download a copy of a database (all its data)", True),
+    "database:Restore":       ("Privileged", "Replace a database's data with an uploaded dump", True),
     "database:RevealUrl":     ("Privileged", "Show a database's full connection URL", True),
     "secrets:Reveal":         ("Privileged", "Show a secret variable's value", True),
     "resources:Write":        ("Privileged", "Change CPU and memory limits", True),

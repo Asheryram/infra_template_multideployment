@@ -94,7 +94,7 @@ Underneath, **every permission is an action on a resource, denied by default** �
 | List | `environment:List` — the environment appears in lists. **Without it the environment does not exist for that person** (404, not 403) |
 | Read | `environment:View` (details, endpoints, who deployed) · `environment:Open` (pass the access gate, open its URLs) · `logs:Read` · `variables:List` (names, values masked) · `variables:ReadValues` · `database:Describe` · `resources:Read` |
 | Write | `environment:Redeploy` · `environment:Restart` · `environment:Rollback` · `variables:Write` · `database:Create` · `database:Use` |
-| Privileged | `environment:Destroy` · `database:Wipe` · `database:RevealUrl` · `secrets:Reveal` · `resources:Write` |
+| Privileged | `environment:Destroy` · `database:Wipe` · `database:Dump` · `database:Restore` · `database:RevealUrl` · `secrets:Reveal` · `resources:Write` |
 
 **Statements** — `Effect` Allow/Deny, `Action` (wildcards like `logs:*`), `Resource`, optional `Condition`: `branch` (patterns like `feature/*`), `class` (`prod`, `staging`, `develop`, `preview`) and `expires` (a date). All conditions must hold; a conditional statement never matches a resource it cannot evaluate (a `branch` condition does not apply to a project-level resource).
 

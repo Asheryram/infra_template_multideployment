@@ -13,7 +13,7 @@
 #   infra db list
 #   infra db psql     <app> <env> [--db <id>]
 #   infra db dump     <app> <env> [out-file] [--db <id>]
-#   infra db restore  <app> <env> <dump-file> [--db <id>]     OVERWRITES that database's data
+#   infra db restore  <app> <env> <dump-file> [--db <id>] [--i-really-mean-prod]   OVERWRITES that database's data
 #   infra db template <app> <dump-file>            set the seed previews are cloned from
 #   infra db drop-template <app>
 #
@@ -187,6 +187,8 @@ case $action in
     file=${3:?dump file required}
     [[ -f $file ]] || die "no such file: $file"
     db_exists "$db" || die "database $db does not exist (deploy the environment first)"
+    if [[ ${2} == prod && ${4:-} != --i-really-mean-prod ]]; then die "refusing to restore into prod without --i-really-mean-prod"; fi
+    acquire_lock "$(stack_name "$1" "$2")"
     log "restoring $file into $db"
     docker exec -i "$PG_CONTAINER" pg_restore -U postgres -d "$db" --clean --if-exists \
       --no-owner --role="$db" < "$file"

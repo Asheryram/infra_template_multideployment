@@ -780,6 +780,8 @@ async function renderDatabase(dr, app, env, dbSources) {
         <span class="var">${esc(d.inject_as)}</span><span class="svc-tag">${esc(d.service)}</span>${status(d)}
         <span class="spacer">
           ${i.can_manage && !d.created ? `<button class="btn primary" data-dbcreate="${esc(d.id)}">${d.wiped ? 'Recreate (empty)' : 'Create database'}</button>` : ''}
+          ${i.can_dump && d.created && d.exists ? `<button class="btn" data-dbdump="${esc(d.id)}">Download dump</button>` : ''}
+          ${i.can_restore && d.created && d.exists ? `<button class="btn danger" data-dbrestore="${esc(d.id)}">Restore…</button>` : ''}
           ${i.can_wipe && d.created ? `<button class="btn danger" data-dbwipe="${esc(d.id)}">Wipe…</button>` : ''}
         </span>
       </div>
@@ -794,6 +796,8 @@ async function renderDatabase(dr, app, env, dbSources) {
       <select id="dbFrom">${others.map(x => `<option value="${esc(x.APP)}/${esc(x.ENV_NAME)}">${esc(x.APP)} / ${esc(x.ENV_NAME)}</option>`).join('')}</select>
       as <input id="dbKey2" placeholder="variable name" class="mono" style="width:180px">
       <button class="btn" id="dbUseOther">Set variable</button></div>` : ''}
+    ${i.can_restore && dbs.some(d => d.created) ? `<p class="db-note">Restore replaces a database's data with a dump made by <span class="mono">pg_dump -Fc --no-owner --no-acl</span>. The current data is saved first and the environment is redeployed.</p>
+      <input type="file" id="dbFile" hidden accept=".dump,.backup,application/octet-stream">` : ''}
     <div id="dbOut"></div>`;
 
   const done = async (r, what) => {
@@ -808,6 +812,34 @@ async function renderDatabase(dr, app, env, dbSources) {
   $('#dbCreateAll', box)?.addEventListener('click', async () => {
     toast('Creating and redeploying…');
     done(await api('/api/dbop', { app, env, op: 'create' }), 'Databases created and injected');
+  });
+  box.querySelectorAll('[data-dbdump]').forEach(btn => btn.onclick = async () => {
+    btn.disabled = true; toast('Preparing the dump…');
+    try {
+      const r = await fetch(`/api/database/dump?app=${encodeURIComponent(app)}&env=${encodeURIComponent(env)}&db=${encodeURIComponent(btn.dataset.dbdump)}`, { headers: { 'X-Infra-Console': '1' } });
+      if (!r.ok) { let m = 'Dump failed'; try { m = (await r.json()).error || m; } catch {} toast(m); return; }
+      const name = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '')?.[1] || 'database.dump';
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = name; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000); toast('Dump downloaded');
+    } finally { btn.disabled = false; }
+  });
+  box.querySelectorAll('[data-dbrestore]').forEach(btn => btn.onclick = () => {
+    const input = $('#dbFile', box); input.value = '';
+    input.onchange = async () => {
+      const f = input.files[0]; if (!f) return;
+      const c = prompt(`Replace the data of ${btn.dataset.dbrestore} in ${app}/${env} with ${f.name} (${(f.size / 1048576).toFixed(1)} MB)?\nThe current data is saved first.\nType ${app}/${env} to confirm:`);
+      if (c !== `${app}/${env}`) return toast('Not confirmed');
+      if (env === 'prod' && !confirm('This is PRODUCTION. Restore anyway?')) return toast('Not confirmed');
+      document.querySelectorAll('#dbBox button').forEach(b => b.disabled = true); toast('Uploading and restoring…');
+      let r;
+      try {
+        const resp = await fetch(`/api/dbrestore?app=${encodeURIComponent(app)}&env=${encodeURIComponent(env)}&db=${encodeURIComponent(btn.dataset.dbrestore)}`,
+          { method: 'POST', headers: { 'X-Infra-Console': '1', 'X-Confirm': c, ...(env === 'prod' ? { 'X-Allow-Prod': 'yes' } : {}) }, body: f });
+        r = await resp.json();
+      } catch (e) { r = { ok: false, error: String(e) }; }
+      done(r, 'Database restored and redeployed');
+    };
+    input.click();
   });
   box.querySelectorAll('[data-dbwipe]').forEach(btn => btn.onclick = async () => {
     const c = prompt(`Wipe database ${btn.dataset.dbwipe} of ${app}/${env}? All data is deleted.\nType ${app}/${env} to confirm:`);

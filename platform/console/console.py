@@ -295,6 +295,40 @@ def infra(*args, timeout=900, actor=None):
         return False, f"timed out after {timeout}s"
 
 
+DB_UPLOAD_MAX = int(os.environ.get("DB_UPLOAD_MAX_MB", "1024")) * 1024 * 1024
+DB_BACKUPS_KEPT = 3
+DB_ID = re.compile(r"[a-z0-9-]+:[A-Za-z_][A-Za-z0-9_]*")
+
+
+def db_work_dir(s, name):
+    """Private scratch space under the state dir (owner-only): dumps in flight and the pre-restore backups."""
+    d = os.path.join(s["state_dir"], name)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def sweep_old(d, max_age):
+    for f in glob.glob(os.path.join(d, "*")):
+        try:
+            if time.time() - os.path.getmtime(f) > max_age:
+                os.remove(f)
+        except OSError:
+            pass
+
+
+def db_file_stem(app, env, db_id):
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", f"{app}-{env}-{db_id.split(':', 1)[-1].lower()}")
+
+
+def prune_backups(d, stem):
+    old = sorted(glob.glob(os.path.join(d, f"{stem}-*.dump")), key=os.path.getmtime, reverse=True)[DB_BACKUPS_KEPT:]
+    for f in old:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
 def running_counts():
     p = subprocess.run(["docker", "ps", "--format", '{{.Label "com.docker.compose.project"}}'],
                        capture_output=True, text=True)
@@ -959,6 +993,93 @@ class Handler(BaseHTTPRequestHandler):
     def audit(self, s, action, detail):
         audit_line(s, self.user(), action, detail)
 
+    def db_restore(self, s, actor, store):
+        """POST /api/dbrestore?app&env&db with the dump file as the raw body. Replaces that database's data; the
+        current data is dumped to a backup first, and the environment is redeployed afterwards."""
+        q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        app, env, db = q.get("app", ""), q.get("env", ""), q.get("db", "")
+        if not (NAME.match(app) and NAME.match(env) and DB_ID.fullmatch(db)):
+            return self.send(400, {"error": "bad app, environment or database id"})
+        try:
+            require_action(actor, store, s, app, env, "database:Restore")
+        except LookupError:
+            return self.send(404, {"error": "not found"})
+        except PermissionError as e:
+            return self.send(403, {"error": str(e)})
+        if self.headers.get("X-Confirm") != f"{app}/{env}":
+            return self.send(400, {"error": f"type {app}/{env} to confirm"})
+        if env == "prod" and self.headers.get("X-Allow-Prod") != "yes":
+            return self.send(400, {"error": "restoring into prod needs an explicit prod confirmation"})
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length <= 0:
+            return self.send(400, {"error": "no file received"})
+        if length > DB_UPLOAD_MAX:
+            return self.send(413, {"error": f"file too large (limit {DB_UPLOAD_MAX // 1048576} MB)"})
+        work = db_work_dir(s, "db-transfer")
+        sweep_old(work, 3600)
+        upload = os.path.join(work, f"upload-{token_source.token_hex(8)}.dump")
+        try:
+            remaining, first = length, b""
+            with open(upload, "wb") as fh:
+                while remaining:
+                    chunk = self.rfile.read(min(remaining, 1 << 20))
+                    if not chunk:
+                        return self.send(400, {"error": "upload ended early"})
+                    first = first or chunk[:5]
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+            if first != b"PGDMP":
+                return self.send(400, {"error": "not a pg_dump custom-format file (make it with: pg_dump -Fc --no-owner --no-acl)"})
+            backups = db_work_dir(s, "db-backups")
+            stem = db_file_stem(app, env, db)
+            backup = os.path.join(backups, f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}.dump")
+            self.audit(s, "db:restore", f"{app}/{env} {db} {length} bytes")
+            ok, out = infra("db", "dump", app, env, backup, "--db", db, timeout=1800, actor=self.user())
+            if not (ok and os.path.exists(backup)):
+                return self.send(200, {"ok": False, "output": "Nothing was changed: the current data could not be backed up first.\n" + mask_url(out)})
+            prune_backups(backups, stem)
+            args = ["db", "restore", app, env, upload, "--db", db] + (["--i-really-mean-prod"] if env == "prod" else [])
+            ok, out = infra(*args, timeout=3600, actor=self.user())
+            self.audit(s, f"db:restore:{'ok' if ok else 'FAILED'}", f"{app}/{env} {db}")
+            out = mask_url(out) + chr(10) + f"Previous data saved as {os.path.basename(backup)} (kept: last {DB_BACKUPS_KEPT})."
+            if ok:
+                ok2, out2 = infra("redeploy", app, env, timeout=600, actor=self.user())
+                ok, out = ok and ok2, out + chr(10) + out2
+            return self.send(200, {"ok": ok, "output": out})
+        finally:
+            try:
+                os.remove(upload)
+            except OSError:
+                pass
+
+    def db_dump(self, s, actor, store, q):
+        app, env, db = q.get("app", ""), q.get("env", ""), q.get("db", "")
+        if not (NAME.match(app) and NAME.match(env) and DB_ID.fullmatch(db)):
+            return self.send(400, {"error": "bad app, environment or database id"})
+        require_action(actor, store, s, app, env, "database:Dump")
+        work = db_work_dir(s, "db-transfer")
+        sweep_old(work, 3600)
+        out_file = os.path.join(work, f"dump-{token_source.token_hex(8)}.dump")
+        self.audit(s, "db:dump", f"{app}/{env} {db}")
+        try:
+            ok, out = infra("db", "dump", app, env, out_file, "--db", db, timeout=1800, actor=self.user())
+            if not (ok and os.path.exists(out_file)):
+                return self.send(500, {"error": mask_url(out)[-400:] or "dump failed"})
+            size = os.path.getsize(out_file)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{db_file_stem(app, env, db)}-{time.strftime("%Y%m%d-%H%M%S")}.dump"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with open(out_file, "rb") as fh:
+                shutil.copyfileobj(fh, self.wfile, 1 << 20)
+        finally:
+            try:
+                os.remove(out_file)
+            except OSError:
+                pass
+
     def via_hooks_host(self):
         """Requests arriving on hooks.<domain> (no ops login) may ONLY reach /webhook."""
         return self.headers.get("Host", "").split(":")[0].startswith("hooks.")
@@ -1120,8 +1241,12 @@ class Handler(BaseHTTPRequestHandler):
                     item["url_masked"] = mask_url(item.pop("url", ""))   # full URLs only ever go into variables, server-side
                 info["can_manage"] = allow("database:Create")
                 info["can_wipe"] = allow("database:Wipe")
+                info["can_dump"] = allow("database:Dump")
+                info["can_restore"] = allow("database:Restore")
                 info["can_reveal"] = allow("database:RevealUrl")
                 return self.send(200, info)
+            if u.path == "/api/database/dump":
+                return self.db_dump(s, actor, store, q)
             if u.path == "/api/database/reveal":
                 app, env, db = q.get("app", ""), q.get("env", ""), q.get("db", "")
                 if not (NAME.match(app) and NAME.match(env)
@@ -1204,6 +1329,8 @@ class Handler(BaseHTTPRequestHandler):
         if actor is None:
             return self.send(401, {"error": "authentication required"})
         store = access_store(s)
+        if urlparse(self.path).path == "/api/dbrestore":          # raw file body, not JSON
+            return self.db_restore(s, actor, store)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
         except json.JSONDecodeError:
