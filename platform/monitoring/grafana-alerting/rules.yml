@@ -31,7 +31,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 > 85 and (1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 <= 95"
+              expr: "((1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 > 85 and (1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 <= 95) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -74,7 +74,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 > 95"
+              expr: "((1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 > 95) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -117,7 +117,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "predict_linear(max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"})[6h:5m], 24*3600) < 0 and (1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 > 50"
+              expr: "(predict_linear(max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"})[6h:5m], 24*3600) < 0 and (1 - max by (device)(node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\"}) / max by (device)(node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\"})) * 100 > 50) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -160,7 +160,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90"
+              expr: "((1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -203,7 +203,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "100 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100 > 90"
+              expr: "(100 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100 > 90) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -246,7 +246,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\",code=~\"5..\"}[5m])) / sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m]))) > 0.05 and sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m])) > 0.05"
+              expr: "((sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\",code=~\"5..\"}[5m])) / sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m]))) > 0.05 and sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m])) > 0.05) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -289,7 +289,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-develop-.+@docker\",code=~\"5..\"}[5m])) / sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-develop-.+@docker\"}[5m]))) > 0.05 and sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-develop-.+@docker\"}[5m])) > 0.05"
+              expr: "((sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-develop-.+@docker\",code=~\"5..\"}[5m])) / sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-develop-.+@docker\"}[5m]))) > 0.05 and sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-develop-.+@docker\"}[5m])) > 0.05) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -332,7 +332,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "histogram_quantile(0.95, sum by (le, service)(rate(traefik_service_request_duration_seconds_bucket{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m]))) > 2 and sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m])) > 0.05"
+              expr: "(histogram_quantile(0.95, sum by (le, service)(rate(traefik_service_request_duration_seconds_bucket{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m]))) > 2 and sum by (service)(rate(traefik_service_requests_total{service=~\"infra-.+-(prod|staging)-.+@docker\"}[5m])) > 0.05) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -375,7 +375,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(traefik_tls_certs_not_after - time()) / 86400 < 14 and (traefik_tls_certs_not_after - time()) / 86400 >= 3"
+              expr: "((traefik_tls_certs_not_after - time()) / 86400 < 14 and (traefik_tls_certs_not_after - time()) / 86400 >= 3) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -418,7 +418,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(traefik_tls_certs_not_after - time()) / 86400 < 3"
+              expr: "((traefik_tls_certs_not_after - time()) / 86400 < 3) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -461,7 +461,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "up == 0"
+              expr: "(up == 0) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -485,6 +485,92 @@ groups:
                     type: "gt"
                     params: [0]
               refId: "C"
+      - uid: "all-targets-down"
+        title: "Monitoring cannot reach ANY target"
+        condition: "C"
+        for: "1m"
+        noDataState: "OK"
+        execErrState: "OK"
+        labels:
+          severity: "critical"
+        annotations:
+          summary: "Monitoring cannot reach ANY target"
+          description: "Prometheus is running but every target (host, containers, Traefik) is unreachable, so no other alert can be trusted right now."
+          action: "Check the monitoring network and containers: docker ps | grep -E 'infra-(node|cadvisor|prometheus)'. Restart: infra platform up."
+        data:
+          - refId: "A"
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: "prometheus"
+            model:
+              expr: "(sum(up) == 0) * 0 + 1"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: "A"
+          - refId: "B"
+            datasourceUid: "__expr__"
+            model:
+              type: "reduce"
+              expression: "A"
+              reducer: "last"
+              settings:
+                mode: "dropNN"
+              refId: "B"
+          - refId: "C"
+            datasourceUid: "__expr__"
+            model:
+              type: "threshold"
+              expression: "B"
+              conditions:
+                - evaluator:
+                    type: "gt"
+                    params: [0]
+              refId: "C"
+      - uid: "prometheus-unreachable"
+        title: "Prometheus is unreachable (monitoring is blind)"
+        condition: "C"
+        for: "1m"
+        noDataState: "OK"
+        execErrState: "Alerting"
+        labels:
+          severity: "critical"
+        annotations:
+          summary: "Prometheus is unreachable (monitoring is blind)"
+          description: "Grafana cannot query Prometheus at all. Every metric-based alert is silent until it is back."
+          action: "docker ps -a | grep infra-prometheus; docker logs infra-prometheus --tail 50. Restart: infra platform up."
+        data:
+          - refId: "A"
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: "prometheus"
+            model:
+              expr: "vector(1)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: "A"
+          - refId: "B"
+            datasourceUid: "__expr__"
+            model:
+              type: "reduce"
+              expression: "A"
+              reducer: "last"
+              settings:
+                mode: "dropNN"
+              refId: "B"
+          - refId: "C"
+            datasourceUid: "__expr__"
+            model:
+              type: "threshold"
+              expression: "B"
+              conditions:
+                - evaluator:
+                    type: "gt"
+                    params: [1]
+              refId: "C"
       - uid: "down-postgres"
         title: "Postgres is not running"
         condition: "C"
@@ -504,7 +590,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "absent(container_last_seen{name=\"infra-postgres\"}) and on() (count(container_last_seen{name!=\"\"}) > 0)"
+              expr: "(absent(container_last_seen{name=\"infra-postgres\"}) and on() (count(container_last_seen{name!=\"\"}) > 0)) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -547,7 +633,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "absent(container_last_seen{name=\"infra-traefik\"}) and on() (count(container_last_seen{name!=\"\"}) > 0)"
+              expr: "(absent(container_last_seen{name=\"infra-traefik\"}) and on() (count(container_last_seen{name!=\"\"}) > 0)) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -590,7 +676,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "absent(container_last_seen{name=\"infra-console\"}) and on() (count(container_last_seen{name!=\"\"}) > 0)"
+              expr: "(absent(container_last_seen{name=\"infra-console\"}) and on() (count(container_last_seen{name!=\"\"}) > 0)) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -633,7 +719,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "changes(container_start_time_seconds{name=~\"infra-.+-(prod|staging)-.+\"}[15m]) >= 3 and on() (count(container_last_seen{name!=\"\"}) > 0)"
+              expr: "(changes(container_start_time_seconds{name=~\"infra-.+-(prod|staging)-.+\"}[15m]) >= 3 and on() (count(container_last_seen{name!=\"\"}) > 0)) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -676,7 +762,7 @@ groups:
               to: 0
             datasourceUid: "prometheus"
             model:
-              expr: "(container_memory_working_set_bytes{name=~\"infra-.+-(prod|staging)-.+\"} / (container_spec_memory_limit_bytes{name=~\"infra-.+-(prod|staging)-.+\"} > 0)) > 0.9 and on() (count(container_last_seen{name!=\"\"}) > 0)"
+              expr: "((container_memory_working_set_bytes{name=~\"infra-.+-(prod|staging)-.+\"} / (container_spec_memory_limit_bytes{name=~\"infra-.+-(prod|staging)-.+\"} > 0)) > 0.9 and on() (count(container_last_seen{name!=\"\"}) > 0)) * 0 + 1"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
