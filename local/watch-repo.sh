@@ -142,6 +142,18 @@ deploy_ref() {  # token app secret repo env branch sha
   # shellcheck disable=SC2064
   trap "rm -rf '$mdir'" RETURN
   echo "$manifest" > "$mdir/infra.yml"
+  # The per-environment settings that live next to it (.infradeploy/env/*.env), from the SAME commit. The webhook sends the
+  # whole folder; without this the watcher sent only infra.yml and every setting in those files was silently ignored.
+  local envlist envname
+  envlist=$(gh "$token" "/repos/$repo/contents/.infradeploy/env?ref=$sha" 2>/dev/null \
+            | jq -r '.[]? | select(.type == "file") | .name' 2>/dev/null) || envlist=""
+  if [[ -n $envlist ]]; then
+    mkdir -p "$mdir/env"
+    while IFS= read -r envname; do
+      [[ $envname =~ ^[A-Za-z0-9._-]+\.env$ ]] || continue
+      gh_file "$token" "$repo" "$sha" ".infradeploy/env/$envname" > "$mdir/env/$envname"
+    done <<< "$envlist"
+  fi
   local parsed; parsed=$(python3 "$INFRA_ROOT/scripts/parse-manifest.py" "$mdir/infra.yml")     || { err "$app: infra.yml is invalid"; return 1; }
 
   # build each service (the parsed output is shell-quoted by the validating parser)

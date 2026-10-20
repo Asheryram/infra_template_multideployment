@@ -4,6 +4,7 @@ set -euo pipefail
 SRC="/mnt/c/Users/YramAsherTetteh-Abot/OneDrive - AmaliTech gGmbH/Desktop/infra_template_multideployment"
 cp "$SRC/scripts/lib/db.sh"              /opt/infra/scripts/lib/db.sh
 cp "$SRC/scripts/db.sh"                  /opt/infra/scripts/db.sh
+cp "$SRC/local/watch-repo.sh"             /opt/infra/local/watch-repo.sh
 cp "$SRC/scripts/lib/common.sh"          /opt/infra/scripts/lib/common.sh
 cp "$SRC/scripts/deploy.sh"              /opt/infra/scripts/deploy.sh
 cp "$SRC/scripts/cleanup.sh"             /opt/infra/scripts/cleanup.sh
