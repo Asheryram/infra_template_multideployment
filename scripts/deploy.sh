@@ -3,7 +3,7 @@
 #
 #   infra deploy --manifest <repo>/.infradeploy --env <env> --tag <tag> [--branch <b>] [--commit <sha>] [--no-pull]
 #   infra redeploy <app> <env> [--tag <tag>]
-#   infra rollback <app> <env>
+#   infra rollback <app> <env> [--to <tag>]      previous version, or any of the last 5 (see TAG_HISTORY in meta.env)
 #
 # <env> is prod | staging | develop | pr-<number> | any short name.
 # Each service in infra.yml gets its own host:
@@ -13,7 +13,7 @@ SCRIPT_NAME=deploy
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 source "$INFRA_ROOT/scripts/lib/db.sh"
 
-APP="" ENV_NAME="" TAG="" MANIFEST_DIR="" BRANCH="" COMMIT="" PULL=1 REDEPLOY=0 ROLLBACK=0
+APP="" ENV_NAME="" TAG="" MANIFEST_DIR="" BRANCH="" COMMIT="" PULL=1 REDEPLOY=0 ROLLBACK=0 TO_TAG=""
 while (( $# )); do
   case $1 in
     --app)      APP=${2:?}; shift 2 ;;
@@ -25,6 +25,7 @@ while (( $# )); do
     --no-pull)  PULL=0; shift ;;
     --redeploy) REDEPLOY=1; shift ;;
     --rollback) REDEPLOY=1; ROLLBACK=1; shift ;;
+    --to)       TO_TAG=${2:?--to needs a tag}; shift 2 ;;
     -h|--help)  usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -47,6 +48,11 @@ if (( REDEPLOY )); then
   [[ -f $META ]] || die "no existing deployment $APP/$ENV_NAME"
   if (( ROLLBACK )); then
     TAG=$(meta_get "$META" PREV_TAG)
+    if [[ -n $TO_TAG ]]; then
+      [[ " $TAG $(meta_get "$META" TAG_HISTORY) " == *" $TO_TAG "* ]] \
+        || die "$TO_TAG is not one of the recent versions of $APP/$ENV_NAME ($TAG $(meta_get "$META" TAG_HISTORY))"
+      TAG=$TO_TAG
+    fi
     [[ -n $TAG ]] || die "no previous tag recorded for $APP/$ENV_NAME"
     log "rolling back $APP/$ENV_NAME to $TAG"
   fi
@@ -86,6 +92,19 @@ CLASS_VAR=${CLASS^^}; CLASS_VAR=${CLASS_VAR//-/_}
 PREVIEW=false
 if is_preview "$ENV_NAME"; then PREVIEW=true; fi
 
+# How a new version replaces the running one (environments.<class>.strategy, default: rolling for prod and staging):
+#   rolling   new containers start NEXT TO the old ones; Traefik routes to them once healthy; they are watched for a short
+#             canary window; only then are the old ones retired. Any failure removes the new ones: the old never stopped.
+#   recreate  stop and replace in place (previews, develop). Cheaper, with a short gap.
+STRATEGY=recreate
+case $CLASS in prod|staging) STRATEGY=rolling ;; esac
+strategy_var="ENV_${CLASS_VAR}_STRATEGY"; STRATEGY=${!strategy_var:-$STRATEGY}
+[[ $STRATEGY == rolling || $STRATEGY == recreate ]] || die "environments.$CLASS.strategy must be 'rolling' or 'recreate' (got '$STRATEGY')"
+canary_var="ENV_${CLASS_VAR}_CANARY_SECONDS"; CANARY_SECONDS=${!canary_var:-60}
+[[ $CANARY_SECONDS =~ ^[0-9]{1,4}$ ]] || die "environments.$CLASS.canary_seconds must be a number of seconds (got '$CANARY_SECONDS')"
+errpct_var="ENV_${CLASS_VAR}_ROLLBACK_ERROR_PERCENT"; ROLLBACK_ERROR_PERCENT=${!errpct_var:-5}
+[[ $ROLLBACK_ERROR_PERCENT =~ ^[0-9]{1,2}$ ]] || die "environments.$CLASS.rollback_error_percent must be 0-99 (got '$ROLLBACK_ERROR_PERCENT')"
+
 acquire_lock "$STACK"
 
 if [[ ! -f $STACK_DIR/meta.env ]]; then
@@ -109,6 +128,14 @@ if [[ -f $STACK_DIR/meta.env ]]; then
   if [[ $old_tag == "$TAG" ]]; then PREV_TAG=$(meta_get "$STACK_DIR/meta.env" PREV_TAG)
   else PREV_TAG=$old_tag; fi
 fi
+# The last few versions this environment ran (newest first, without the current one): what `rollback --to` accepts.
+TAG_HISTORY=""
+if [[ -f $STACK_DIR/meta.env ]]; then
+  TAG_HISTORY=$(meta_get "$STACK_DIR/meta.env" TAG_HISTORY)
+  [[ $(meta_get "$STACK_DIR/meta.env" TAG) == "$TAG" ]] || TAG_HISTORY="$(meta_get "$STACK_DIR/meta.env" TAG) $TAG_HISTORY"
+fi
+TAG_HISTORY=$(tr ' ' '\n' <<<"$TAG_HISTORY" | awk -v cur="$TAG" 'NF && $0 != cur && !seen[$0]++' | head -5 | tr '\n' ' ')
+TAG_HISTORY=${TAG_HISTORY% }
 
 log "deploying $STACK  services=${SERVICES[*]}  tag=$TAG  branch=${BRANCH:-n/a}"
 
@@ -126,7 +153,7 @@ DEPLOY_DIR="$STACK_DIR/deploy"
 # Project links (console → Access → Project links) that involve this project, as set by an administrator
 LINKS=$(python3 "$INFRA_ROOT/scripts/project-links.py" "$STATE_DIR/console-access.sqlite3" "$APP" 2>/dev/null || true)
 
-declare -A SVC_HOST SVC_IMAGE SVC_PORT SVC_MEM SVC_CPUS SVC_MW SVC_SSO SVC_PUBLIC
+declare -A SVC_HOST SVC_IMAGE SVC_PORT SVC_MEM SVC_CPUS SVC_MW SVC_SSO SVC_PUBLIC SVC_REPLICAS
 stack_mem_kib=0
 stack_cpus=0
 
@@ -162,17 +189,26 @@ for svc in "${SERVICES[@]}"; do
   port_var="${S}_PORT"
   SVC_PORT[$svc]=${!port_var:-80}
 
+  # replicas: environments.<class>.replicas, or environments.<class>.<service>.replicas. Several copies behind Traefik keep
+  # the service up while one restarts or is being replaced.
+  rep_var="ENV_${CLASS_VAR}_${S}_REPLICAS"; rep=${!rep_var:-}
+  if [[ -z $rep ]]; then rep_var="ENV_${CLASS_VAR}_REPLICAS"; rep=${!rep_var:-1}; fi
+  [[ $rep =~ ^[1-4]$ ]] || die "service '$svc': replicas must be 1 to 4 (got '$rep')"
+  SVC_REPLICAS[$svc]=$rep
+
   # resources
   resource_resolve "$APP" "$ENV_NAME" "$svc"
   SVC_MEM[$svc]=$RESOURCE_MEM
   SVC_CPUS[$svc]=$RESOURCE_CPUS
   resource_validate_value "${SVC_MEM[$svc]}" "${SVC_CPUS[$svc]}"
   svc_mem_kib=$(resource_mem_kib "${SVC_MEM[$svc]}")
-  stack_mem_kib=$((stack_mem_kib + svc_mem_kib))
-  stack_cpus=$(awk -v t="$stack_cpus" -v a="${SVC_CPUS[$svc]}" 'BEGIN{printf "%.3f",t+a}')
+  stack_mem_kib=$((stack_mem_kib + svc_mem_kib * SVC_REPLICAS[$svc]))
+  stack_cpus=$(awk -v t="$stack_cpus" -v a="${SVC_CPUS[$svc]}" -v r="${SVC_REPLICAS[$svc]}" 'BEGIN{printf "%.3f",t+a*r}')
 
   # middlewares
   mw="secure-headers@file,compress@file"
+  # rolling deploys: a request that lands on a container in the second it is being replaced is retried on another one
+  [[ $STRATEGY == rolling ]] && mw+=",rollout-retry@file"
   # Access gate: previews default to ON, every other class to OFF. `environments.<class>.auth` and
   # `environments.<class>.<service>.auth` in infra.yml override it (so develop/staging/prod can opt in too).
   auth=false
@@ -412,6 +448,8 @@ services:
     image: ${SVC_IMAGE[$svc]}
     restart: unless-stopped
     init: true
+    deploy:
+      replicas: ${SVC_REPLICAS[$svc]}
     env_file: [runtime/${svc}.env]
     extra_hosts: ["host.docker.internal:host-gateway"]
     networks: [default]
@@ -523,13 +561,135 @@ fi
 
 # ----------------------------------------------------------------------------- roll out
 
-if ! "${COMPOSE[@]}" up -d --remove-orphans --wait \
-     --wait-timeout "${DEPLOY_WAIT_TIMEOUT:-180}"; then
+plain_up() {
+  if ! "${COMPOSE[@]}" up -d --remove-orphans --wait \
+       --wait-timeout "${DEPLOY_WAIT_TIMEOUT:-180}"; then
+    "${COMPOSE[@]}" ps -a || true
+    "${COMPOSE[@]}" logs --no-color --tail 100 || true
+    alert "deploy FAILED for $STACK ($TAG)"
+    die "containers did not become healthy within ${DEPLOY_WAIT_TIMEOUT:-180}s"
+  fi
+}
+
+project_ids() { docker ps -aq --filter "label=com.docker.compose.project=$STACK" --filter "label=com.docker.compose.service=$1"; }
+
+# "<requests> <5xx>" Traefik has counted for a service since it started; fails when the metrics endpoint is unavailable.
+traefik_counts() {
+  local out
+  out=$(docker exec infra-traefik wget -qO- http://127.0.0.1:8082/metrics 2>/dev/null) || return 1
+  awk -v s="service=\"$STACK-$1@docker\"" '
+    /^traefik_service_requests_total\{/ && index($0, s) { t += $NF; if ($0 ~ /code="5[0-9][0-9]"/) e += $NF }
+    END { printf "%d %d\n", t, e }' <<<"$out"
+}
+
+# One request through Traefik, so the canary has traffic to judge even when nobody is using the site yet.
+probe() {
+  local scheme=https
+  [[ $ROUTER_TLS == true ]] || scheme=http
+  docker exec infra-traefik wget -q -O /dev/null -T 5 --no-check-certificate \
+    --header "Host: $1" "$scheme://127.0.0.1:443$2" >/dev/null 2>&1 || true
+}
+
+# Stop and remove containers ONE AT A TIME with a pause between them. Traefik needs about 2 s to notice a container is gone and
+# keeps sending it requests until then; staggering means at most one server is stale at any moment, so the retry middleware
+# finds a live one. (All at once, half the servers are stale and a few requests are lost.)
+retire_containers() { # <grace seconds> <id>...
+  local grace=$1 id; shift
+  local -a pids=()
+  for id in "$@"; do
+    ( docker stop -t "$grace" "$id" >/dev/null 2>&1; docker rm -f "$id" >/dev/null 2>&1 ) &
+    pids+=($!)
+    sleep "${RETIRE_GAP_SECONDS:-3}"
+  done
+  (( ${#pids[@]} == 0 )) || wait "${pids[@]}" || true
+}
+
+CHANGED=()
+declare -A OLD_IDS
+# Remove only what this deploy added; the previous version has been serving the whole time.
+abort_rollout() { # reason
+  local svc id
+  local -a added=()
+  for svc in "${CHANGED[@]}"; do
+    for id in $(project_ids "$svc"); do
+      [[ " ${OLD_IDS[$svc]} " == *" $id "* ]] || added+=("$id")
+    done
+  done
+  (( ${#added[@]} == 0 )) || retire_containers 5 "${added[@]}"
   "${COMPOSE[@]}" ps -a || true
-  "${COMPOSE[@]}" logs --no-color --tail 100 || true
-  alert "deploy FAILED for $STACK ($TAG)"
-  die "containers did not become healthy within ${DEPLOY_WAIT_TIMEOUT:-180}s"
-fi
+  alert "deploy of $STACK ($TAG) was ROLLED BACK automatically: $1. The previous version never stopped serving."
+  die "rolled back: $1 (the previous version is still running)"
+}
+
+roll_out() {
+  local svc id new_hash stale old_n counts t e end hp_var S have_metrics=true
+  local -a scale=()
+  local -A base_t base_e
+  for svc in "${SERVICES[@]}"; do
+    # a stopped container of an older version must not be started again by the scale-out below
+    for id in $(project_ids "$svc"); do
+      [[ $(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null) == true ]] || docker rm -f "$id" >/dev/null 2>&1 || true
+    done
+    OLD_IDS[$svc]=$(project_ids "$svc" | tr '\n' ' ')
+    [[ -n ${OLD_IDS[$svc]// } ]] || continue
+    new_hash=$("${COMPOSE[@]}" config --hash "$svc" 2>/dev/null | awk '{print $2}')
+    stale=false
+    for id in ${OLD_IDS[$svc]}; do
+      [[ -n $new_hash && $(docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$id" 2>/dev/null) == "$new_hash" ]] || stale=true
+    done
+    if [[ $stale == true ]]; then
+      old_n=$(wc -w <<<"${OLD_IDS[$svc]}")
+      CHANGED+=("$svc")
+      scale+=(--scale "$svc=$((old_n + SVC_REPLICAS[$svc]))")
+    fi
+  done
+  if (( ${#CHANGED[@]} == 0 )); then plain_up; return; fi
+
+  log "rolling out ${CHANGED[*]}: the new version starts next to the running one"
+  local started=$SECONDS
+  if ! "${COMPOSE[@]}" up -d --no-recreate --remove-orphans --wait \
+       --wait-timeout "${DEPLOY_WAIT_TIMEOUT:-180}" "${scale[@]}"; then
+    for svc in "${CHANGED[@]}"; do
+      for id in $(project_ids "$svc"); do
+        [[ " ${OLD_IDS[$svc]} " == *" $id "* ]] || docker logs --tail 40 "$id" 2>&1 | sed "s/^/  [new $svc] /"
+      done
+    done
+    abort_rollout "the new version did not become healthy (gave up after $((SECONDS - started))s; limit ${DEPLOY_WAIT_TIMEOUT:-180}s)"
+  fi
+
+  if (( CANARY_SECONDS > 0 )); then
+    for svc in "${CHANGED[@]}"; do
+      if counts=$(traefik_counts "$svc"); then read -r "base_t[$svc]" "base_e[$svc]" <<<"$counts"; else have_metrics=false; fi
+    done
+    [[ $have_metrics == true ]] || warn "Traefik metrics are unavailable: the canary watches health only"
+    log "canary: watching the new version for ${CANARY_SECONDS}s (rolls back at ${ROLLBACK_ERROR_PERCENT}% server errors)"
+    end=$((SECONDS + CANARY_SECONDS))
+    while (( SECONDS < end )); do
+      for svc in "${CHANGED[@]}"; do
+        S=${svc^^}; S=${S//-/_}; hp_var="${S}_HEALTH_PATH"
+        [[ ${SVC_PUBLIC[$svc]:-true} == false ]] || probe "${SVC_HOST[$svc]}" "${!hp_var:-/}"
+      done
+      sleep 3
+      [[ $have_metrics == true ]] || continue
+      for svc in "${CHANGED[@]}"; do
+        counts=$(traefik_counts "$svc") || continue
+        read -r t e <<<"$counts"
+        t=$((t - base_t[$svc])); e=$((e - base_e[$svc]))
+        if (( e >= 3 && e * 100 >= t * ROLLBACK_ERROR_PERCENT )); then
+          abort_rollout "$e of $t requests to $svc failed with a server error"
+        fi
+      done
+    done
+  fi
+
+  log "canary passed: retiring the previous version"
+  local -a retiring=()
+  for svc in "${CHANGED[@]}"; do for id in ${OLD_IDS[$svc]}; do retiring+=("$id"); done; done
+  retire_containers 30 "${retiring[@]}"
+  plain_up        # settle the replica count and check everything is healthy
+}
+
+if [[ $STRATEGY == rolling ]]; then roll_out; else plain_up; fi
 
 # Waits until Traefik routes the host (anything but a 404 counts). Readiness itself is gated by the
 # image's own HEALTHCHECK through `up --wait`; the platform never injects one (images may lack wget/curl).
@@ -557,6 +717,8 @@ write_kv "$tmp" ENV_NAME "$ENV_NAME"
 write_kv "$tmp" CLASS "$CLASS"
 write_kv "$tmp" TAG "$TAG"
 write_kv "$tmp" PREV_TAG "$PREV_TAG"
+write_kv "$tmp" TAG_HISTORY "$TAG_HISTORY"
+write_kv "$tmp" STRATEGY "$STRATEGY"
 write_kv "$tmp" BRANCH "$BRANCH"
 write_kv "$tmp" COMMIT "$COMMIT"
 write_kv "$tmp" URL "$URL"

@@ -16,6 +16,12 @@ http:
     compress:
       compress: {}
 
+    # Rolling deploys: if a request lands on a container in the second it is being replaced, it is tried on another one.
+    rollout-retry:
+      retry:
+        attempts: 4
+        initialInterval: 100ms
+
     # Keeps previews out of search engines.
     preview-noindex:
       headers:

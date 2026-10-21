@@ -62,7 +62,14 @@ entryPoints:
     http:
       aliasHeadersStrategy: reject
 
+# Rolling deploys: Traefik notices a container appearing or disappearing within 0.2 s instead of 2 s, and gives up on a
+# container that has just vanished after 1 s instead of 30 s, so the retry middleware lands on a live copy.
+serversTransport:
+  forwardingTimeouts:
+    dialTimeout: 1s
+
 providers:
+  providersThrottleDuration: 200ms
   docker:
     endpoint: "tcp://socket-proxy:2375"
     exposedByDefault: false
